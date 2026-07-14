@@ -5,13 +5,16 @@ ENV YARN_CACHE_FOLDER=/yarn-cache
 ENV NODE_OPTIONS=--max-old-space-size=2560
 ENV FRAMEWORK_PROVIDER=rest
 ENV APPLICATION_MODE=production
-ENV NEXT_PUBLIC_REST_API_ENDPOINT=https://indobangla.tech/backend
-ENV NEXT_PUBLIC_GRAPHQL_API_ENDPOINT=https://indobangla.tech/backend/graphql
-ENV NEXT_PUBLIC_ADMIN_URL=https://indobangla.tech/admin
+# Public URLs are baked into the Next bundle at build time, so staging needs its own
+# build. Defaults are production, so a plain `docker compose build shop` is unchanged.
+ARG SITE_URL=https://indobangla.tech
+ENV NEXT_PUBLIC_REST_API_ENDPOINT=${SITE_URL}/backend
+ENV NEXT_PUBLIC_GRAPHQL_API_ENDPOINT=${SITE_URL}/backend/graphql
+ENV NEXT_PUBLIC_ADMIN_URL=${SITE_URL}/admin
 ENV NEXT_PUBLIC_DEFAULT_LANGUAGE=en
 ENV NEXT_PUBLIC_AVAILABLE_LANGUAGES=en
 ENV NEXT_PUBLIC_ENABLE_MULTI_LANG=false
-ENV NEXTAUTH_URL=https://indobangla.tech
+ENV NEXTAUTH_URL=${SITE_URL}
 # NextAuth secret. Passed in at build time from deploy/.env (NEXTAUTH_SECRET) — never
 # hard-coded here, or it would be baked into every image layer and into git.
 ARG SECRET

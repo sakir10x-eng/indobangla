@@ -1,0 +1,109 @@
+# Staging — https://staging.indobangla.tech
+#
+# Fully self-contained: its own MySQL, its own Redis, its own network. Nothing is shared
+# with live except the Traefik edge that routes to it.
+#
+# It used to share live's network to save ~400 MB of RAM, and that was a mistake. Compose
+# always publishes the *service name* as a network alias, so `api` resolved to two
+# containers on that network and live's nginx served staging data on indobangla.tech
+# roughly half the time. No alias override fixes that — the only fix is separate networks,
+# which means separate db/redis too.
+#
+#   docker compose -f docker-compose.staging.yml up -d db redis
+#   docker compose -f docker-compose.staging.yml build api && ... up -d api web
+#   # wait for https://staging.indobangla.tech/backend to answer, THEN:
+#   docker compose -f docker-compose.staging.yml build shop admin && ... up -d
+#
+# The shop must be built *after* the staging API is reachable: Next.js fetches from it
+# during the static build, and a missing host fails the whole build.
+name: indobangla-staging
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    command: --innodb-buffer-pool-size=128M   # modest: this box is shared
+    volumes:
+      - staging_db:/var/lib/mysql
+    networks: [stg]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [stg]
+
+  sapi:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: indobangla-api:staging
+    restart: unless-stopped
+    env_file: [ .env.api.staging ]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - staging_api_storage:/app/storage
+    networks: [stg]
+
+  sshop:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.shop
+      args:
+        # Baked into the Next bundle at build time — staging must point at itself.
+        SITE_URL: https://staging.indobangla.tech
+        SECRET: ${NEXTAUTH_SECRET}
+    image: indobangla-shop:staging
+    restart: unless-stopped
+    networks: [stg]
+
+  sadmin:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.admin
+      args:
+        SITE_URL: https://staging.indobangla.tech
+    image: indobangla-admin:staging
+    restart: unless-stopped
+    networks: [stg]
+
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./staging.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      # On `stg` it resolves sapi/sshop/sadmin — staging's own containers, and nothing else
+      # on this box answers to those names. `edge` is only so Traefik can reach it.
+      stg:
+      edge:
+        aliases: [staging-web]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=indobangla_net"
+      - "traefik.http.routers.ibstaging.entrypoints=websecure"
+      - "traefik.http.routers.ibstaging.rule=Host(`staging.indobangla.tech`)"
+      - "traefik.http.routers.ibstaging.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ibstaging.loadbalancer.server.port=80"
+
+networks:
+  stg:
+    name: indobangla_staging_net
+  edge:
+    external: true
+    name: indobangla_net
+
+volumes:
+  staging_db:
+  staging_api_storage:

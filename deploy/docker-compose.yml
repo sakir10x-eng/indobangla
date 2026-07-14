@@ -41,6 +41,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.shop
+      args:
+        # Kept out of the image definition — see deploy/README.md.
+        SECRET: ${NEXTAUTH_SECRET}
     image: indobangla-shop
     restart: unless-stopped
     networks: [ib]

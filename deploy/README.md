@@ -21,6 +21,44 @@ into every image layer and land in git.
 > `args: { SECRET: ${NEXTAUTH_SECRET} }` to the `shop` build block in the compose file, and
 > rebuild the shop.
 
+## The workflow
+
+```
+  edit code  ->  git commit  ->  sh stage.sh   ->  test on staging.indobangla.tech
+                                                       |
+                                                  looks right?
+                                                       |
+                                                 sh promote.sh   ->  indobangla.tech
+                                                       |
+                                                  went wrong?
+                                                       |
+                                                 sh rollback.sh  (seconds, no rebuild)
+```
+
+`promote.sh` tags whatever is live as `:previous` before it swaps anything in, so there is
+always something to roll back to. **A rollback does not undo a database migration** — if the
+release included one, deal with that separately.
+
+## Staging
+
+`staging.indobangla.tech` runs the same three apps against **its own MySQL, its own Redis and
+its own network**. Nothing is shared with live but the Traefik edge.
+
+It was originally built to share live's network and MySQL container, to save ~400 MB of RAM.
+That was a mistake, and it broke the live site: Compose always publishes a service's *name*
+as a network alias, so with both stacks on one network `api` resolved to two containers and
+live's nginx served staging data on indobangla.tech about half the time. `aliases:` does not
+help — the service name is added regardless. Staging's services are therefore named
+`sapi` / `sshop` / `sadmin`, and they have their own network. Do not "simplify" this back.
+
+**Build the API before the shop.** Next.js fetches from the API *during* the static build, so
+if `https://staging.indobangla.tech/backend` isn't answering yet the build dies with
+`getaddrinfo ENOTFOUND`. `stage.sh` waits for the API before it builds anything else.
+
+The shop and admin images bake `SITE_URL` into the bundle at build time, so a staging image
+can never serve live and vice-versa. Only the API image is promoted byte-for-byte; the two
+Next apps are rebuilt for the live hostname **from the same commit**.
+
 ## Deploying
 
 ```bash
