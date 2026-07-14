@@ -51,6 +51,18 @@ class Product extends Model
     ];
 
     /**
+     * The source link for an imported book.
+     *
+     * The old shop kept it in `pre_url`; ours writes `external_product_url`. Both are still
+     * in the table, and 546 imported books only have the old one — so read through to it
+     * rather than copying data around and having to keep the two columns in step.
+     */
+    public function getExternalProductUrlAttribute($value)
+    {
+        return $value ?: ($this->attributes['pre_url'] ?? null);
+    }
+
+    /**
      * IndoBangla book specification fields, stored as a single "book_meta"
      * meta entry (ISBN, language, print type, page count, dimensions, etc.).
      */
