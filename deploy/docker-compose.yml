@@ -51,6 +51,13 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.shop
+      # Next fetches from https://indobangla.tech/backend DURING the build. That hostname
+      # still resolves to the OLD box for many resolvers, so without this the build quietly
+      # bakes the old server's data — including image URLs we have already fixed here — into
+      # the bundle. Pin it to this box.
+      extra_hosts:
+        - "indobangla.tech:187.127.122.242"
+        - "www.indobangla.tech:187.127.122.242"
       args:
         # Kept out of the image definition — see deploy/README.md.
         SECRET: ${NEXTAUTH_SECRET}
@@ -64,6 +71,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.admin
+      extra_hosts:
+        - "indobangla.tech:187.127.122.242"
+        - "www.indobangla.tech:187.127.122.242"
     image: indobangla-admin
     restart: unless-stopped
     mem_limit: 900m

@@ -26,13 +26,10 @@ module.exports = {
       'lh3.googleusercontent.com',
       'localhost',
       '127.0.0.1',
-      '66.29.157.185',
       'i.pravatar.cc',
     ],
     remotePatterns: [
       { protocol: 'https', hostname: '**.amazonaws.com' },
-      { protocol: 'https', hostname: '66.29.157.185' },
-      { protocol: 'http', hostname: '66.29.157.185' },
     ],
   },
   ...(process.env.FRAMEWORK_PROVIDER === 'graphql' && {

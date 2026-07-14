@@ -1,0 +1,39 @@
+# .tech -> .bd redirect. NOT ENABLED YET.
+#
+# indobangla.bd only resolves about half the time right now: BTCL's primary nameserver has
+# the A record but the slave never got the zone, so a resolver that asks the slave gets
+# nothing. Redirecting to a domain that fails for half the visitors would be worse than not
+# redirecting at all.
+#
+# Enable ONLY once this returns the same IP from several resolvers, repeatedly:
+#
+#   for r in 8.8.8.8 1.1.1.1 9.9.9.9; do dig @$r indobangla.bd A +short; done
+#
+# Then:
+#   cp host-nginx-redirect-to-bd.conf.disabled /etc/nginx/sites-available/indobangla-redirect
+#   rm /etc/nginx/sites-enabled/indobangla-app          # stop serving the app on .tech
+#   ln -sf /etc/nginx/sites-available/indobangla-redirect /etc/nginx/sites-enabled/
+#   nginx -t && systemctl reload nginx
+#
+# …and the app itself must be rebuilt with SITE_URL=https://indobangla.bd, because Next.js
+# bakes the site URL into the browser bundle at build time. A redirect alone would leave the
+# shop calling https://indobangla.tech/backend from the browser.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name indobangla.tech www.indobangla.tech;
+    return 301 https://indobangla.bd$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name indobangla.tech www.indobangla.tech;
+
+    ssl_certificate     /etc/letsencrypt/live/indobangla.tech/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/indobangla.tech/privkey.pem;
+
+    # 301 is permanent and browsers cache it hard. Keep it 302 until you are certain the
+    # .bd domain is here to stay — a cached 301 to a broken domain is very hard to undo.
+    return 302 https://indobangla.bd$request_uri;
+}
