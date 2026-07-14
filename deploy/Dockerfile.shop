@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1.4
+FROM node:20-alpine
+WORKDIR /app
+ENV YARN_CACHE_FOLDER=/yarn-cache
+ENV NODE_OPTIONS=--max-old-space-size=2560
+ENV FRAMEWORK_PROVIDER=rest
+ENV APPLICATION_MODE=production
+ENV NEXT_PUBLIC_REST_API_ENDPOINT=https://indobangla.tech/backend
+ENV NEXT_PUBLIC_GRAPHQL_API_ENDPOINT=https://indobangla.tech/backend/graphql
+ENV NEXT_PUBLIC_ADMIN_URL=https://indobangla.tech/admin
+ENV NEXT_PUBLIC_DEFAULT_LANGUAGE=en
+ENV NEXT_PUBLIC_AVAILABLE_LANGUAGES=en
+ENV NEXT_PUBLIC_ENABLE_MULTI_LANG=false
+ENV NEXTAUTH_URL=https://indobangla.tech
+# NextAuth secret. Passed in at build time from deploy/.env (NEXTAUTH_SECRET) — never
+# hard-coded here, or it would be baked into every image layer and into git.
+ARG SECRET
+ENV SECRET=$SECRET
+COPY shop/package.json shop/yarn.lock ./
+RUN --mount=type=cache,target=/yarn-cache yarn install --frozen-lockfile --ignore-engines --network-timeout 600000
+COPY shop/ ./
+RUN --mount=type=cache,target=/app/.next/cache yarn next build
+EXPOSE 3000
+CMD ["yarn","start"]

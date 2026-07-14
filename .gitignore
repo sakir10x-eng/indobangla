@@ -80,3 +80,11 @@ dist/
 # PWA
 workbox-*.js
 sw.js
+# Server-only deploy state (secrets, build logs, DB dumps)
+deploy/.env*
+deploy/*.log
+deploy/*.sh
+!deploy/build_all.sh
+!deploy/api-entrypoint.sh
+deploy/*.bak
+deploy/*.presecret

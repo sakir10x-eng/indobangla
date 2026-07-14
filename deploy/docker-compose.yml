@@ -1,0 +1,76 @@
+name: indobangla
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+    networks: [ib]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [ib]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: indobangla-api
+    restart: unless-stopped
+    env_file: [ .env.api ]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - api_storage:/app/storage
+    networks: [ib]
+
+  shop:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.shop
+    image: indobangla-shop
+    restart: unless-stopped
+    networks: [ib]
+
+  admin:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.admin
+    image: indobangla-admin
+    restart: unless-stopped
+    networks: [ib]
+
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./edge.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [ib]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=indobangla_net"
+      - "traefik.http.routers.indobangla.entrypoints=websecure"
+      - "traefik.http.routers.indobangla.rule=Host(`indobangla.tech`) || Host(`www.indobangla.tech`)"
+      - "traefik.http.routers.indobangla.tls.certresolver=letsencrypt"
+      - "traefik.http.services.indobangla.loadbalancer.server.port=80"
+
+networks:
+  ib:
+    name: indobangla_net
+
+volumes:
+  db_data:
+  api_storage:

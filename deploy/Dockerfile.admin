@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.4
+FROM node:20-alpine
+WORKDIR /app
+ENV YARN_CACHE_FOLDER=/yarn-cache
+ENV NODE_OPTIONS=--max-old-space-size=2560
+ENV APPLICATION_MODE=production
+ENV NEXT_PUBLIC_REST_API_ENDPOINT=https://indobangla.tech/backend
+ENV NEXT_PUBLIC_SHOP_URL=https://indobangla.tech
+ENV NEXT_PUBLIC_AUTH_TOKEN_KEY=AUTH_CRED
+ENV NEXT_PUBLIC_DEFAULT_LANGUAGE=en
+ENV NEXT_PUBLIC_AVAILABLE_LANGUAGES=en
+COPY admin/rest/package.json ./
+RUN --mount=type=cache,target=/yarn-cache yarn install --ignore-engines --network-timeout 600000
+COPY admin/rest/ ./
+RUN --mount=type=cache,target=/app/.next/cache yarn next build
+EXPOSE 3002
+CMD ["yarn","start"]
