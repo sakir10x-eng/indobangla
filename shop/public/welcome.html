@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IndoBangla — অরিজিনাল বইয়ের ঠিকানা</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+/* ================================================================
+   IndoBangla brand tokens — from the logo
+   red "Indo" #ee3a41 · charcoal "Bangla" #2f2f33 · paper white
+================================================================ */
+:root{
+  --page:#fdfcfa; --card:#fff; --ink:#2f2f33; --ink-soft:#55555c; --sub:#83838c;
+  --line:#eeece8; --red:#ee3a41; --red-dark:#c8272e; --red-soft:#fdecec;
+  --charcoal:#2f2f33; --charcoal-deep:#232327; --cream:#faf8f4;
+  --green:#1a8a55; --green-soft:#e6f4ec; --gold:#eab338; --gold-soft:#fdf3da;
+  --font:'Hind Siliguri','Noto Sans Bengali',system-ui,sans-serif;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{background:var(--page); font-family:var(--font); color:var(--ink); -webkit-font-smoothing:antialiased;}
+.wrap{max-width:1080px; margin:0 auto; padding:26px 16px 56px; display:flex; flex-direction:column; gap:26px;}
+section{border-radius:22px; overflow:hidden;}
+.card{background:var(--card); border:1px solid var(--line);}
+.dark{background:var(--charcoal); position:relative;}
+.dark::before{content:""; position:absolute; top:0; left:0; right:0; height:5px; background:linear-gradient(90deg,var(--red),var(--red-dark));}
+h1,h2{font-weight:700; line-height:1.3;}
+button{font-family:var(--font); cursor:pointer; border:none;}
+i[data-lucide]{flex-shrink:0;}
+
+/* pills */
+.pill{display:inline-flex; align-items:center; gap:5px; font-weight:700; font-size:12px; padding:4px 11px; border-radius:999px;}
+.pill.red{background:var(--red-soft); color:var(--red-dark);}
+.pill.gold{background:var(--gold-soft); color:#9a6b12;}
+.pill.green{background:var(--green-soft); color:var(--green);}
+.pill.blue{background:#eef1f6; color:#3d5a80;}
+.pill i{width:13px; height:13px;}
+
+/* buttons */
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:8px; font-weight:700; border-radius:12px; padding:13px 24px; font-size:15.5px; transition:transform .2s, box-shadow .2s;}
+.btn:hover{transform:translateY(-2px);}
+.btn-red{background:linear-gradient(135deg,var(--red),var(--red-dark)); color:#fff; box-shadow:0 8px 20px rgba(238,58,65,.30);}
+.btn-outline{background:#fff; color:var(--ink); border:1.5px solid var(--line);}
+.btn-dark{background:var(--charcoal); color:#fff;}
+.btn-gold{background:linear-gradient(135deg,var(--gold),#c9942a); color:var(--charcoal-deep); box-shadow:0 6px 18px rgba(201,148,42,.35);}
+.btn i{width:18px; height:18px;}
+
+/* scroll reveal */
+.rv{opacity:0; transform:translateY(22px); transition:opacity .6s ease, transform .6s ease;}
+.rv.on{opacity:1; transform:translateY(0);}
+
+/* float + lift */
+@keyframes ibFloat{0%,100%{transform:translateY(0);}50%{transform:translateY(-9px);}}
+.float{animation:ibFloat 4.6s ease-in-out infinite;}
+.lift{transition:transform .22s ease, box-shadow .22s ease;}
+.lift:hover{transform:translateY(-3px); box-shadow:0 10px 24px rgba(47,47,51,.10);}
+
+/* ================= HERO ================= */
+.hero-inner{position:relative; padding:38px 34px; display:grid; grid-template-columns:1.25fr .9fr; gap:30px; align-items:center;}
+.hero-wash1{position:absolute; top:-120px; right:-120px; width:340px; height:340px; border-radius:50%; background:radial-gradient(circle, rgba(238,58,65,.10), transparent 70%);}
+.hero-wash2{position:absolute; bottom:-140px; left:-140px; width:360px; height:360px; border-radius:50%; background:radial-gradient(circle, rgba(47,47,51,.07), transparent 70%);}
+.wordmark{display:inline-flex; flex-direction:column; gap:2px;}
+.wordmark-row{display:inline-flex; align-items:center; gap:10px;}
+.wordmark-text{font-weight:700; font-size:34px; letter-spacing:-.5px;}
+.wordmark-text .r{color:var(--red);} .wordmark-text .k{color:var(--charcoal);}
+.tagline{color:var(--red); font-weight:600; font-size:11.5px; letter-spacing:4.2px; margin-left:54px;}
+.hero-h1{font-size:32px; margin:22px 0 10px;}
+.hero-h1 span{color:var(--red);}
+.hero-p{color:var(--ink-soft); font-size:15.5px; line-height:1.65; margin-bottom:20px; max-width:520px;}
+.avatars{display:flex; flex-direction:column; gap:16px; align-items:center; position:relative;}
+.av-row{display:flex; gap:14px;}
+.av{border-radius:50%; box-shadow:0 8px 22px rgba(47,47,51,.14); border:3px solid #fff; overflow:hidden; background:#fff; flex-shrink:0;}
+.av svg{display:block; width:100%; height:100%;}
+.av-cap{font-size:12px; color:var(--sub); text-align:center; margin-top:6px;}
+
+/* ================= TRUST HERO ================= */
+.trust-top{padding:34px 30px 26px; text-align:center;}
+.trust-h{font-size:29px; max-width:620px; margin:14px auto 8px;}
+.trust-p{color:var(--sub); font-size:15.5px; max-width:560px; margin:0 auto; line-height:1.6;}
+.trust-p b{color:var(--ink);}
+.stats{display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid var(--line); background:var(--cream);}
+.stat{padding:18px 14px; text-align:center; border-left:1px solid var(--line);}
+.stat:first-child{border-left:none;}
+.stat i{width:20px; height:20px; color:#c9942a; margin-bottom:6px;}
+.stat-big{font-weight:700; font-size:19px; color:var(--red-dark);}
+.stat-small{font-size:12.5px; color:var(--sub); margin-top:3px;}
+
+/* ================= PAIN / SOLUTION ================= */
+#painSec{padding:30px 28px 34px; background:linear-gradient(150deg,#4a1616,#3a1010); box-shadow:0 10px 30px rgba(58,16,16,.28); transition:background .45s, box-shadow .45s; border:1px solid transparent;}
+#painSec.solved{background:linear-gradient(150deg,var(--cream),#fff); border-color:var(--line); box-shadow:0 1px 3px rgba(0,0,0,.05);}
+.pain-head{text-align:center; max-width:620px; margin:0 auto 22px;}
+.pain-h{font-size:26px; color:#fff; transition:color .45s;}
+#painSec.solved .pain-h{color:var(--ink);}
+.pain-sub{font-size:15px; color:#e7cfcf; line-height:1.55; margin-top:8px; transition:color .45s;}
+#painSec.solved .pain-sub{color:var(--sub);}
+.switch{margin-top:18px; display:inline-flex; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.22); border-radius:999px; padding:4px; transition:all .45s;}
+#painSec.solved .switch{background:#fff; border-color:var(--line);}
+.sw-btn{display:inline-flex; align-items:center; gap:6px; font-weight:700; font-size:13.5px; padding:8px 18px; border-radius:999px; background:transparent; color:#e7cfcf; transition:all .3s;}
+#painSec.solved .sw-btn{color:var(--sub);}
+.sw-btn i{width:15px; height:15px;}
+.sw-btn.active-pain{background:var(--red); color:#fff;}
+.sw-btn.active-fix{background:linear-gradient(135deg,var(--gold),#c9942a); color:var(--charcoal-deep);}
+.pairs{display:grid; grid-template-columns:repeat(3,1fr); gap:14px;}
+.pair{border-radius:14px; padding:16px 16px 17px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14); transition:all .45s; display:flex; gap:12px; align-items:flex-start;}
+#painSec.solved .pair{background:#fff; border-color:var(--line);}
+.pair-ic{width:38px; height:38px; border-radius:10px; display:grid; place-items:center; flex-shrink:0; background:rgba(212,58,43,.25); transition:all .45s;}
+#painSec.solved .pair-ic{background:var(--gold-soft);}
+.pair-ic i{width:19px; height:19px; color:#f2a49a;}
+#painSec.solved .pair-ic i{color:#c9942a;}
+.pair-t{font-size:13.8px; line-height:1.55; color:#e9d6d6; transition:color .45s;}
+#painSec.solved .pair-t{color:var(--ink); font-weight:600;}
+.pain-cta{text-align:center; margin-top:20px;}
+#painSec.solved .pain-cta{display:none;}
+
+/* ================= AMAZON ================= */
+.amz{padding:28px 28px 30px; display:grid; grid-template-columns:1.05fr 1fr; gap:28px; align-items:center;}
+.amz-h{font-size:25px; margin:12px 0 8px;}
+.amz-p{color:var(--sub); font-size:14.5px; line-height:1.6; margin-bottom:16px;}
+.steps{display:flex; flex-direction:column; gap:12px;}
+.step{display:flex; gap:14px; align-items:flex-start; background:var(--cream); border:1px solid var(--line); border-radius:14px; padding:14px 16px;}
+.step-ic{width:40px; height:40px; border-radius:11px; background:var(--charcoal); display:grid; place-items:center; flex-shrink:0;}
+.step-ic i{width:19px; height:19px; color:var(--gold);}
+.step-t{font-weight:700; font-size:14.5px;}
+.step-t .n{color:var(--red); margin-right:6px;}
+.step-d{font-size:13px; color:var(--sub); margin-top:3px; line-height:1.5;}
+.pillrow{display:flex; gap:8px; flex-wrap:wrap;}
+
+/* ================= AUTHOR / PUBLISHER ================= */
+.auth-in{padding:36px 32px 34px; position:relative;}
+.sec-head-dark{text-align:center; max-width:620px; margin:0 auto 26px;}
+.sec-head-dark h2{color:#fff; font-size:27px; margin:14px 0 8px;}
+.sec-head-dark p{color:#b9b9c2; font-size:15px; line-height:1.6;}
+.pill-darkred{background:rgba(238,58,65,.18); color:#ff9aa0;}
+.pill-darkgold{background:rgba(234,179,56,.16); color:var(--gold);}
+.authgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px;}
+.feat{background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.10); border-radius:15px; padding:18px 18px 19px; height:100%;}
+.feat-ic{width:42px; height:42px; border-radius:12px; background:rgba(238,58,65,.16); display:grid; place-items:center; margin-bottom:12px;}
+.feat-ic i{width:20px; height:20px; color:var(--red);}
+.feat-t{color:#fff; font-weight:700; font-size:15.5px;}
+.feat-d{color:#b9b9c2; font-size:13px; margin-top:5px; line-height:1.55;}
+.auth-cta{text-align:center; margin-top:26px;}
+.auth-note{color:#8f8f99; font-size:12.5px; margin-top:10px;}
+
+/* ================= RESELL ================= */
+.resell{padding:34px 32px; display:grid; grid-template-columns:1.1fr 1fr; gap:30px; align-items:start; position:relative;}
+.resell-h{font-size:26px; margin:14px 0 8px;}
+.resell-h span{color:var(--red);}
+.resell-p{color:var(--ink-soft); font-size:14.5px; line-height:1.65; margin-bottom:18px;}
+.conds{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px;}
+.cond{border-radius:12px; padding:10px 16px; text-align:center;}
+.cond-t{font-weight:700; font-size:13.5px;}
+.cond-p{font-size:12px; opacity:.85; margin-top:2px;}
+.eco{display:inline-flex; align-items:center; gap:8px; background:var(--cream); border:1px solid var(--line); border-radius:12px; padding:10px 14px; font-size:13px; color:var(--ink-soft);}
+.eco i{width:17px; height:17px; color:var(--green);}
+.how-label{font-weight:700; font-size:14px; color:var(--sub); letter-spacing:.5px; margin-bottom:12px;}
+.step-ic.dark2 i{color:#fff;}
+
+/* ================= REVIEW ================= */
+.rev-head{padding:30px 30px 0; display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+.rev-head h2{font-size:25px;}
+.rev-body{padding:24px 30px 30px; display:flex; gap:30px; align-items:flex-start;}
+.bookwrap{position:relative; width:168px; flex-shrink:0; transition:transform .3s ease;}
+.bookwrap:hover{transform:rotate(-2.5deg) translateY(-4px);}
+.book-shadow{position:absolute; inset:10px -8px -12px 12px; background:rgba(47,47,51,.16); border-radius:12px; filter:blur(12px);}
+.book{position:relative; width:168px; height:236px; border-radius:5px 12px 12px 5px; background:linear-gradient(150deg,#23445e,#16283a); box-shadow:inset 10px 0 14px -8px rgba(0,0,0,.55), inset -2px 0 4px rgba(255,255,255,.08); overflow:hidden;}
+.book-title{position:absolute; left:20px; right:12px; top:96px; color:#f6efdd; font-weight:700; font-size:21px; line-height:1.3;}
+.book-author{color:#c8b98f; font-size:12.5px; margin-top:8px; font-weight:600;}
+.book-brand{position:absolute; left:20px; right:12px; bottom:12px; display:flex; align-items:center; gap:6px;}
+.book-brand .bar{width:18px; height:3px; background:var(--red); border-radius:2px;}
+.book-brand .txt{color:#9fb0be; font-size:9.5px; letter-spacing:1.5px;}
+.sticker{position:absolute; top:-12px; right:-12px; background:var(--green); color:#fff; border-radius:999px; padding:6px 11px; font-weight:700; font-size:11px; display:inline-flex; align-items:center; gap:4px; box-shadow:0 6px 14px rgba(26,138,85,.35); border:2.5px solid #fff;}
+.sticker i{width:13px; height:13px;}
+.rev-main{min-width:0; flex:1;}
+.rev-who{display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
+.rev-av{width:52px; height:52px; border-radius:50%; overflow:hidden; border:2.5px solid #fff; box-shadow:0 4px 12px rgba(47,47,51,.16); flex-shrink:0;}
+.rev-name{font-weight:700; font-size:15.5px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
+.verified{display:inline-flex; align-items:center; gap:3px; color:var(--green); font-size:12px; font-weight:700;}
+.verified i{width:14px; height:14px;}
+.rev-meta{font-size:12.5px; color:var(--sub); margin-top:2px;}
+.rev-meta b{color:var(--red-dark);}
+.rev-stars{margin-left:auto; text-align:right;}
+.rev-date{font-size:11.5px; color:var(--sub); margin-top:3px;}
+.star-row{display:inline-flex; gap:2px;}
+.star-row i{width:16px; height:16px; color:var(--gold); fill:var(--gold);}
+.rev-quotebox{position:relative; margin-top:16px; background:var(--cream); border:1px solid var(--line); border-radius:16px; padding:20px 22px;}
+.rev-qmark{position:absolute; top:-11px; left:18px; background:var(--cream); padding:0 4px; transform:rotate(180deg); color:var(--red);}
+.rev-qmark i{width:22px; height:22px;}
+.rev-hl{font-weight:700; font-size:16px; margin-bottom:8px;}
+.rev-text{font-size:14px; color:var(--ink-soft); line-height:1.7;}
+.rev-tags{display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;}
+.rev-foot{display:flex; align-items:center; gap:14px; margin-top:14px; flex-wrap:wrap;}
+.helpful{border:1.5px solid var(--line); background:#fff; color:var(--ink-soft); font-weight:700; font-size:13px; padding:8px 16px; border-radius:999px; display:inline-flex; align-items:center; gap:6px; transition:all .2s;}
+.helpful.on{border-color:var(--red); background:var(--red-soft); color:var(--red-dark);}
+.helpful i{width:15px; height:15px;}
+.rev-pts{font-size:12.5px; color:var(--sub); display:inline-flex; align-items:center; gap:5px;}
+.rev-pts i{width:14px; height:14px; color:var(--gold);}
+.rev-pts b{color:var(--ink);}
+
+/* ================= REWARDS ================= */
+.rw-in{padding:34px 30px;}
+.flow{display:flex; gap:6px; align-items:flex-start; justify-content:center; flex-wrap:wrap;}
+.flow-step{text-align:center; flex:1; min-width:140px;}
+.flow-ic{width:52px; height:52px; border-radius:15px; background:rgba(238,58,65,.16); display:grid; place-items:center; margin:0 auto 10px;}
+.flow-ic i{width:23px; height:23px; color:var(--red);}
+.flow-t{color:#fff; font-weight:700; font-size:14.5px;}
+.flow-d{color:#9c9ca5; font-size:12.5px; margin-top:4px; line-height:1.5; max-width:180px; margin-left:auto; margin-right:auto;}
+.flow-arrow{color:#5c5c64; align-self:center;}
+.flow-arrow i{width:20px; height:20px;}
+.earn{display:grid; grid-template-columns:1fr 1.1fr; gap:18px; align-items:start; margin-top:30px;}
+.earn-tbl{background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.10); border-radius:16px; padding:20px 22px;}
+.earn-tbl-h{color:#fff; font-weight:700; font-size:15.5px; margin-bottom:14px;}
+.earn-row{display:flex; align-items:center; gap:10px; padding:11px 0; border-bottom:1px solid rgba(255,255,255,.08);}
+.earn-row:last-of-type{border-bottom:none;}
+.earn-row i{width:16px; height:16px; color:var(--gold);}
+.earn-l{color:#d5d5db; font-size:13.5px; font-weight:600;}
+.earn-v{margin-left:auto; color:var(--gold); font-weight:700; font-size:14.5px;}
+.earn-note{margin-top:12px; font-size:12px; color:#8f8f99; line-height:1.5;}
+.calc{background:#fff; border-radius:16px; padding:20px 22px;}
+.calc-h{font-weight:700; font-size:15.5px; margin-bottom:4px;}
+.calc-sub{color:var(--sub); font-size:12.5px; margin-bottom:16px;}
+.calc-row{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;}
+.calc-row .l{color:var(--sub); font-size:13px;}
+.calc-row .v{font-weight:700; font-size:16px; display:inline-flex; align-items:center; gap:5px;}
+.calc-row .v i{width:15px; height:15px; color:var(--gold);}
+input[type=range]{width:100%; accent-color:var(--red); height:6px; border-radius:999px;}
+.calc-out{margin-top:18px; background:linear-gradient(135deg,var(--red),var(--red-dark)); border-radius:14px; padding:18px; text-align:center; box-shadow:0 8px 20px rgba(238,58,65,.28);}
+.calc-out .l{color:#ffd9db; font-size:12.5px;}
+.calc-out .big{color:#fff; font-size:36px; font-weight:700; line-height:1.1; margin-top:3px;}
+.calc-out .s{color:#ffc2c5; font-size:11.5px; margin-top:3px;}
+
+/* ================= RESPECT ================= */
+.respect{background:linear-gradient(135deg,#4a1616,#3a1010); box-shadow:0 10px 30px rgba(58,16,16,.28); padding:36px 30px; text-align:center;}
+.respect .qm{color:var(--gold); transform:rotate(180deg); display:inline-block;}
+.respect .qm i{width:34px; height:34px;}
+.respect h2{color:#fff; font-size:25px; margin:12px auto 10px; max-width:640px; line-height:1.4;}
+.respect p{color:#e7cfcf; font-size:15.5px; max-width:560px; margin:0 auto 22px; line-height:1.65;}
+.respect p b{color:var(--gold);}
+.respect .btns{display:flex; gap:10px; justify-content:center; flex-wrap:wrap;}
+.btn-ghost{background:transparent; color:#fff; border:1.5px solid rgba(255,255,255,.35); font-size:15.5px; font-weight:700;}
+.respect .foot{color:#d9bcbc; font-size:12.5px; margin-top:16px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap; align-items:center;}
+.respect .foot span{display:inline-flex; align-items:center; gap:5px;}
+.respect .foot i{width:13px; height:13px; color:var(--gold);}
+
+/* ================= RIBBON ================= */
+.ribbon{background:linear-gradient(135deg,var(--red),var(--red-dark)); border-radius:18px; padding:18px 26px; box-shadow:0 10px 26px rgba(238,58,65,.28); display:flex; justify-content:space-between; gap:14px; flex-wrap:wrap;}
+.ribbon span{display:inline-flex; align-items:center; gap:8px; color:#fff; font-weight:700; font-size:13.5px;}
+.ribbon i{width:17px; height:17px; color:#fff;}
+
+/* ================= RESPONSIVE ================= */
+@media (max-width:900px){ .authgrid{grid-template-columns:repeat(2,1fr);} .pairs{grid-template-columns:repeat(2,1fr);} }
+@media (max-width:860px){ .hero-inner{grid-template-columns:1fr;} }
+@media (max-width:820px){ .amz,.resell{grid-template-columns:1fr;} }
+@media (max-width:780px){ .earn{grid-template-columns:1fr;} }
+@media (max-width:760px){ .rev-body{flex-direction:column; align-items:center;} }
+@media (max-width:720px){
+  .stats{grid-template-columns:repeat(2,1fr);}
+  .stat:nth-child(3){border-left:none; border-top:1px solid var(--line);}
+  .stat:nth-child(4){border-top:1px solid var(--line);}
+}
+@media (max-width:700px){ .flow-arrow{display:none;} .flow{gap:22px;} }
+@media (max-width:640px){ .ribbon{flex-direction:column; align-items:flex-start;} }
+@media (max-width:560px){ .authgrid,.pairs{grid-template-columns:1fr;} .hero-h1{font-size:26px;} }
+@media (prefers-reduced-motion: reduce){
+  .float{animation:none;} .rv{opacity:1; transform:none; transition:none;}
+  .lift:hover,.btn:hover,.bookwrap:hover{transform:none;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ============ 1. BRAND HERO ============ -->
+<section class="card" id="hero">
+  <div class="hero-inner">
+    <div class="hero-wash1"></div><div class="hero-wash2"></div>
+    <div style="position:relative; min-width:0;">
+      <div class="rv wordmark">
+        <div class="wordmark-row">
+          <svg width="44" height="36" viewBox="0 0 60 50" fill="none">
+            <path d="M6 40 C6 18 10 10 14 8 L14 38 C10 39 8 40 6 40 Z" fill="#2f2f33"/>
+            <path d="M16 7 C22 5 27 9 27 14 L27 40 C24 37 19 36 16 37 Z" fill="#fff" stroke="#2f2f33" stroke-width="2.4"/>
+            <path d="M30 12 C34 6 42 5 47 9 L44 38 C39 35 33 36 30 39 Z" fill="#ee3a41"/>
+          </svg>
+          <span class="wordmark-text"><span class="r">Indo</span><span class="k">Bangla</span></span>
+        </div>
+        <span class="tagline">widen your outlook on life</span>
+      </div>
+      <h1 class="rv hero-h1" style="transition-delay:.12s;">এখন IndoBangla শুধু বইয়ের দোকান নয় —<br><span>পাঠক, লেখক আর প্রকাশকের নিজের বাজার।</span></h1>
+      <p class="rv hero-p" style="transition-delay:.22s;">নিজের লেখা বই বিক্রি করুন, প্রকাশনীর বই সরাসরি পাঠকের হাতে পৌঁছে দিন, কিংবা পড়া-শেষ বইটা নতুন পাঠকের কাছে রিসেল করুন — সব এক জায়গায়।</p>
+      <div class="rv" style="transition-delay:.32s; display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn btn-red"><i data-lucide="store"></i> বিক্রি শুরু করুন <i data-lucide="arrow-right" style="width:16px;height:16px;"></i></button>
+        <button class="btn btn-outline"><i data-lucide="book-open" style="color:var(--red);"></i> বই ঘুরে দেখুন</button>
+      </div>
+    </div>
+
+    <!-- literary archetype avatars -->
+    <div class="avatars rv" style="transition-delay:.25s;">
+      <div class="av-row" style="align-items:flex-end;">
+        <div class="av float" style="width:92px;height:92px;" title="রহস্য বিভাগ">
+          <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="#fde8e6"/><ellipse cx="50" cy="62" rx="20" ry="24" fill="#f2c9a8"/><path d="M26 42 Q50 20 74 42 L74 47 L26 47 Z" fill="#2f2f33"/><rect x="20" y="45" width="60" height="6" rx="3" fill="#2f2f33"/><circle cx="42" cy="60" r="2.6" fill="#2f2f33"/><circle cx="58" cy="60" r="2.6" fill="#2f2f33"/><path d="M43 74 Q50 78 57 74" stroke="#2f2f33" stroke-width="2.4" fill="none" stroke-linecap="round"/><circle cx="76" cy="76" r="10" fill="none" stroke="#ee3a41" stroke-width="4"/><line x1="83" y1="84" x2="92" y2="93" stroke="#ee3a41" stroke-width="5" stroke-linecap="round"/></svg>
+        </div>
+        <div class="av float" style="width:72px;height:72px; animation-delay:.7s;" title="কবিতা ও সাহিত্য">
+          <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="#eef2e6"/><path d="M28 48 Q26 26 50 24 Q74 26 72 48 L72 66 Q70 50 50 50 Q30 50 28 66 Z" fill="#2f2f33"/><ellipse cx="50" cy="60" rx="18" ry="21" fill="#e8b98e"/><circle cx="43" cy="58" r="2.4" fill="#2f2f33"/><circle cx="57" cy="58" r="2.4" fill="#2f2f33"/><path d="M45 71 Q50 74 55 71" stroke="#2f2f33" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M74 88 Q78 70 90 62 Q86 78 78 90 Z" fill="#ee3a41"/><line x1="74" y1="88" x2="70" y2="94" stroke="#2f2f33" stroke-width="3" stroke-linecap="round"/></svg>
+        </div>
+      </div>
+      <div class="av-row" style="margin-left:26px;">
+        <div class="av float" style="width:76px;height:76px; animation-delay:1.3s;" title="বিজ্ঞান ও প্রযুক্তি">
+          <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="#e7f0f6"/><path d="M30 40 Q28 22 50 22 Q72 22 70 40 L66 34 L60 40 L54 32 L48 40 L42 32 L36 40 Z" fill="#9aa0a8"/><ellipse cx="50" cy="60" rx="19" ry="22" fill="#f2c9a8"/><circle cx="42" cy="58" r="7" fill="none" stroke="#2f2f33" stroke-width="2.6"/><circle cx="58" cy="58" r="7" fill="none" stroke="#2f2f33" stroke-width="2.6"/><line x1="49" y1="58" x2="51" y2="58" stroke="#2f2f33" stroke-width="2.6"/><path d="M45 73 Q50 76 55 73" stroke="#2f2f33" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M78 68 L78 78 L72 90 Q71 93 74 93 L88 93 Q91 93 90 90 L84 78 L84 68 Z" fill="none" stroke="#ee3a41" stroke-width="3.4" stroke-linejoin="round"/><path d="M75 86 L87 86 L89 91 Q90 93 87 93 L75 93 Q72 93 73 91 Z" fill="#ee3a41"/></svg>
+        </div>
+        <div class="av float" style="width:96px;height:96px; animation-delay:.4s;" title="ভ্রমণ ও অ্যাডভেঞ্চার">
+          <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="#fdf3e0"/><ellipse cx="50" cy="63" rx="19" ry="22" fill="#e0a878"/><ellipse cx="50" cy="42" rx="27" ry="8" fill="#b0803f"/><path d="M32 42 Q34 26 50 26 Q66 26 68 42 Z" fill="#c99a55"/><rect x="32" y="38" width="36" height="5" rx="2.5" fill="#ee3a41"/><circle cx="43" cy="60" r="2.6" fill="#2f2f33"/><circle cx="57" cy="60" r="2.6" fill="#2f2f33"/><path d="M42 72 Q50 79 58 72" stroke="#2f2f33" stroke-width="2.6" fill="none" stroke-linecap="round"/><line x1="34" y1="80" x2="66" y2="92" stroke="#2f2f33" stroke-width="3.2" stroke-linecap="round"/></svg>
+        </div>
+        <div class="av float" style="width:68px;height:68px; animation-delay:1.8s;" title="শিশু-কিশোর বিভাগ">
+          <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="#fdeaf0"/><path d="M30 44 Q30 26 50 26 Q70 26 70 44 L70 56 Q68 44 50 44 Q32 44 30 56 Z" fill="#2f2f33"/><circle cx="29" cy="56" r="6" fill="#2f2f33"/><circle cx="71" cy="56" r="6" fill="#2f2f33"/><circle cx="29" cy="66" r="5" fill="#2f2f33"/><circle cx="71" cy="66" r="5" fill="#2f2f33"/><ellipse cx="50" cy="58" rx="17" ry="20" fill="#f2c9a8"/><circle cx="44" cy="56" r="2.8" fill="#2f2f33"/><circle cx="56" cy="56" r="2.8" fill="#2f2f33"/><path d="M45 68 Q50 72 55 68" stroke="#2f2f33" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M30 88 Q40 80 50 86 Q60 80 70 88 L70 94 Q60 87 50 92 Q40 87 30 94 Z" fill="#ee3a41"/></svg>
+        </div>
+      </div>
+      <div class="av-cap">গল্পের চরিত্রেরা যেমন অপেক্ষায় — আপনার বইও নতুন পাঠকের অপেক্ষায়</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 2. TRUST HERO (৭ বছর) ============ -->
+<section class="card rv">
+  <div class="trust-top">
+    <span class="pill red"><i data-lucide="shield-check"></i> অরিজিনাল বইয়ের ঠিকানা</span>
+    <h2 class="trust-h">যিনি বই ভালোবাসেন,<br>তিনি নকল কপিতে মন ভরাতে পারেন না।</h2>
+    <p class="trust-p">৭ বছর ধরে IndoBangla ঠিক এই একটা কাজই করে আসছে — ইন্ডিয়ান ও বাংলা বইয়ের <b>অরিজিনাল, ফ্রেশ কপি</b> যুক্তিসঙ্গত দামে বাংলাদেশের পাঠকের হাতে পৌঁছে দেওয়া।</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><i data-lucide="landmark"></i><div class="stat-big">৭ বছর</div><div class="stat-small">বইপ্রেমীদের পাশে</div></div>
+    <div class="stat"><i data-lucide="badge-check"></i><div class="stat-big">১০০%</div><div class="stat-small">অরিজিনাল প্রিন্ট</div></div>
+    <div class="stat"><i data-lucide="plane"></i><div class="stat-big">সরাসরি</div><div class="stat-small">ইন্ডিয়া থেকে আমদানি</div></div>
+    <div class="stat"><i data-lucide="rotate-ccw"></i><div class="stat-big">সহজ</div><div class="stat-small">রিটার্ন সুবিধা</div></div>
+  </div>
+</section>
+
+<!-- ============ 3. PAIN ⇄ SOLUTION SWITCH ============ -->
+<section id="painSec" class="rv">
+  <div class="pain-head">
+    <h2 class="pain-h" id="painTitle">বইপ্রেমী হিসেবে যে কষ্টগুলো আপনি চেনেন</h2>
+    <p class="pain-sub" id="painSub">বাংলাদেশে অরিজিনাল বই ভালোবাসা মানেই এই যন্ত্রণাগুলোর সাথে বসবাস। সুইচটা ঘুরিয়ে দেখুন।</p>
+    <div class="switch">
+      <button class="sw-btn active-pain" id="swPain" onclick="setSolved(false)"><i data-lucide="frown"></i> সাধারণ বাজারে</button>
+      <button class="sw-btn" id="swFix" onclick="setSolved(true)"><i data-lucide="smile-plus"></i> IndoBangla-তে</button>
+    </div>
+  </div>
+  <div class="pairs" id="pairGrid"></div>
+  <div class="pain-cta">
+    <button class="btn btn-gold" onclick="setSolved(true)">IndoBangla-তে সমাধানগুলো দেখুন <i data-lucide="arrow-right" style="width:17px;height:17px;"></i></button>
+  </div>
+</section>
+
+<!-- ============ 4. AMAZON INDIA BRIDGE ============ -->
+<section class="card rv">
+  <div class="amz">
+    <div style="min-width:0;">
+      <span class="pill" style="background:#fff3e2; color:#9a5b12;"><i data-lucide="plane"></i> Amazon India থেকে</span>
+      <h2 class="amz-h">আমাজন ইন্ডিয়ার অরিজিনাল বই,<br>ঢাকার দরজায় — কম সময়ে।</h2>
+      <p class="amz-p">যে বইটা বাংলাদেশে কোথাও নেই, সেটাও এখন আর অধরা নয়। আমাজন ইন্ডিয়া থেকে অরিজিনাল প্রিন্ট বই আমরা নিয়ে আসি যুক্তিসঙ্গত দামে — অপেক্ষাও অনেক কম।</p>
+      <div class="pillrow">
+        <span class="pill gold"><i data-lucide="badge-check"></i> অরিজিনাল প্রিন্ট</span>
+        <span class="pill green"><i data-lucide="sparkles"></i> যুক্তিসঙ্গত দাম</span>
+        <span class="pill red"><i data-lucide="clock"></i> কম সময়ে ডেলিভারি</span>
+      </div>
+    </div>
+    <div class="steps">
+      <div class="step lift"><div class="step-ic"><i data-lucide="book-open"></i></div><div><div class="step-t"><span class="n">১.</span>আপনি বইটা বাছুন</div><div class="step-d">আমাজন ইন্ডিয়ার যেকোনো অরিজিনাল প্রিন্ট বই — লিংক পাঠালেই হলো।</div></div></div>
+      <div class="step lift"><div class="step-ic"><i data-lucide="plane"></i></div><div><div class="step-t"><span class="n">২.</span>আমরা নিয়ে আসি</div><div class="step-d">নিজস্ব আমদানি চ্যানেলে বই আসে সরাসরি — কোনো নকল কপির ঝুঁকি নেই।</div></div></div>
+      <div class="step lift"><div class="step-ic"><i data-lucide="clock"></i></div><div><div class="step-t"><span class="n">৩.</span>কম সময়ে হাতে</div><div class="step-d">সাধারণ আমদানির চেয়ে দ্রুত, যুক্তিসঙ্গত দামে — সারা বাংলাদেশে ডেলিভারি।</div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 5. AUTHOR / PUBLISHER ============ -->
+<section class="dark rv">
+  <div class="auth-in">
+    <div class="sec-head-dark">
+      <span class="pill pill-darkred"><i data-lucide="pen-tool"></i> লেখক ও প্রকাশকদের জন্য</span>
+      <h2>আপনার বই, আপনার শর্তে —<br>পাঠক খুঁজে দেওয়া আমাদের কাজ।</h2>
+      <p>নতুন লেখক হন বা প্রতিষ্ঠিত প্রকাশনী — IndoBangla মার্কেটপ্লেসে নিজের বই তুলুন, বিক্রি হোক সারা বাংলাদেশে।</p>
+    </div>
+    <div class="authgrid" id="authGrid"></div>
+    <div class="auth-cta">
+      <button class="btn btn-red"><i data-lucide="pen-tool"></i> লেখক/প্রকাশক হিসেবে যুক্ত হোন <i data-lucide="chevron-right" style="width:17px;height:17px;"></i></button>
+      <div class="auth-note">রেজিস্ট্রেশন ফ্রি · বিক্রি হলে তবেই কমিশন · যেকোনো সময় বই তুলে নিতে পারবেন</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 6. BOOK RESELL ============ -->
+<section class="card rv">
+  <div class="resell">
+    <div style="min-width:0;">
+      <span class="pill green"><i data-lucide="refresh-ccw"></i> বুক রিসেল</span>
+      <h2 class="resell-h">পড়া শেষ? বইটা তাকে ধুলো না জমিয়ে<br><span>নতুন পাঠকের হাতে তুলে দিন।</span></h2>
+      <p class="resell-p">আপনার শেলফের পুরনো অরিজিনাল বই এখন IndoBangla-তে রিসেল করা যায়। আপনি পান ন্যায্য দাম, আরেকজন পাঠক পান সাধ্যের মধ্যে অরিজিনাল বই — আর একটা বই বাঁচে আরও অনেকগুলো পড়ার জীবন।</p>
+      <div class="conds">
+        <div class="cond lift" style="background:var(--green-soft);"><div class="cond-t" style="color:var(--green);">নতুনের মতো</div><div class="cond-p" style="color:var(--green);">~৭০% দামে</div></div>
+        <div class="cond lift" style="background:#fdf3e0;"><div class="cond-t" style="color:#9a6b12;">ভালো</div><div class="cond-p" style="color:#9a6b12;">~৫০% দামে</div></div>
+        <div class="cond lift" style="background:var(--red-soft);"><div class="cond-t" style="color:var(--red-dark);">পাঠযোগ্য</div><div class="cond-p" style="color:var(--red-dark);">~৩৫% দামে</div></div>
+      </div>
+      <div class="eco"><i data-lucide="leaf"></i><span>একটি বই গড়ে <b style="color:var(--ink);">৩ জন পাঠকের</b> কাছে পৌঁছায় — বই বাঁচে, পড়া বাড়ে।</span></div>
+    </div>
+    <div>
+      <div class="how-label">যেভাবে কাজ করে</div>
+      <div class="steps">
+        <div class="step lift"><div class="step-ic dark2"><i data-lucide="tag"></i></div><div><div class="step-t"><span class="n">১.</span>বইয়ের ছবি ও কন্ডিশন দিন</div><div class="step-d">৩টা ছবি তুলুন, কন্ডিশন বাছুন — আমরা ন্যায্য দাম সাজেস্ট করব।</div></div></div>
+        <div class="step lift"><div class="step-ic dark2"><i data-lucide="package-check"></i></div><div><div class="step-t"><span class="n">২.</span>আমরা যাচাই করি</div><div class="step-d">বই আমাদের কাছে পৌঁছালে কন্ডিশন মিলিয়ে দেখা হয় — পাঠকের ভরসার জন্য।</div></div></div>
+        <div class="step lift"><div class="step-ic dark2"><i data-lucide="wallet"></i></div><div><div class="step-t"><span class="n">৩.</span>বিক্রি হলেই টাকা</div><div class="step-d">বিকাশ/নগদে সরাসরি পেমেন্ট, অথবা স্টোর ক্রেডিটে নিলে extra ১০% বেশি।</div></div></div>
+      </div>
+      <button class="btn btn-dark" style="width:100%; margin-top:16px;"><i data-lucide="refresh-ccw" style="color:var(--red);"></i> পুরনো বই বিক্রি করুন</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 7. FEATURED REVIEW ============ -->
+<section class="card rv">
+  <div class="rev-head">
+    <h2>পাঠকের কথা</h2>
+    <span class="pill red"><i data-lucide="sparkles"></i> এ সপ্তাহের সেরা রিভিউ</span>
+  </div>
+  <div class="rev-body">
+    <div class="bookwrap">
+      <div class="book-shadow"></div>
+      <div class="book">
+        <div style="position:absolute; left:9px; top:0; bottom:0; width:3px; background:rgba(255,255,255,.18);"></div>
+        <svg width="100%" height="100%" viewBox="0 0 168 236" style="position:absolute; inset:0;">
+          <circle cx="120" cy="52" r="22" fill="#f3e2b0" opacity=".9"/>
+          <circle cx="112" cy="46" r="22" fill="#16283a" opacity=".55"/>
+          <circle cx="40" cy="30" r="1.6" fill="#fff" opacity=".8"/>
+          <circle cx="64" cy="44" r="1.2" fill="#fff" opacity=".6"/>
+          <circle cx="88" cy="24" r="1.4" fill="#fff" opacity=".7"/>
+          <circle cx="30" cy="66" r="1.2" fill="#fff" opacity=".5"/>
+          <path d="M0 170 Q42 150 84 168 Q126 186 168 164 L168 236 L0 236 Z" fill="#0d1b28"/>
+          <path d="M0 178 Q50 162 90 176 Q130 188 168 172" stroke="#f3e2b0" stroke-width="1.4" fill="none" opacity=".5"/>
+          <path d="M24 190 Q30 182 38 190 Q30 196 24 190 Z" fill="#f3e2b0" opacity=".85"/>
+        </svg>
+        <div class="book-title">জ্যোৎস্না ও<br>জননীর গল্প<div class="book-author">হুমায়ূন আহমেদ</div></div>
+        <div class="book-brand"><span class="bar"></span><span class="txt">ORIGINAL PRINT</span></div>
+      </div>
+      <div class="sticker"><i data-lucide="badge-check"></i> অরিজিনাল</div>
+    </div>
+
+    <div class="rev-main">
+      <div class="rev-who">
+        <div class="rev-av">
+          <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="#fdeaf0"/><path d="M30 46 Q30 26 50 26 Q70 26 70 46 L70 60 Q68 46 50 46 Q32 46 30 60 Z" fill="#2f2f33"/><ellipse cx="50" cy="60" rx="18" ry="21" fill="#e8b98e"/><circle cx="43" cy="58" r="2.6" fill="#2f2f33"/><circle cx="57" cy="58" r="2.6" fill="#2f2f33"/><path d="M44 71 Q50 75 56 71" stroke="#2f2f33" stroke-width="2.4" fill="none" stroke-linecap="round"/><circle cx="33" cy="64" r="2.6" fill="#f0a8b0" opacity=".7"/><circle cx="67" cy="64" r="2.6" fill="#f0a8b0" opacity=".7"/></svg>
+        </div>
+        <div>
+          <div class="rev-name">নুসরাত জাহান <span class="verified"><i data-lucide="badge-check"></i> ভেরিফায়েড ক্রেতা</span></div>
+          <div class="rev-meta">মিরপুর, ঢাকা · ১২তম অর্ডার · <b>বুক ক্লাব মেম্বার</b></div>
+        </div>
+        <div class="rev-stars">
+          <span class="star-row"><i data-lucide="star"></i><i data-lucide="star"></i><i data-lucide="star"></i><i data-lucide="star"></i><i data-lucide="star"></i></span>
+          <div class="rev-date">৩ দিন আগে</div>
+        </div>
+      </div>
+
+      <div class="rev-quotebox">
+        <span class="rev-qmark"><i data-lucide="quote"></i></span>
+        <div class="rev-hl">"বইটা হাতে নিয়েই বুঝেছি — এটা সেই বই, যেটার অপেক্ষায় ছিলাম।"</div>
+        <p class="rev-text">এর আগে দুইবার অন্য জায়গা থেকে কিনে ঠকেছি — ঝাপসা ছাপা, পাতায় পাতায় ভুল বানান। IndoBangla থেকে এই প্রথম অর্ডার, আর প্যাকেট খুলেই মন ভালো হয়ে গেল। ঝকঝকে অরিজিনাল প্রিন্ট, নতুন বইয়ের সেই গন্ধ, একটা পাতাও ভাঁজ পড়েনি। সাথে হাতে-লেখা ছোট্ট একটা চিরকুট ছিল — "শুভ পাঠ, নুসরাত!" এইটুকু যত্নই তো একজন পাঠক চায়। ডেলিভারিও বলা সময়ের আগেই। এখন থেকে বই মানেই IndoBangla।</p>
+        <div class="rev-tags">
+          <span class="pill green"><i data-lucide="circle-check"></i> অরিজিনাল প্রিন্ট পেয়েছি</span>
+          <span class="pill gold"><i data-lucide="camera"></i> ছবিসহ রিভিউ</span>
+          <span class="pill blue"><i data-lucide="shopping-bag"></i> সময়মতো ডেলিভারি</span>
+        </div>
+      </div>
+
+      <div class="rev-foot">
+        <button class="helpful" id="helpfulBtn" onclick="toggleHelpful()"><i data-lucide="thumbs-up"></i> সহায়ক (<span id="helpfulN">১২৭</span>)</button>
+        <span class="rev-pts"><i data-lucide="coins"></i> এই রিভিউয়ের জন্য নুসরাত পেয়েছেন <b>৭০ পয়েন্ট</b></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 8. REVIEW REWARDS ============ -->
+<section class="dark rv">
+  <div class="rw-in">
+    <div class="sec-head-dark">
+      <span class="pill pill-darkgold"><i data-lucide="gift"></i> রিভিউ রিওয়ার্ড</span>
+      <h2>আপনার মতামতের দাম আছে —<br>আক্ষরিক অর্থেই।</h2>
+      <p>রিভিউ লিখলে শুধু অন্য পাঠকের উপকার হয় না — আপনার অ্যাকাউন্টে পয়েন্ট জমে, যা পরের বই কেনায় ডিসকাউন্ট হয়ে ফিরে আসে।</p>
+    </div>
+
+    <div class="flow">
+      <div class="flow-step"><div class="flow-ic"><i data-lucide="shopping-bag"></i></div><div class="flow-t">বই কিনুন</div><div class="flow-d">যেকোনো অরিজিনাল বই অর্ডার করুন — অনলাইনে বা মেসেঞ্জারে।</div></div>
+      <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
+      <div class="flow-step"><div class="flow-ic"><i data-lucide="message-square-text"></i></div><div class="flow-t">রিভিউ লিখুন</div><div class="flow-d">পড়া শেষে মন খুলে লিখুন — কেমন লাগল, কার জন্য বইটা।</div></div>
+      <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
+      <div class="flow-step"><div class="flow-ic"><i data-lucide="coins"></i></div><div class="flow-t">পয়েন্ট জমুক</div><div class="flow-d">প্রতিটি রিভিউয়ে পয়েন্ট; ছবি দিলে আরও বেশি।</div></div>
+      <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
+      <div class="flow-step"><div class="flow-ic"><i data-lucide="ticket-percent"></i></div><div class="flow-t">পরের বইয়ে ছাড়</div><div class="flow-d">জমানো পয়েন্ট ভাঙিয়ে পরের অর্ডারে সরাসরি ডিসকাউন্ট।</div></div>
+    </div>
+
+    <div class="earn">
+      <div class="earn-tbl">
+        <div class="earn-tbl-h">যেভাবে পয়েন্ট জমে</div>
+        <div class="earn-row"><i data-lucide="message-square-text"></i><span class="earn-l">লিখিত রিভিউ</span><span class="earn-v">+৫০ পয়েন্ট</span></div>
+        <div class="earn-row"><i data-lucide="camera"></i><span class="earn-l">ছবিসহ রিভিউ</span><span class="earn-v">+৭০ পয়েন্ট</span></div>
+        <div class="earn-row"><i data-lucide="sparkles"></i><span class="earn-l">প্রথম রিভিউ বোনাস</span><span class="earn-v">+৩০ পয়েন্ট</span></div>
+        <div class="earn-note">* শুধু ভেরিফায়েড ক্রেতার রিভিউয়ে পয়েন্ট জমে — তাই প্রতিটি রিভিউই আসল অভিজ্ঞতা।</div>
+      </div>
+      <div class="calc">
+        <div class="calc-h">পয়েন্ট ভাঙালে কত ছাড়?</div>
+        <div class="calc-sub">স্লাইডার টেনে দেখুন — ১০ পয়েন্ট = ৳১ ছাড়</div>
+        <div class="calc-row"><span class="l">জমানো পয়েন্ট</span><span class="v"><i data-lucide="coins"></i> <span id="ptsVal">১৫০</span></span></div>
+        <input type="range" min="50" max="1000" step="10" value="150" id="ptsRange" oninput="updateCalc()">
+        <div class="calc-out">
+          <div class="l">পরের বই কেনায় ছাড়</div>
+          <div class="big" id="discVal">৳১৫</div>
+          <div class="s" id="revNeed">≈ ৩টা ছবিসহ রিভিউ লিখলেই</div>
+        </div>
+        <button class="btn btn-dark" style="width:100%; margin-top:14px;"><i data-lucide="message-square-text" style="color:var(--red);"></i> আপনার রিভিউ লিখুন <i data-lucide="chevron-right" style="width:16px;height:16px;"></i></button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 9. READER RESPECT ============ -->
+<section class="respect rv">
+  <span class="qm"><i data-lucide="quote"></i></span>
+  <h2>পাড়ার সেই প্রিয় বইয়ের দোকানটার কথা মনে আছে —<br>যেখানে দোকানি আপনার নাম জানতেন, রুচি চিনতেন?</h2>
+  <p>IndoBangla সেই দোকানটাই — শুধু অনলাইনে। এখানে আপনি অর্ডার নম্বর নন; আপনি একজন <b>পাঠক</b>, আর পাঠকের কদর আমরা জানি। কোন বই খুঁজছেন বলুন, না থাকলে এনে দেব; দ্বিধায় থাকলে মন খুলে জিজ্ঞেস করুন।</p>
+  <div class="btns">
+    <button class="btn btn-gold"><i data-lucide="book-open"></i> বই খুঁজে দেখুন</button>
+    <button class="btn btn-ghost"><i data-lucide="heart-handshake"></i> আপনার বইটা খুঁজে দিতে বলুন</button>
+  </div>
+  <div class="foot">
+    <span><i data-lucide="star"></i> ৭ বছরের বিশ্বাস</span>
+    <span><i data-lucide="shield-check"></i> ১০০% অরিজিনাল</span>
+    <span><i data-lucide="rotate-ccw"></i> সহজ রিটার্ন</span>
+  </div>
+</section>
+
+<!-- ============ 10. TRUST RIBBON ============ -->
+<div class="ribbon rv">
+  <span><i data-lucide="shield-check"></i> ১০০% অরিজিনাল যাচাই</span>
+  <span><i data-lucide="star"></i> ৭ বছরের বিশ্বাস</span>
+  <span><i data-lucide="truck"></i> সারা বাংলাদেশে ডেলিভারি</span>
+  <span><i data-lucide="sparkles"></i> প্রতিটি পাঠকের কদর</span>
+</div>
+
+</div><!-- /wrap -->
+
+<script>
+/* ---------- Safe icon renderer (waits for lucide CDN) ---------- */
+function drawIcons(){
+  if (typeof lucide !== "undefined" && lucide.createIcons){
+    lucide.createIcons();
+  } else {
+    // CDN not ready yet — retry shortly
+    setTimeout(drawIcons, 120);
+  }
+}
+
+/* ---------- Bengali numerals ---------- */
+const BN = {"0":"০","1":"১","2":"২","3":"৩","4":"৪","5":"৫","6":"৬","7":"৭","8":"৮","9":"৯"};
+const bn = (n) => String(n).replace(/[0-9]/g, d => BN[d]);
+
+/* ---------- Pain / Solution data ---------- */
+const PAIRS = [
+  { pain:"ঝাপসা ছাপা, উঠে যাওয়া পাতা — পাইরেটেড কপিতে প্রিয় বইটাই যেন অপমানিত।",
+    fix:"প্রকাশকের ১০০% অরিজিনাল প্রিন্ট — ঝকঝকে ছাপা, মজবুত বাঁধাই, বইয়ের প্রাপ্য মর্যাদা।" },
+  { pain:"অরিজিনাল খুঁজতে গেলে দাম আকাশছোঁয়া — মন চাইলেও পকেট সায় দেয় না।",
+    fix:"সরাসরি ইন্ডিয়া থেকে আমদানি, মাঝের বাড়তি হাত নেই — তাই দাম থাকে সাধ্যের মধ্যে।" },
+  { pain:"নতুন বই রিলিজ হলো, অথচ দেশে পেতে মাসের পর মাস অপেক্ষা।",
+    fix:"রিলিজের পরপরই বই চলে আসে — আলোচনা জমে ওঠার আগেই বইটা আপনার হাতে।" },
+  { pain:"দোকানের তাকে ধুলো-পড়া, ভাঁজ-খাওয়া, রোদে-জ্বলা কপি।",
+    fix:"প্রতিটি বই ফ্রেশ, নতুন কপি — যত্নে প্যাক হয়ে আপনার দরজায় পৌঁছায়।" },
+  { pain:"ভুল বই বা ত্রুটিপূর্ণ কপি এলে ফেরত দেওয়ার কোনো পথ নেই।",
+    fix:"সহজ রিটার্ন সুবিধা — সমস্যা হলে বদলে দিই, প্রশ্ন কম, সমাধান আগে।" },
+  { pain:"দোকানে পাঠক শুধু 'একজন কাস্টমার' — কী পড়ছেন, কেউ জানতেও চায় না।",
+    fix:"এখানে প্রতিটি পাঠকের আলাদা কদর — আপনার রুচি বুঝে পরামর্শ, নামে চেনা সম্পর্ক।" },
+];
+
+let solved = false;
+function renderPairs(){
+  const g = document.getElementById("pairGrid");
+  g.innerHTML = PAIRS.map(p => `
+    <div class="pair">
+      <div class="pair-ic"><i data-lucide="${solved ? "check" : "x"}"></i></div>
+      <div class="pair-t">${solved ? p.fix : p.pain}</div>
+    </div>`).join("");
+  drawIcons();
+}
+function setSolved(v){
+  solved = v;
+  document.getElementById("painSec").classList.toggle("solved", v);
+  document.getElementById("painTitle").textContent = v ? "IndoBangla-তে যা পান" : "বইপ্রেমী হিসেবে যে কষ্টগুলো আপনি চেনেন";
+  document.getElementById("painSub").textContent = v
+    ? "৭ বছর ধরে এই ৬টা কষ্টের জবাবই আমরা প্রতিদিন দিয়ে আসছি।"
+    : "বাংলাদেশে অরিজিনাল বই ভালোবাসা মানেই এই যন্ত্রণাগুলোর সাথে বসবাস। সুইচটা ঘুরিয়ে দেখুন।";
+  document.getElementById("swPain").className = "sw-btn" + (v ? "" : " active-pain");
+  document.getElementById("swFix").className = "sw-btn" + (v ? " active-fix" : "");
+  renderPairs();
+}
+
+/* ---------- Author features ---------- */
+const AUTH = [
+  { ic:"store", t:"নিজের স্টোরফ্রন্ট", d:"লেখক/প্রকাশনী প্রোফাইলে আপনার সব বই এক পাতায় — নিজের ব্র্যান্ড, নিজের পরিচয়।" },
+  { ic:"hand-coins", t:"দাম আপনার হাতে", d:"বইয়ের দাম আপনি ঠিক করবেন; প্রতিটি বিক্রির হিসাব স্বচ্ছভাবে ড্যাশবোর্ডে।" },
+  { ic:"truck", t:"ডেলিভারি আমাদের দায়িত্ব", d:"প্যাকিং, কুরিয়ার, ক্যাশ অন ডেলিভারি — লজিস্টিকের ঝামেলা পুরোটা IndoBangla সামলাবে।" },
+  { ic:"users", t:"তৈরি পাঠক-সমাজ", d:"৭ বছরে গড়ে ওঠা বইপ্রেমী কমিউনিটির সামনে আপনার বই — শূন্য থেকে শুরু করতে হবে না।" },
+  { ic:"bar-chart-3", t:"বিক্রির রিপোর্ট", d:"কোন বই কেমন চলছে, কোন জেলা থেকে অর্ডার আসছে — সহজ ভাষায় সাপ্তাহিক রিপোর্ট।" },
+  { ic:"badge-check", t:"অরিজিনালের প্রতিশ্রুতি", d:"যাচাই করা লেখক-প্রকাশকের বই — পাঠক জানেন, এখান থেকে কেনা মানেই আসল।" },
+];
+document.getElementById("authGrid").innerHTML = AUTH.map(f => `
+  <div class="feat lift">
+    <div class="feat-ic"><i data-lucide="${f.ic}"></i></div>
+    <div class="feat-t">${f.t}</div>
+    <div class="feat-d">${f.d}</div>
+  </div>`).join("");
+
+/* ---------- Helpful button ---------- */
+let helpful = false;
+function toggleHelpful(){
+  helpful = !helpful;
+  document.getElementById("helpfulBtn").classList.toggle("on", helpful);
+  document.getElementById("helpfulN").textContent = bn(helpful ? 128 : 127);
+}
+
+/* ---------- Points calculator ---------- */
+function updateCalc(){
+  const pts = Number(document.getElementById("ptsRange").value);
+  document.getElementById("ptsVal").textContent = bn(pts);
+  document.getElementById("discVal").textContent = "৳" + bn(Math.floor(pts / 10));
+  document.getElementById("revNeed").textContent = "≈ " + bn(Math.ceil(pts / 70)) + "টা ছবিসহ রিভিউ লিখলেই";
+}
+
+/* ---------- Scroll reveal ---------- */
+const io = new IntersectionObserver((es) => {
+  es.forEach(e => { if (e.isIntersecting){ e.target.classList.add("on"); io.unobserve(e.target); } });
+}, { threshold: 0.12 });
+document.querySelectorAll(".rv").forEach(el => io.observe(el));
+
+/* ---------- init ---------- */
+renderPairs();
+updateCalc();
+drawIcons();
+window.addEventListener("load", drawIcons);
+
+/* ---------- enter-shop: remember the visitor has seen the intro ---------- */
+function ibEnterShop(){ try{ localStorage.setItem('ib_welcomed','1'); }catch(e){} location.href='/'; }
+</script>
+
+<div style="height:78px"></div>
+<div style="position:fixed; bottom:0; left:0; right:0; z-index:9999; background:rgba(255,255,255,.94); backdrop-filter:blur(8px); border-top:1px solid #eee; padding:12px 16px; display:flex; align-items:center; justify-content:center; gap:14px; flex-wrap:wrap; box-shadow:0 -6px 22px rgba(0,0,0,.08);">
+  <span style="font-family:'Hind Siliguri',sans-serif; font-size:14px; color:#55555c;">অরিজিনাল বইয়ের ঠিকানা — IndoBangla</span>
+  <a href="/" onclick="ibEnterShop(); return false;" style="background:linear-gradient(135deg,#ee3a41,#c8272e); color:#fff; font-weight:700; font-size:15px; padding:12px 30px; border-radius:12px; text-decoration:none; font-family:'Hind Siliguri',sans-serif; box-shadow:0 8px 20px rgba(238,58,65,.3);">দোকানে প্রবেশ করুন →</a>
+</div>
+</body>
+</html>

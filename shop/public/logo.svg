@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 200" font-family="Arial, Helvetica, sans-serif">
+  <g transform="translate(14,46)">
+    <path d="M56 20 C38 9 15 9 2 15 L2 104 C15 98 38 98 56 109 Z" fill="#ffffff" stroke="#2f2f31" stroke-width="5"/>
+    <path d="M56 20 C74 9 97 9 110 15 L110 104 C97 98 74 98 56 109 Z" fill="#ffffff" stroke="#2f2f31" stroke-width="5"/>
+    <rect x="51" y="17" width="10" height="94" fill="#E9364B"/>
+    <path d="M16 40 H42 M16 56 H42 M16 72 H42" stroke="#E9364B" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <text x="150" y="128" font-size="118" font-weight="800" letter-spacing="-4"><tspan fill="#E9364B">Indo</tspan><tspan fill="#333333">Bangla</tspan></text>
+  <text x="156" y="178" font-size="30" font-weight="700" letter-spacing="8.5" fill="#E9364B">widen your outlook on life</text>
+</svg>

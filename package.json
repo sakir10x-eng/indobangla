@@ -1,0 +1,38 @@
+{
+  "name": "indobangla",
+  "version": "12.0.0",
+  "private": true,
+  "author": "REDQ",
+  "workspaces": [
+    "admin/*",
+    "shop"
+  ],
+  "scripts": {
+    "clean": "yarn workspaces run rimraf \"{.next,node_modules,__generated__,.cache,src/graphql/*.d.ts,src/framework/graphql/**/*.d.ts}\" && rimraf node_modules",
+    "gql-clean": "yarn workspaces run rimraf \"{__generated__,src/graphql/*.d.ts,src/framework/graphql/**/*.d.ts}\"",
+    "dev:shop-rest": "yarn workspace @indobangla/shop dev:rest",
+    "build:shop-rest": "yarn workspace @indobangla/shop build:rest",
+    "start:shop-rest": "yarn workspace @indobangla/shop start",
+    "dev:admin-rest": "yarn workspace @indobangla/admin-rest dev",
+    "build:admin-rest": "yarn workspace @indobangla/admin-rest build",
+    "start:admin-rest": "yarn workspace @indobangla/admin-rest start",
+    "dev:shop-gql": "yarn workspace @indobangla/shop dev:gql",
+    "build:shop-gql": "yarn workspace @indobangla/shop build:gql",
+    "start:shop-gql": "yarn workspace @indobangla/shop start",
+    "dev:admin-gql": "yarn workspace @indobangla/admin-graphql dev",
+    "build:admin-gql": "yarn workspace @indobangla/admin-graphql build",
+    "start:admin-gql": "yarn workspace @indobangla/admin-graphql start",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "husky": "^7.0.1",
+    "lint-staged": "^11.1.2",
+    "prettier": "^2.3.2",
+    "rimraf": "^3.0.2"
+  },
+  "lint-staged": {
+    "*.{js,ts,tsx,md,css}": [
+      "prettier --write"
+    ]
+  }
+}

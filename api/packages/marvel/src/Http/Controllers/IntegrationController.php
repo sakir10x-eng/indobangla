@@ -1,0 +1,5695 @@
+<?php
+
+namespace Marvel\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Carbon;
+use Marvel\Database\Models\Coupon;
+use Marvel\Enums\CouponType;
+use Marvel\Enums\Permission;
+use Marvel\Support\FeatureRegistry;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
+use Marvel\Database\Models\Order;
+use Marvel\Database\Models\Product;
+use Marvel\Database\Models\Settings;
+use Marvel\Database\Models\Shop;
+use Marvel\Database\Models\User;
+use Marvel\Database\Models\Address;
+use Marvel\Database\Models\Author;
+use Illuminate\Support\Facades\Hash;
+use Marvel\Database\Models\Wallet;
+use Marvel\Database\Models\ChallengeRun;
+use Marvel\Exceptions\MarvelException;
+use Marvel\Traits\WalletsTrait;
+
+/**
+ * IndoBangla third-party integrations:
+ *  - product search + order create API (for ReplyGenie / external AI bots)
+ *  - Bangladesh courier settings + connectivity test (RedX, Steadfast,
+ *    Paperfly, Sundarban, Pathao) — tokens entered by the admin in Settings
+ *  - bKash / Nagad payment credential storage
+ */
+class IntegrationController extends CoreController
+{
+    use WalletsTrait;
+
+    // ---------------------------------------------------------------- search
+    /** Public product search for bots (name / ISBN / sku). */
+    public function productSearch(Request $request)
+    {
+        $q = trim((string) $request->input('q', $request->input('search', '')));
+        $limit = min((int) ($request->input('limit', 10)), 30);
+        if ($q === '') {
+            return ['status' => 'success', 'count' => 0, 'products' => []];
+        }
+        $products = Product::query()
+            ->where('status', 'publish')
+            ->where(function ($w) use ($q) {
+                $w->where('name', 'like', "%{$q}%")
+                    ->orWhere('sku', 'like', "%{$q}%")
+                    ->orWhere('slug', 'like', "%{$q}%");
+            })
+            ->limit($limit)
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'quantity', 'image']);
+
+        $data = $products->map(function ($p) {
+            return [
+                'id'         => $p->id,
+                'name'       => $p->name,
+                'slug'       => $p->slug,
+                'price'      => $p->price,
+                'sale_price' => $p->sale_price,
+                'in_stock'   => (int) $p->quantity > 0,
+                'image'      => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                'url'        => rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/') . '/products/' . $p->slug,
+            ];
+        });
+        return ['status' => 'success', 'count' => $data->count(), 'products' => $data];
+    }
+
+    /**
+     * Admin product list with derived metrics (sold, wishlist, sell-through,
+     * 7/30-day velocity) — powers the redesigned Products page.
+     */
+    public function productAdminList(Request $request)
+    {
+        $search = trim((string) $request->input('search', ''));
+        $chip   = (string) $request->input('chip', 'all');
+        $sort   = (string) $request->input('sort', 'sold');
+        $page   = max(1, (int) $request->input('page', 1));
+        $limit  = min(60, max(1, (int) $request->input('limit', 20)));
+
+        $paidStatuses = "'order-completed','order-processing','order-out-for-delivery','order-at-local-facility'";
+        $soldSub = "COALESCE((SELECT SUM(op.order_quantity) FROM order_product op JOIN orders o ON o.id=op.order_id WHERE op.product_id=products.id AND o.order_status IN ($paidStatuses)),0)";
+        $wishSub = "COALESCE((SELECT COUNT(*) FROM wishlists w WHERE w.product_id=products.id),0)";
+        $sold30  = "COALESCE((SELECT SUM(op.order_quantity) FROM order_product op JOIN orders o ON o.id=op.order_id WHERE op.product_id=products.id AND o.created_at >= (NOW() - INTERVAL 30 DAY)),0)";
+        $sold7   = "COALESCE((SELECT SUM(op.order_quantity) FROM order_product op JOIN orders o ON o.id=op.order_id WHERE op.product_id=products.id AND o.created_at >= (NOW() - INTERVAL 7 DAY)),0)";
+
+        $q = Product::query()->where('type_id', 8)->with(['author:id,name'])
+            ->select('products.*')
+            ->selectRaw("$soldSub AS total_sold")
+            ->selectRaw("$wishSub AS wishlist_count")
+            ->selectRaw("$sold30 AS units_30d")
+            ->selectRaw("$sold7 AS units_7d");
+
+        if ($search !== '') {
+            $like = '%' . $search . '%';
+            $q->where(fn ($w) => $w->where('name', 'like', $like)
+                ->orWhere('bangla_name', 'like', $like)
+                ->orWhereHas('author', fn ($a) => $a->where('name', 'like', $like)));
+        }
+        if ($chip === 'out') {
+            $q->where('quantity', '<=', 0);
+        } elseif ($chip === 'restock') {
+            $q->where('quantity', '<=', 10)->where('quantity', '>', 0);
+        } elseif ($chip === 'draft') {
+            $q->where('status', 'draft');
+        }
+
+        switch ($sort) {
+            case 'wishlist': $q->orderByDesc('wishlist_count'); break;
+            case 'price':    $q->orderByDesc('price'); break;
+            case 'stock':    $q->orderBy('quantity'); break;
+            case 'newest':   $q->orderByDesc('created_at'); break;
+            default:         $q->orderByDesc('total_sold');
+        }
+
+        if ($chip === 'bestseller') {
+            $q->having('units_30d', '>=', 5);
+        }
+
+        $p = $q->paginate($limit, ['*'], 'page', $page);
+        $data = collect($p->items())->map(function ($x) {
+            $sold  = (int) $x->total_sold;
+            $stock = (int) $x->quantity;
+            $st    = $sold + $stock;
+            $mrp   = (float) $x->price;
+            $sale  = (float) $x->sale_price;
+            $hasOffer = $sale > 0 && $sale < $mrp;
+            $discountPct = $hasOffer ? (int) round(($mrp - $sale) * 100 / max(1, $mrp)) : 0;
+            $score = (int) $x->units_7d * 3 + (int) $x->units_30d + (int) $x->wishlist_count * 0.15;
+            return [
+                'id'          => $x->id,
+                'title'       => $x->name,
+                'author'      => optional($x->author)->name,
+                'slug'        => $x->slug,
+                'type'        => $x->product_type ?: 'simple',
+                'status'      => $x->status,
+                'price'       => $sale > 0 ? $sale : $mrp,
+                'mrp'         => $mrp,
+                'hasOffer'    => $hasOffer,
+                'discountPct' => $discountPct,
+                'cover'       => is_array($x->image) ? ($x->image['original'] ?? null) : null,
+                'stock'       => $stock,
+                'sold'        => $sold,
+                'wishlist'    => (int) $x->wishlist_count,
+                'sellThrough' => $st ? (int) round($sold * 100 / $st) : 0,
+                'units30'     => (int) $x->units_30d,
+                'units7'      => (int) $x->units_7d,
+                'demand'      => $score >= 60 ? 'high' : ($score >= 20 ? 'medium' : 'low'),
+                'bestseller'  => (int) $x->units_30d >= 10,
+            ];
+        });
+        return [
+            'data'         => $data,
+            'current_page' => $p->currentPage(),
+            'last_page'    => $p->lastPage(),
+            'total'        => $p->total(),
+        ];
+    }
+
+    // -------------------------------------------------------- readers' club
+    protected function clubConfig(): array
+    {
+        $c = $this->options()['readers_club'] ?? [];
+        return [
+            'enabled'      => (bool) ($c['enabled'] ?? true),
+            'fee'          => (float) ($c['fee'] ?? 300),
+            'discount_pct' => (int) ($c['discount_pct'] ?? 15),
+            'coupon_code'  => $c['coupon_code'] ?? 'READCLUB',
+        ];
+    }
+
+    /** Sync the member coupon to the configured discount %. */
+    protected function syncClubCoupon(array $c): void
+    {
+        \Marvel\Database\Models\Coupon::updateOrCreate(
+            ['code' => $c['coupon_code']],
+            [
+                'language'            => DEFAULT_LANGUAGE ?? 'en',
+                'description'         => "Reader's Club member — {$c['discount_pct']}% off",
+                'type'                => 'percentage',
+                'amount'              => $c['discount_pct'],
+                'minimum_cart_amount' => 0,
+                'active_from'         => now(),
+                'expire_at'           => now()->addYear(),
+            ],
+        );
+    }
+
+    /** Public: club benefits, fee, discount %. */
+    public function clubInfo(Request $request)
+    {
+        $c = $this->clubConfig();
+        return ['status' => 'success', 'club' => $c + [
+            'benefits' => [
+                "সব বইয়ে সবসময় {$c['discount_pct']}% ছাড়",
+                'নতুন বই ও প্রি-অর্ডারে আগে অ্যাক্সেস',
+                'প্রতি মাসে বাছাই করা বইয়ের সাজেশন',
+            ],
+        ]];
+    }
+
+    /** Public: start a paid membership — creates an order and returns its pay link. */
+    public function clubStart(Request $request)
+    {
+        $c = $this->clubConfig();
+        if (!$c['enabled']) {
+            throw new MarvelException("Reader's Club is currently closed.");
+        }
+        $shop = $this->mainShop();
+        $order = Order::create([
+            'customer_name'    => $request->input('name', 'Club Member'),
+            'customer_contact' => $request->input('contact', ''),
+            'amount'           => $c['fee'],
+            'total'            => $c['fee'],
+            'paid_total'       => 0,
+            'sales_tax'        => 0,
+            'delivery_fee'     => 0,
+            'discount'         => 0,
+            'shop_id'          => $shop?->id,
+            'language'         => DEFAULT_LANGUAGE ?? 'en',
+            'order_status'     => 'order-pending',
+            'payment_status'   => 'payment-pending',
+            'payment_gateway'  => 'ONLINE',
+        ]);
+        $ops = [
+            'club_membership' => true,
+            'club_email'      => $request->input('email'),
+            'pay_token'       => 'pl_' . Str::random(24),
+        ];
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+        $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
+        return [
+            'status'   => 'success',
+            'fee'      => $c['fee'],
+            'pay_link' => $base . '/pay/' . $ops['pay_token'],
+        ];
+    }
+
+    /** Admin: read/update club fee + discount %. */
+    public function clubSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate([
+                'enabled'      => 'nullable|boolean',
+                'fee'          => 'nullable|numeric',
+                'discount_pct' => 'nullable|integer',
+                'coupon_code'  => 'nullable|string',
+            ]);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $cur = $this->clubConfig();
+            $options['readers_club'] = [
+                'enabled'      => array_key_exists('enabled', $data) ? (bool) $data['enabled'] : $cur['enabled'],
+                'fee'          => $data['fee'] ?? $cur['fee'],
+                'discount_pct' => $data['discount_pct'] ?? $cur['discount_pct'],
+                'coupon_code'  => $data['coupon_code'] ?? $cur['coupon_code'],
+            ];
+            $settings->update(['options' => $options]);
+            $this->syncClubCoupon($options['readers_club']);
+        }
+        return ['status' => 'success', 'club' => $this->clubConfig()];
+    }
+
+    // -------------------------------------------------- order-amount discount tiers
+    protected function discountTiers(): array
+    {
+        $t = $this->options()['order_discount_tiers'] ?? null;
+        if (!is_array($t) || empty($t)) {
+            // sensible defaults
+            $t = [['min' => 1990, 'pct' => 5], ['min' => 6000, 'pct' => 7]];
+        }
+        // normalise + sort ascending by min
+        $t = array_values(array_filter(array_map(fn ($x) => [
+            'min'  => (float) ($x['min'] ?? 0),
+            'pct'  => (int) ($x['pct'] ?? 0),
+            'code' => 'BULK' . (int) ($x['pct'] ?? 0),
+        ], $t), fn ($x) => $x['min'] > 0 && $x['pct'] > 0));
+        usort($t, fn ($a, $b) => $a['min'] <=> $b['min']);
+        return $t;
+    }
+
+    protected function syncTierCoupons(array $tiers): void
+    {
+        foreach ($tiers as $tier) {
+            \Marvel\Database\Models\Coupon::updateOrCreate(
+                ['code' => $tier['code']],
+                [
+                    'language'            => DEFAULT_LANGUAGE ?? 'en',
+                    'description'         => "Spend ৳{$tier['min']}+ — {$tier['pct']}% off",
+                    'type'                => 'percentage',
+                    'amount'              => $tier['pct'],
+                    'minimum_cart_amount' => $tier['min'],
+                    'active_from'         => now(),
+                    'expire_at'           => now()->addYear(),
+                ],
+            );
+        }
+    }
+
+    /** Public: the bulk-purchase discount tiers for the cart progress bar. */
+    public function orderDiscountInfo(Request $request)
+    {
+        return ['status' => 'success', 'tiers' => $this->discountTiers()];
+    }
+
+    /** Admin: read/update the discount tiers (super-admin). */
+    public function orderDiscountSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate(['tiers' => 'nullable|array']);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['order_discount_tiers'] = collect($data['tiers'] ?? [])
+                ->map(fn ($x) => ['min' => (float) ($x['min'] ?? 0), 'pct' => (int) ($x['pct'] ?? 0)])
+                ->filter(fn ($x) => $x['min'] > 0 && $x['pct'] > 0)
+                ->values()->all();
+            $settings->update(['options' => $options]);
+            $this->syncTierCoupons($this->discountTiers());
+        }
+        return ['status' => 'success', 'tiers' => $this->discountTiers()];
+    }
+
+    // ------------------------------------------------------------ featured books
+    /**
+     * #2 — Admin-curated book selection for the home banner and the
+     * frequently-bought-together row. Auto (algorithmic) by default; when the
+     * admin picks specific books, those override the auto selection.
+     */
+    private function intIds($v): array
+    {
+        return array_values(array_filter(array_map('intval', (array) $v)));
+    }
+
+    private function featuredBookIds(): array
+    {
+        $opts = $this->options();
+        $f = $opts['featured_books'] ?? [];
+        $map = [];
+        foreach ((array) ($f['fbt_map'] ?? []) as $pid => $ids) {
+            $clean = $this->intIds($ids);
+            if ((int) $pid > 0 && !empty($clean)) {
+                $map[(int) $pid] = $clean;
+            }
+        }
+        return [
+            'banner'  => $this->intIds($f['banner'] ?? []),
+            'fbt'     => $this->intIds($f['fbt'] ?? []),   // global fallback
+            'fbt_map' => $map,                              // per-product override
+        ];
+    }
+
+    private function loadBooksInOrder(array $ids)
+    {
+        if (empty($ids)) {
+            return [];
+        }
+        // `image` is a JSON attribute on Product (not a relation) — select it directly.
+        $books = Product::whereIn('id', $ids)
+            ->where('status', 'publish')
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'image'])
+            ->keyBy('id');
+        // preserve the admin-chosen order
+        return collect($ids)->map(fn ($id) => $books->get($id))->filter()->values();
+    }
+
+    /**
+     * Public: storefront reads the curated banner + FBT books. When a
+     * `product_id` is passed, the FBT list is that product's own curated
+     * selection (alada/per-product) — falling back to the global FBT list, then
+     * to the storefront's automatic algorithm (empty here).
+     */
+    public function featuredBooks(Request $request)
+    {
+        $ids = $this->featuredBookIds();
+        $pid = (int) $request->input('product_id');
+        $fbtIds = ($pid && !empty($ids['fbt_map'][$pid])) ? $ids['fbt_map'][$pid] : $ids['fbt'];
+        return [
+            'banner' => $this->loadBooksInOrder($ids['banner']),
+            'fbt'    => $this->loadBooksInOrder($fbtIds),
+        ];
+    }
+
+    /** Admin: read/update the curated book IDs (super-admin). */
+    public function featuredBooksSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate([
+                'banner'  => 'nullable|array',
+                'fbt'     => 'nullable|array',
+                'fbt_map' => 'nullable|array',
+            ]);
+            $map = [];
+            foreach ((array) ($data['fbt_map'] ?? []) as $pid => $bookIds) {
+                $clean = $this->intIds($bookIds);
+                if ((int) $pid > 0 && !empty($clean)) {
+                    $map[(string) (int) $pid] = $clean;
+                }
+            }
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['featured_books'] = [
+                'banner'  => $this->intIds($data['banner'] ?? []),
+                'fbt'     => $this->intIds($data['fbt'] ?? []),
+                'fbt_map' => $map,
+            ];
+            $settings->update(['options' => $options]);
+        }
+        // Return hydrated books so the admin UI can render chips immediately:
+        // banner + global FBT + one entry per per-product FBT target.
+        $ids = $this->featuredBookIds();
+        $targets = [];
+        foreach ($ids['fbt_map'] as $pid => $bookIds) {
+            $product = $this->loadBooksInOrder([$pid])->first();
+            if ($product) {
+                $targets[] = [
+                    'product' => $product,
+                    'books'   => $this->loadBooksInOrder($bookIds),
+                ];
+            }
+        }
+        return [
+            'banner'      => $this->loadBooksInOrder($ids['banner']),
+            'fbt'         => $this->loadBooksInOrder($ids['fbt']),
+            'fbt_targets' => $targets,
+        ];
+    }
+
+    // ------------------------------------------------------------ image sizes
+    /** Defaults + normalisation for the storefront image-size controls (#1). */
+    private function imageSizeConfig(): array
+    {
+        $opts = $this->options();
+        $s = $opts['image_sizes'] ?? [];
+        $clamp = fn ($v, $def, $min, $max) => max($min, min($max, (int) ($v ?? $def) ?: $def));
+        $style = ($s['home_card_style'] ?? 'mindful') === 'classic' ? 'classic' : 'mindful';
+        return [
+            'single_max'      => $clamp($s['single_max'] ?? null, 200, 100, 480),   // single-product cover max-width (px)
+            'fbt_h'           => $clamp($s['fbt_h'] ?? null, 128, 72, 320),          // frequently-bought cover height (px)
+            'home_cols'       => $clamp($s['home_cols'] ?? null, 5, 3, 8),           // home "All books" desktop columns
+            'home_card_style' => $style,                                             // 'mindful' (new) | 'classic' (previous)
+        ];
+    }
+
+    /** Public: storefront reads the configured image sizes. */
+    public function imageSizes(Request $request)
+    {
+        return $this->imageSizeConfig();
+    }
+
+    /** Admin: read/update storefront image sizes (super-admin). */
+    public function imageSizesSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate([
+                'single_max'      => 'nullable|integer',
+                'fbt_h'           => 'nullable|integer',
+                'home_cols'       => 'nullable|integer',
+                'home_card_style' => 'nullable|string',
+            ]);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['image_sizes'] = [
+                'single_max'      => (int) ($data['single_max'] ?? 200),
+                'fbt_h'           => (int) ($data['fbt_h'] ?? 128),
+                'home_cols'       => (int) ($data['home_cols'] ?? 5),
+                'home_card_style' => ($data['home_card_style'] ?? 'mindful') === 'classic' ? 'classic' : 'mindful',
+            ];
+            $settings->update(['options' => $options]);
+        }
+        return $this->imageSizeConfig();
+    }
+
+
+    /** How long a payment link stays valid (hours). Admin-configurable, 6h by default. */
+    private function payLinkHours(): int
+    {
+        $h = (int) ($this->options()['payLinkHours'] ?? 6);
+        return $h > 0 ? min($h, 720) : 6;
+    }
+
+    /** Admin: read/set the payment-link lifetime. */
+    public function payLinkSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $hours = (int) $request->input('hours', 6);
+            $hours = $hours > 0 ? min($hours, 720) : 6;
+            $settings = Settings::first();
+            $options = $settings->options ?? [];
+            $options['payLinkHours'] = $hours;
+            $settings->options = $options;
+            $settings->save();
+            return ['status' => 'success', 'hours' => $hours];
+        }
+        return ['hours' => $this->payLinkHours()];
+    }
+
+    // ------------------------------------------------------------ pay-by-link
+    /** Admin: create/return a shareable payment link for an order. */
+    public function orderPayLink(Request $request)
+    {
+        $order = Order::findOrFail($request->order_id);
+        $ops = (array) ($order->ops_meta ?? []);
+        // A payment link is short-lived: it stops working after `payLinkHours` (6 by
+        // default, admin-configurable). An expired one is replaced by a brand-new token,
+        // so an old link can never be revived by resending it.
+        $hours = $this->payLinkHours();
+        $expired = !empty($ops['pay_expires_at']) && now()->gt(Carbon::parse($ops['pay_expires_at']));
+        if (empty($ops['pay_token']) || $expired || $request->boolean('regenerate')) {
+            $ops['pay_token'] = 'pl_' . Str::random(24);
+        }
+        $ops['pay_expires_at'] = now()->addHours($hours)->toIso8601String();
+        // #5 — partial / advance amount. `amount_bdt` (spec) or `amount`; `purpose`/`type`.
+        $amount  = $request->filled('amount_bdt') ? (float) $request->input('amount_bdt')
+            : ($request->filled('amount') ? (float) $request->input('amount') : null);
+        $purpose = (string) ($request->input('purpose') ?: $request->input('type') ?: 'full');
+        $due = round((float) $order->total - (float) $order->paid_total);
+        if ($amount !== null) {
+            if ($amount > $due + 0.5) {
+                throw new MarvelException('amount_bdt exceeds order due (৳' . round($due) . ').');
+            }
+            $ops['pay_amount']  = round($amount);
+            $ops['pay_purpose'] = $purpose === 'advance' ? 'advance' : 'full';
+        } else {
+            unset($ops['pay_amount']);
+            $ops['pay_purpose'] = 'full';
+        }
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+
+        $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
+        return [
+            'status'     => 'success',
+            'token'      => $ops['pay_token'],
+            'pay_link'   => $base . '/pay/' . $ops['pay_token'],
+            'amount_bdt' => $ops['pay_amount'] ?? $due,
+            'purpose'    => $ops['pay_purpose'],
+        ];
+    }
+
+    protected function findOrderByPayToken(string $token): ?Order
+    {
+        if ($token === '') {
+            return null;
+        }
+        return Order::whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.pay_token')) = ?", [$token])->first();
+    }
+
+    /** Public: order summary + payment methods + current payment state for the pay page. */
+    public function payInfo(Request $request)
+    {
+        $order = $this->findOrderByPayToken((string) $request->input('token', ''));
+        if (!$order) {
+            throw new MarvelException('Invalid or expired payment link.');
+        }
+        $order->loadMissing('products');
+        $ops = (array) ($order->ops_meta ?? []);
+        $alreadyPaid = (float) $order->paid_total >= (float) $order->total;
+        if (!$alreadyPaid && !empty($ops['pay_expires_at']) && now()->gt(Carbon::parse($ops['pay_expires_at']))) {
+            throw new MarvelException('এই পেমেন্ট লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন লিংকের জন্য যোগাযোগ করুন।');
+        }
+        $paid = $order->payment_status === 'payment-success'
+            || (float) $order->paid_total >= (float) $order->total;
+        $methods = ['bkash', 'nagad', 'card'];
+        // #5 — an advance pay-link charges only pay_amount of the full total.
+        $payAmount = isset($ops['pay_amount']) ? (float) $ops['pay_amount'] : null;
+        $isAdvance = ($ops['pay_purpose'] ?? 'full') === 'advance' && $payAmount !== null;
+        return [
+            'status' => 'success',
+            'order'  => [
+                'tracking_number' => $order->tracking_number,
+                'customer_name'   => $order->customer_name,
+                'total'           => (float) $order->total,
+                'pay_amount'      => $payAmount,
+                'pay_purpose'     => $isAdvance ? 'advance' : 'full',
+                'already_paid'    => (float) $order->paid_total,
+                'due'             => round((float) $order->total - (float) $order->paid_total),
+                'subtotal'        => (float) $order->amount,
+                'delivery_fee'    => (float) $order->delivery_fee,
+                'discount'        => (float) $order->discount,
+                'advance'         => round((float) $order->total - (float) $order->amount - (float) $order->sales_tax - (float) $order->delivery_fee + (float) $order->discount),
+                'placed_at'       => optional($order->created_at)->format('j M Y'),
+                'paid'            => $paid,
+                'pay_method'      => $ops['pay_method'] ?? null,
+                'is_club'         => !empty($ops['club_membership']),
+                'club_coupon'     => $ops['club_coupon'] ?? null,
+                'club_discount'   => $ops['club_discount'] ?? null,
+                'items'           => $order->products->map(fn ($p) => [
+                    'name'     => $p->name,
+                    'quantity' => (int) ($p->pivot->order_quantity ?? 0),
+                    'price'    => (float) ($p->pivot->subtotal ?? $p->pivot->unit_price ?? 0),
+                    'image'    => is_array($p->image)
+                        ? ($p->image['original'] ?? $p->image['thumbnail'] ?? null)
+                        : null,
+                ]),
+            ],
+            'methods' => $methods,
+        ];
+    }
+
+    /** Public: confirm a payment against the link. */
+    public function payConfirm(Request $request)
+    {
+        $order = $this->findOrderByPayToken((string) $request->input('token', ''));
+        if (!$order) {
+            throw new MarvelException('Invalid or expired payment link.');
+        }
+        // Expiry is checked before any gateway is touched — an expired link must not be
+        // able to open a bKash checkout either.
+        $meta = (array) ($order->ops_meta ?? []);
+        if (!empty($meta['pay_expires_at']) && now()->gt(Carbon::parse($meta['pay_expires_at']))
+            && (float) $order->paid_total < (float) $order->total) {
+            throw new MarvelException('এই পেমেন্ট লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন লিংক নিন।');
+        }
+        $method = (string) $request->input('method', 'card');
+
+        // Real bKash: hand back the hosted-checkout URL (money captured by bKash).
+        if ($method === 'bkash') {
+            $cfg = ($this->options()['payments'] ?? [])['bkash'] ?? [];
+            if (!empty($cfg['enabled']) && !empty($cfg['app_key'])) {
+                $request->merge(['order_id' => $order->id]);
+                $res = $this->bkashCreate($request);
+                $url = $res['bkash']['bkashURL'] ?? null;
+                if ($url) {
+                    return ['status' => 'redirect', 'url' => $url];
+                }
+            }
+        }
+
+        // Mark the order paid. #5 — advance payments credit paid_total and approve
+        // the order without marking it fully paid.
+        $ops = (array) ($order->ops_meta ?? []);
+        $ops['pay_method'] = $method;
+        $ops['paid_at'] = now()->toIso8601String();
+        $isAdvance = ($ops['pay_purpose'] ?? 'full') === 'advance';
+        $payAmount = isset($ops['pay_amount']) ? (float) $ops['pay_amount'] : (float) $order->total;
+
+        if ($isAdvance) {
+            $order->paid_total = round((float) $order->paid_total + $payAmount);
+            $order->order_status = 'order-processing'; // approved, awaiting balance
+            if ((float) $order->paid_total >= (float) $order->total) {
+                $order->payment_status = 'payment-success';
+            }
+            if (isset($ops['advance'])) {
+                $ops['advance']['status']   = 'paid';
+                $ops['advance']['paid_bdt'] = round($payAmount);
+                $ops['advance']['due_bdt']  = round((float) $order->total - (float) $order->paid_total);
+                // The pre-order clock starts the moment the advance clears — not when the
+                // order was placed — and stops when it's delivered.
+                $ops['preorder']['started_at'] = now()->toIso8601String();
+            }
+            $this->notifyReplygeniePayment($order, round($payAmount), 'advance');
+        } else {
+            $order->payment_status = 'payment-success';
+            $order->paid_total = $order->total;
+            if (!empty($ops['advance'])) {
+                $ops['advance']['status'] = 'paid';
+                $this->notifyReplygeniePayment($order, (float) $order->total, 'full');
+            }
+        }
+
+        // Auto-activate a Reader's Club membership when its fee is paid.
+        if (!empty($ops['club_membership']) && empty($ops['club_activated'])) {
+            $cc = $this->clubConfig();
+            $this->syncClubCoupon($cc);
+            $settings = Settings::first();
+            $sopts = $settings->options ?? [];
+            $members = $sopts['club_members'] ?? [];
+            $members[] = [
+                'email'   => $ops['club_email'] ?? null,
+                'contact' => $order->customer_contact,
+                'joined'  => now()->toDateTimeString(),
+            ];
+            $sopts['club_members'] = $members;
+            $settings->update(['options' => $sopts]);
+            $ops['club_activated'] = true;
+            $ops['club_coupon'] = $cc['coupon_code'];
+            $ops['club_discount'] = $cc['discount_pct'];
+        }
+
+        $order->ops_meta = $ops;
+        $order->save();
+        \Marvel\Helpers\AdminNotifier::send(
+            "💰 <b>পেমেন্ট সম্পন্ন</b> #{$order->tracking_number} — " . strtoupper($method) . " · ৳" . number_format((float) $order->total, 0)
+        );
+        return ['status' => 'success', 'paid' => true];
+    }
+
+    /** Current prices for a set of product ids — powers the cart price-change alert. */
+    public function priceCheck(Request $request)
+    {
+        $ids = array_values(array_filter(array_map('intval', explode(',', (string) $request->input('ids', '')))));
+        if (empty($ids)) {
+            return ['status' => 'success', 'prices' => []];
+        }
+        $rows = Product::whereIn('id', array_slice($ids, 0, 100))
+            ->get(['id', 'price', 'sale_price', 'quantity']);
+        return [
+            'status' => 'success',
+            'prices' => $rows->map(fn ($p) => [
+                'id'         => $p->id,
+                'price'      => (float) $p->price,
+                'sale_price' => (float) $p->sale_price,
+                'in_stock'   => (int) $p->quantity > 0,
+            ])->values(),
+        ];
+    }
+
+    // ---------------------------------------------------------- order create
+    /**
+     * Create an order from an external bot (ReplyGenie).
+     * Body: { customer_name, customer_contact, address, items:[{id|sku, quantity}] }
+     */
+    public function createOrderApi(Request $request)
+    {
+        $request->validate([
+            'customer_name'    => 'nullable|string',
+            'customer_contact' => 'required|string',
+            'items'            => 'required|array|min:1',
+        ]);
+
+        $shop = $this->mainShop();
+        $amount = 0;
+        $orderProducts = [];
+        foreach ($request->items as $it) {
+            $product = null;
+            if (!empty($it['id'])) {
+                $product = Product::find($it['id']);
+            } elseif (!empty($it['sku'])) {
+                $product = Product::where('sku', $it['sku'])->orWhere('slug', $it['sku'])->first();
+            } elseif (!empty($it['name'])) {
+                $product = Product::where('name', 'like', '%' . $it['name'] . '%')->first();
+            }
+            if (!$product) {
+                continue;
+            }
+            $qty = max(1, (int) ($it['quantity'] ?? 1));
+            $unit = (float) ($product->sale_price ?: $product->price);
+            $amount += $unit * $qty;
+            $orderProducts[$product->id] = [
+                'order_quantity' => $qty,
+                'unit_price'     => $unit,
+                'subtotal'       => $unit * $qty,
+            ];
+        }
+        if (empty($orderProducts)) {
+            throw new MarvelException('None of the requested products were found.');
+        }
+
+        $delivery = (float) $request->input('delivery_fee', 60);
+        $order = Order::create([
+            'tracking_number'  => 'R-' . strtoupper(Str::random(8)),
+            'customer_name'    => $request->customer_name ?? 'Facebook Customer',
+            'customer_contact' => $request->customer_contact,
+            'amount'           => $amount,
+            'sales_tax'        => 0,
+            'delivery_fee'     => $delivery,
+            'discount'         => 0,
+            'total'            => $amount + $delivery,
+            'paid_total'       => 0,
+            'shop_id'          => $shop?->id,
+            'language'         => DEFAULT_LANGUAGE ?? 'en',
+            'order_status'     => 'order-pending',
+            'payment_status'   => 'payment-pending',
+            'payment_gateway'  => 'CASH_ON_DELIVERY',
+            'shipping_address' => $request->input('address') ? ['street_address' => $request->input('address')] : null,
+            'billing_address'  => $request->input('address') ? ['street_address' => $request->input('address')] : null,
+            'note'             => $request->input('note'),
+        ]);
+        $order->products()->attach($orderProducts);
+        Order::commitStock($order); // reserve book stock on placement
+
+        // Stamp who placed it, so the admin can tell a ReplyGenie order from a website one.
+        $ops = (array) ($order->ops_meta ?? []);
+        $ops['created_by'] = (string) $request->input('created_by', 'ReplyGenie');
+        $ops['source'] = (string) $request->input('source', 'replygenie');
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+
+        // #5 — pre-order / advance metadata (order stays PENDING_ADVANCE until 50% paid).
+        $status = $order->order_status;
+        $advanceOut = null;
+        if ($request->boolean('is_preorder') || $request->filled('advance_bdt')) {
+            $total = (float) $order->total;
+            $advance = $request->filled('advance_bdt')
+                ? (float) $request->input('advance_bdt')
+                : round($total * ((float) $request->input('advance_percent', 50) / 100));
+            $ops = (array) ($order->ops_meta ?? []);
+            $ops['advance'] = [
+                'is_preorder' => $request->boolean('is_preorder'),
+                'percent'     => (float) $request->input('advance_percent', 50),
+                'advance_bdt' => round($advance),
+                'due_bdt'     => round($total - $advance),
+                'status'      => 'pending_advance',
+            ];
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+            $status = 'PENDING_ADVANCE';
+            $advanceOut = round($advance);
+        }
+
+        return [
+            'status' => 'success',
+            'order'  => array_filter([
+                'id'              => $order->id,
+                'tracking_number' => $order->tracking_number,
+                'total'           => $order->total,
+                'order_status'    => $order->order_status,
+                'status'          => $status !== $order->order_status ? $status : null,
+                'advance_bdt'     => $advanceOut,
+            ], fn ($v) => $v !== null),
+        ];
+    }
+
+    // ------------------------------------------------------- ReplyGenie connect
+    /** Return the ReplyGenie connection config (token + endpoints) for the admin panel. */
+    public function getReplygenieSettings(Request $request)
+    {
+        $c = $this->options()['replygenie'] ?? [];
+        $base = rtrim(config('app.url') ?: url('/'), '/');
+        return [
+            'status'     => 'success',
+            'replygenie' => [
+                'enabled'       => (bool) ($c['enabled'] ?? false),
+                'connect_token' => $c['token'] ?? '',
+                'shop_slug'     => $c['shop_slug'] ?? 'indobangla-store',
+                'delivery_fee'  => (float) ($c['delivery_fee'] ?? 60),
+                'auth_header'   => 'X-Connect-Token',
+                'endpoints'     => [
+                    'product_search' => $base . '/product-search-api?q={query}',
+                    'create_order'   => $base . '/replygenie/order',
+                ],
+            ],
+        ];
+    }
+
+    /** Enable/disable ReplyGenie, set the target shop & default delivery fee, (re)issue the token. */
+    public function updateReplygenieSettings(Request $request)
+    {
+        $data = $request->validate([
+            'enabled'      => 'nullable|boolean',
+            'shop_slug'    => 'nullable|string',
+            'delivery_fee' => 'nullable|numeric',
+            'regenerate'   => 'nullable|boolean',
+        ]);
+        $settings = Settings::first();
+        $options  = $settings->options;
+        $cur      = $options['replygenie'] ?? [];
+        $token    = $cur['token'] ?? '';
+        if (empty($token) || $request->boolean('regenerate')) {
+            $token = 'rg_' . Str::random(40);
+        }
+        $options['replygenie'] = [
+            'enabled'      => array_key_exists('enabled', $data) ? (bool) $data['enabled'] : ($cur['enabled'] ?? false),
+            'token'        => $token,
+            'shop_slug'    => $data['shop_slug'] ?? ($cur['shop_slug'] ?? 'indobangla-store'),
+            'delivery_fee' => $data['delivery_fee'] ?? ($cur['delivery_fee'] ?? 60),
+        ];
+        $settings->update(['options' => $options]);
+        return $this->getReplygenieSettings($request);
+    }
+
+    // ---------------------------------------------------- admin notifications
+    /** Return the Telegram/WhatsApp notifier config for the admin panel. */
+    public function getNotifySettings(Request $request)
+    {
+        $n = $this->options()['notify'] ?? [];
+        $tg = $n['telegram'] ?? [];
+        $wa = $n['whatsapp'] ?? [];
+        return [
+            'status' => 'success',
+            'notify' => [
+                'telegram' => [
+                    'enabled'   => (bool) ($tg['enabled'] ?? false),
+                    'bot_token' => $tg['bot_token'] ?? '',
+                    'chat_id'   => $tg['chat_id'] ?? '',
+                ],
+                'whatsapp' => [
+                    'enabled'  => (bool) ($wa['enabled'] ?? false),
+                    'provider' => $wa['provider'] ?? 'twilio',
+                    'sid'      => $wa['sid'] ?? '',
+                    'token'    => $wa['token'] ?? '',
+                    'from'     => $wa['from'] ?? '',
+                    'to'       => $wa['to'] ?? '',
+                    'phone_id' => $wa['phone_id'] ?? '',
+                ],
+            ],
+        ];
+    }
+
+    /** Save the Telegram/WhatsApp notifier config (super-admin). */
+    public function updateNotifySettings(Request $request)
+    {
+        $data = $request->validate([
+            'telegram'          => 'nullable|array',
+            'telegram.enabled'  => 'nullable|boolean',
+            'telegram.bot_token'=> 'nullable|string',
+            'telegram.chat_id'  => 'nullable|string',
+            'whatsapp'          => 'nullable|array',
+        ]);
+        $settings = Settings::first();
+        $options  = $settings->options ?? [];
+        $options['notify'] = [
+            'telegram' => [
+                'enabled'   => (bool) data_get($data, 'telegram.enabled', false),
+                'bot_token' => (string) data_get($data, 'telegram.bot_token', ''),
+                'chat_id'   => (string) data_get($data, 'telegram.chat_id', ''),
+            ],
+            'whatsapp' => [
+                'enabled'  => (bool) data_get($data, 'whatsapp.enabled', false),
+                'provider' => (string) data_get($data, 'whatsapp.provider', 'twilio'),
+                'sid'      => (string) data_get($data, 'whatsapp.sid', ''),
+                'token'    => (string) data_get($data, 'whatsapp.token', ''),
+                'from'     => (string) data_get($data, 'whatsapp.from', ''),
+                'to'       => (string) data_get($data, 'whatsapp.to', ''),
+                'phone_id' => (string) data_get($data, 'whatsapp.phone_id', ''),
+            ],
+        ];
+        $settings->update(['options' => $options]);
+        return $this->getNotifySettings($request);
+    }
+
+    /** Send a test notification to confirm the channels are wired (super-admin). */
+    public function testNotify(Request $request)
+    {
+        \Marvel\Helpers\AdminNotifier::send('✅ IndoBangla notification test — সংযোগ ঠিক আছে।');
+        return ['status' => 'success', 'message' => 'Test notification dispatched.'];
+    }
+
+    /**
+     * Public order-create for ReplyGenie / FB bots, authenticated by the connect token
+     * (header `X-Connect-Token`) instead of a logged-in user. Reuses createOrderApi.
+     */
+    public function replygenieOrder(Request $request)
+    {
+        $cfg = $this->options()['replygenie'] ?? [];
+        if (empty($cfg['enabled']) || empty($cfg['token'])) {
+            throw new MarvelException('ReplyGenie integration is disabled. Enable it in Settings → ReplyGenie.');
+        }
+        $sent = $request->header('X-Connect-Token') ?: $request->input('connect_token');
+        if (!$sent || !hash_equals((string) $cfg['token'], (string) $sent)) {
+            throw new MarvelException('Invalid ReplyGenie connect token.');
+        }
+        if (!$request->filled('delivery_fee') && isset($cfg['delivery_fee'])) {
+            $request->merge(['delivery_fee' => $cfg['delivery_fee']]);
+        }
+        return $this->createOrderApi($request);
+    }
+
+    /** Shared connect-token gate for ReplyGenie / bot endpoints. */
+    protected function assertReplygenieToken(Request $request): array
+    {
+        $cfg = $this->options()['replygenie'] ?? [];
+        if (empty($cfg['enabled']) || empty($cfg['token'])) {
+            throw new MarvelException('ReplyGenie integration is disabled. Enable it in Settings → ReplyGenie.');
+        }
+        $sent = $request->header('X-Connect-Token') ?: $request->input('connect_token');
+        if (!$sent || !hash_equals((string) $cfg['token'], (string) $sent)) {
+            throw new MarvelException('Invalid ReplyGenie connect token.');
+        }
+        return $cfg;
+    }
+
+    /** Resolve an order by order_id or tracking_number (for agent actions). */
+    protected function resolveAgentOrder(Request $request): Order
+    {
+        if ($request->filled('order_id')) {
+            return Order::findOrFail($request->order_id);
+        }
+        if ($request->filled('tracking_number')) {
+            $o = Order::where('tracking_number', $request->tracking_number)->first();
+            if ($o) {
+                return $o;
+            }
+        }
+        throw new MarvelException('order_id or tracking_number is required.');
+    }
+
+    protected function orderSummary(Order $order): array
+    {
+        $order->loadMissing('products');
+        return [
+            'id'               => $order->id,
+            'tracking_number'  => $order->tracking_number,
+            'customer_name'    => $order->customer_name,
+            'customer_contact' => $order->customer_contact,
+            'order_status'     => $order->order_status,
+            'payment_status'   => $order->payment_status,
+            'total'            => (float) $order->total,
+            'paid_total'       => (float) $order->paid_total,
+            'delivery_fee'     => (float) $order->delivery_fee,
+            'discount'         => (float) $order->discount,
+            'logistics'        => $order->logistics_provider,
+            'note'             => $order->note,
+            'items'            => $order->products->map(fn ($p) => [
+                'id'       => $p->id,
+                'name'     => $p->name,
+                'quantity' => (int) ($p->pivot->order_quantity ?? 0),
+                'price'    => (float) ($p->pivot->unit_price ?? 0),
+            ]),
+        ];
+    }
+
+    /**
+     * Unified agent endpoint for the ReplyGenie chatbot (token-authed, no user login).
+     * Its own AI decides intent, then calls this with a structured action.
+     *
+     * POST /replygenie/agent   header: X-Connect-Token: <rg token>
+     * Body: { action, ...params }
+     *   action=product_search  { q }
+     *   action=create_order    { customer_name, customer_contact, address, items:[{name|id|sku, quantity}], note, delivery_fee }
+     *   action=lookup_order    { order_id | tracking_number }
+     *   action=modify_order    { order_id|tracking_number, address?, note?, discount?, delivery_fee?, adjustment?, items? }
+     *   action=set_status      { order_id|tracking_number, order_status }
+     *   action=courier_ship    { order_id|tracking_number, provider }
+     *   action=courier_track   { order_id|tracking_number, provider, tracking_id? }
+     */
+    public function replygenieAgent(Request $request)
+    {
+        $this->assertReplygenieToken($request);
+        $action = (string) $request->input('action', '');
+
+        switch ($action) {
+            case 'product_search':
+                return $this->productSearch($request);
+
+            case 'create_order': {
+                // createOrderApi handles pre-order / advance metadata (is_preorder,
+                // advance_percent, advance_bdt) so /replygenie/order gets it too.
+                return $this->createOrderApi($request);
+            }
+
+            case 'lookup_order': {
+                $order = $this->resolveAgentOrder($request);
+                return ['status' => 'success', 'order' => $this->orderSummary($order)];
+            }
+
+            case 'modify_order': {
+                $order = $this->resolveAgentOrder($request);
+                // optional line-item replacement
+                if ($request->filled('items') && is_array($request->items)) {
+                    $sync = [];
+                    $amount = 0;
+                    foreach ($request->items as $it) {
+                        $product = !empty($it['id'])
+                            ? Product::find($it['id'])
+                            : (!empty($it['sku'])
+                                ? Product::where('sku', $it['sku'])->orWhere('slug', $it['sku'])->first()
+                                : (!empty($it['name']) ? Product::where('name', 'like', '%' . $it['name'] . '%')->first() : null));
+                        if (!$product) {
+                            continue;
+                        }
+                        $qty  = max(1, (int) ($it['quantity'] ?? 1));
+                        $unit = (float) ($product->sale_price ?: $product->price);
+                        $amount += $unit * $qty;
+                        $sync[$product->id] = ['order_quantity' => $qty, 'unit_price' => $unit, 'subtotal' => $unit * $qty];
+                    }
+                    if (!empty($sync)) {
+                        $order->products()->sync($sync);
+                        $order->amount = $amount;
+                    }
+                }
+                if ($request->filled('address')) {
+                    $order->shipping_address = ['street_address' => $request->input('address')];
+                    $order->billing_address  = ['street_address' => $request->input('address')];
+                }
+                if ($request->has('note')) {
+                    $order->note = $request->note;
+                }
+                if ($request->filled('discount')) {
+                    $order->discount = (float) $request->discount;
+                }
+                if ($request->filled('delivery_fee')) {
+                    $order->delivery_fee = (float) $request->delivery_fee;
+                }
+                $adjustment = (float) ($request->adjustment ?? 0);
+                $order->total = max(0, (float) ($order->amount ?? 0)
+                    + (float) ($order->sales_tax ?? 0)
+                    + (float) ($order->delivery_fee ?? 0)
+                    - (float) ($order->discount ?? 0)
+                    + $adjustment);
+                $order->save();
+                \Marvel\Helpers\AdminNotifier::send(
+                    "🤖 <b>ReplyGenie</b> অর্ডার এডিট #{$order->tracking_number} — মোট ৳" . number_format((float) $order->total, 0)
+                );
+                return ['status' => 'success', 'order' => $this->orderSummary($order)];
+            }
+
+            case 'set_status': {
+                $order  = $this->resolveAgentOrder($request);
+                $status = (string) $request->input('order_status', '');
+                $allowed = ['order-pending', 'order-processing', 'order-at-local-facility',
+                    'order-out-for-delivery', 'order-completed', 'order-cancelled', 'order-refunded', 'order-failed'];
+                if (!in_array($status, $allowed, true)) {
+                    throw new MarvelException('Invalid order_status.');
+                }
+                $order->order_status = $status; // Order::updated hook restores stock + notifies
+                $order->save();
+                return ['status' => 'success', 'order' => $this->orderSummary($order)];
+            }
+
+            case 'courier_ship': {
+                $order    = $this->resolveAgentOrder($request);
+                $provider = (string) $request->input('provider', '');
+                $request->merge(['order_id' => $order->id]);
+                $res = $this->createShipment($request, $provider);
+                \Marvel\Helpers\AdminNotifier::send(
+                    "🚚 <b>ReplyGenie</b> " . strtoupper($provider) . " শিপমেন্ট #{$order->tracking_number}"
+                    . (!empty($res['tracking_id']) ? " — " . $res['tracking_id'] : '')
+                );
+                return $res;
+            }
+
+            case 'courier_track': {
+                $order    = $this->resolveAgentOrder($request);
+                $provider = (string) $request->input('provider', '');
+                return $this->courierTrack($request, $provider);
+            }
+
+            case 'pay_link': {
+                // Give the bot a shareable online-payment link to message the customer.
+                $order = $this->resolveAgentOrder($request);
+                $request->merge(['order_id' => $order->id]);
+                $res = $this->orderPayLink($request);
+                $advance = ($res['purpose'] ?? 'full') === 'advance';
+                $amount = (float) ($res['amount_bdt'] ?? $order->total);
+                $msg = $advance
+                    ? "অর্ডার #{$order->tracking_number} এর ৫০% অগ্রিম ৳" . round($amount) . " পেমেন্ট লিংকঃ {$res['pay_link']}"
+                    : "অর্ডার #{$order->tracking_number} এর পেমেন্ট লিংক: {$res['pay_link']} — লিংকে গিয়ে পছন্দের মেথডে পেমেন্ট করুন।";
+                return [
+                    'status'     => 'success',
+                    'pay_link'   => $res['pay_link'],
+                    'amount_bdt' => round($amount),
+                    'purpose'    => $res['purpose'] ?? 'full',
+                    'message'    => $msg,
+                ];
+            }
+
+            case 'create_product': {
+                return $this->agentCreateProduct($request);
+            }
+
+            case 'order_status': {
+                $order = $this->resolveAgentOrder($request);
+                $ops = (array) ($order->ops_meta ?? []);
+                $adv = $ops['advance'] ?? null;
+                if ($adv) {
+                    $status = ($adv['status'] ?? '') === 'paid' ? 'APPROVED' : 'PENDING_ADVANCE';
+                } else {
+                    $status = strtoupper(str_replace('order-', '', (string) $order->order_status));
+                }
+                return [
+                    'status'   => $status,
+                    'paid_bdt' => round((float) $order->paid_total),
+                    'due_bdt'  => round((float) $order->total - (float) $order->paid_total),
+                ];
+            }
+
+            default:
+                throw new MarvelException('Unknown agent action: ' . ($action ?: '(empty)'));
+        }
+    }
+
+    /**
+     * Manual order adjustment (discount / delivery fee / +/- adjustment / note / mark paid).
+     * Moved out of a route closure so it can't break route:cache.
+     */
+    public function adjustOrder(Request $request)
+    {
+        $request->validate(['order_id' => 'required']);
+        $order = Order::findOrFail($request->order_id);
+        if ($request->filled('discount')) {
+            $order->discount = (float) $request->discount;
+        }
+        if ($request->filled('delivery_fee')) {
+            $order->delivery_fee = (float) $request->delivery_fee;
+        }
+        if ($request->has('note')) {
+            $order->note = $request->note;
+        }
+        $adjustment = (float) ($request->adjustment ?? 0);
+        $order->total = max(0, (float) ($order->amount ?? 0)
+            + (float) ($order->sales_tax ?? 0)
+            + (float) ($order->delivery_fee ?? 0)
+            - (float) ($order->discount ?? 0)
+            + $adjustment);
+        if ($request->boolean('mark_paid')) {
+            $order->paid_total = $order->total;
+        }
+        $order->save();
+        return [
+            'status' => 'success',
+            'order'  => [
+                'id' => $order->id, 'total' => $order->total, 'paid_total' => $order->paid_total,
+                'discount' => $order->discount, 'delivery_fee' => $order->delivery_fee, 'note' => $order->note,
+            ],
+        ];
+    }
+
+    /**
+     * Operational tracking for the order-management board: call / message / two-step print /
+     * multi-author notes / activity log — all stored in orders.ops_meta (single JSON column).
+     */
+    public function orderOps(Request $request)
+    {
+        $request->validate(['order_id' => 'required']);
+        $order = Order::findOrFail($request->order_id);
+        $ops = (array) ($order->ops_meta ?? []);
+        $ops += [
+            'call_status' => 'none', 'call_attempts' => 0,
+            'message_status' => 'none',
+            'print_status' => 'none', 'print_count' => 0,
+            'notes' => [], 'events' => [],
+        ];
+        $actor = optional($request->user())->name ?: 'Admin';
+        $now   = now()->toIso8601String();
+        $log   = function ($type, $desc) use (&$ops, $actor, $now) {
+            $ops['events'][] = ['type' => $type, 'description' => $desc, 'actor' => $actor, 'at' => $now];
+        };
+        $p = (array) $request->input('patch', []);
+
+        if (array_key_exists('call_status', $p)) {
+            $ops['call_status'] = $p['call_status'];
+            if ($p['call_status'] !== 'none') {
+                $log('call_status_changed', 'Call marked: ' . ucfirst(str_replace('_', ' ', $p['call_status'])));
+            }
+        }
+        if (!empty($p['call_attempt'])) {
+            $ops['call_attempts'] = (int) $ops['call_attempts'] + 1;
+            $log('call_attempt', 'Call attempt #' . $ops['call_attempts'] . ' logged');
+        }
+        if (array_key_exists('message_status', $p)) {
+            $ops['message_status'] = $p['message_status'];
+            $log($p['message_status'] === 'sent' ? 'message_sent' : 'message_unsent',
+                $p['message_status'] === 'sent' ? 'Confirmation message sent' : 'Message marked not sent');
+        }
+        if (($p['print'] ?? null) === 'send') {
+            $reprint = $ops['print_status'] !== 'none';
+            $ops['print_status'] = 'sent';
+            $log($reprint ? 'print_reprint' : 'print_command_sent',
+                ($reprint ? 'Reprint' : 'Print') . ' command sent — slip confirm pending');
+        }
+        if (($p['print'] ?? null) === 'confirm') {
+            $ops['print_status'] = 'confirmed';
+            $ops['print_count'] = (int) $ops['print_count'] + 1;
+            $log('print_confirmed', 'Slip printed — confirmed (' . $ops['print_count'] . '×)');
+        }
+        if (!empty($p['add_note']['text'])) {
+            $ops['notes'][] = [
+                'role' => $p['add_note']['role'] ?? 'moderator',
+                'who'  => $p['add_note']['who'] ?? $actor,
+                'text' => (string) $p['add_note']['text'],
+                'at'   => $now,
+            ];
+            $log('note_added', 'Note added');
+        }
+        if (array_key_exists('tier', $p)) {
+            $ops['tier'] = $p['tier'];
+        }
+        if (array_key_exists('courier', $p)) {
+            $ops['courier'] = $p['courier'];
+            if (!empty($p['courier'])) {
+                $log('courier_assigned', 'Courier set: ' . $p['courier']);
+            }
+        }
+
+        $order->ops_meta = $ops;
+        $order->save();
+        return ['status' => 'success', 'ops' => $ops];
+    }
+
+    /** Search orders across the whole table by tracking #, customer name/phone, or book title. */
+    public function orderSearch(Request $request)
+    {
+        $q = trim((string) $request->input('q', ''));
+        if ($q === '') {
+            return ['status' => 'success', 'data' => [], 'total' => 0];
+        }
+        $orders = Order::query()
+            ->with('products')
+            ->where(function ($w) use ($q) {
+                $w->where('tracking_number', 'like', "%{$q}%")
+                    ->orWhere('customer_name', 'like', "%{$q}%")
+                    ->orWhere('customer_contact', 'like', "%{$q}%")
+                    // book by English name, Bangla name, or slug; plus author name
+                    ->orWhereHas('products', fn ($p) => $p->where('name', 'like', "%{$q}%")
+                        ->orWhere('bangla_name', 'like', "%{$q}%")
+                        ->orWhere('slug', 'like', "%{$q}%")
+                        ->orWhereHas('author', fn ($a) => $a->where('name', 'like', "%{$q}%")))
+                    // registered customer's account name
+                    ->orWhereHas('customer', fn ($c) => $c->where('name', 'like', "%{$q}%"));
+            })
+            ->limit(80)
+            ->get();
+        return ['status' => 'success', 'data' => $orders, 'total' => $orders->count()];
+    }
+
+    /** Per-customer order stats so the board can compute the loyalty tier. */
+    public function orderCustomerStats(Request $request)
+    {
+        $ids = array_filter((array) $request->input('customer_ids', []));
+        if (empty($ids)) {
+            return ['status' => 'success', 'stats' => []];
+        }
+        $rows = \Illuminate\Support\Facades\DB::table('orders')
+            ->whereIn('customer_id', $ids)
+            ->whereNull('deleted_at')
+            ->select(
+                'customer_id',
+                \Illuminate\Support\Facades\DB::raw('COUNT(*) AS total'),
+                \Illuminate\Support\Facades\DB::raw("SUM(CASE WHEN order_status = 'order-completed' THEN 1 ELSE 0 END) AS delivered"),
+                \Illuminate\Support\Facades\DB::raw("SUM(CASE WHEN order_status IN ('order-cancelled','order-refunded') THEN 1 ELSE 0 END) AS returned")
+            )
+            ->groupBy('customer_id')
+            ->get();
+        $out = [];
+        foreach ($rows as $r) {
+            $out[$r->customer_id] = [
+                'total' => (int) $r->total,
+                'delivered' => (int) $r->delivered,
+                'returned' => (int) $r->returned,
+            ];
+        }
+        return ['status' => 'success', 'stats' => $out];
+    }
+
+    /** Test the ReplyGenie connection: token present + public search endpoint reachable. */
+    public function testReplygenie(Request $request)
+    {
+        $cfg = $this->options()['replygenie'] ?? [];
+        if (empty($cfg['enabled'])) {
+            return ['status' => 'error', 'message' => 'ReplyGenie is disabled — enable it and click Save first.'];
+        }
+        if (empty($cfg['token'])) {
+            return ['status' => 'error', 'message' => 'No connect token yet — click Save to generate one.'];
+        }
+        $base = rtrim(config('app.url') ?: url('/'), '/');
+        try {
+            $r = Http::timeout(15)->get($base . '/product-search-api', ['q' => 'a', 'limit' => 1]);
+            $ok = $r->successful();
+            return [
+                'status'  => $ok ? 'ok' : 'error',
+                'http'    => $r->status(),
+                'message' => $ok
+                    ? 'Connected ✓ token active, product-search reachable (found ' . ($r->json('count') ?? 0) . ' sample).'
+                    : 'Search endpoint returned ' . $r->status() . '.',
+            ];
+        } catch (\Throwable $e) {
+            return ['status' => 'error', 'message' => 'Self-test failed: ' . $e->getMessage()];
+        }
+    }
+
+    // ------------------------------------------------------- courier settings
+    public function getCourierSettings(Request $request)
+    {
+        $c = $this->options()['couriers'] ?? [];
+        $out = [];
+        foreach (['redx', 'steadfast', 'paperfly', 'sundarban', 'pathao'] as $p) {
+            $cfg = $c[$p] ?? [];
+            $out[$p] = [
+                'enabled'  => (bool) ($cfg['enabled'] ?? false),
+                'has_token' => !empty($cfg['token']) || !empty($cfg['api_key']),
+            ];
+        }
+        return ['status' => 'success', 'couriers' => $out];
+    }
+
+    public function updateCourierSettings(Request $request)
+    {
+        $data = $request->validate([
+            'provider' => 'required|in:redx,steadfast,paperfly,sundarban,pathao',
+            'enabled'  => 'nullable|boolean',
+            'token'    => 'nullable|string',
+            'api_key'  => 'nullable|string',
+            'secret'   => 'nullable|string',
+            'base_url' => 'nullable|string',
+        ]);
+        $settings = Settings::first();
+        $options  = $settings->options;
+        $couriers = $options['couriers'] ?? [];
+        $cur = $couriers[$data['provider']] ?? [];
+        $couriers[$data['provider']] = [
+            'enabled'  => array_key_exists('enabled', $data) ? (bool) $data['enabled'] : ($cur['enabled'] ?? false),
+            'token'    => !empty($data['token']) ? $data['token'] : ($cur['token'] ?? ''),
+            'api_key'  => !empty($data['api_key']) ? $data['api_key'] : ($cur['api_key'] ?? ''),
+            'secret'   => !empty($data['secret']) ? $data['secret'] : ($cur['secret'] ?? ''),
+            'base_url' => $data['base_url'] ?? ($cur['base_url'] ?? ''),
+        ];
+        $options['couriers'] = $couriers;
+        $settings->update(['options' => $options]);
+        return $this->getCourierSettings($request);
+    }
+
+    /** Test connectivity to a courier using the stored credentials. */
+    public function testCourier(Request $request, $provider)
+    {
+        $cfg = ($this->options()['couriers'] ?? [])[$provider] ?? [];
+        try {
+            switch ($provider) {
+                case 'redx':
+                    // RedX authenticates with the `API-ACCESS-TOKEN: Bearer <token>` header
+                    // (NOT the standard Authorization header). Docs: redx.com.bd/developer-api
+                    $base = rtrim($cfg['base_url'] ?? '', '/') ?: 'https://openapi.redx.com.bd/v1.0.0-beta';
+                    $r = Http::withHeaders(['API-ACCESS-TOKEN' => 'Bearer ' . ($cfg['token'] ?? '')])
+                        ->timeout(25)->get($base . '/areas');
+                    break;
+                case 'steadfast':
+                    $r = Http::withHeaders([
+                        'Api-Key'    => $cfg['api_key'] ?? '',
+                        'Secret-Key' => $cfg['secret'] ?? '',
+                        'Content-Type' => 'application/json',
+                    ])->timeout(25)->get('https://portal.packzy.com/api/v1/get_balance');
+                    break;
+                case 'pathao':
+                    $r = Http::timeout(25)->post(($cfg['base_url'] ?: 'https://api-hermes.pathao.com') . '/aladdin/api/v1/issue-token', [
+                        'grant_type' => 'client_credentials',
+                        'client_id'  => $cfg['api_key'] ?? '',
+                        'client_secret' => $cfg['secret'] ?? '',
+                    ]);
+                    break;
+                case 'paperfly':
+                    $r = Http::withHeaders(['paperflykey' => $cfg['token'] ?? ''])->timeout(25)
+                        ->get(($cfg['base_url'] ?: 'https://api.paperfly.com.bd') . '/OpenApi/api/v1');
+                    break;
+                default: // sundarban & others – ping the configured base url
+                    $r = Http::timeout(20)->get($cfg['base_url'] ?: 'https://sundarbancourierltd.com');
+            }
+            return [
+                'status'      => $r->successful() ? 'ok' : 'error',
+                'http'        => $r->status(),
+                'message'     => $r->successful() ? 'Connected successfully.' : 'Reachable but credentials/endpoint returned ' . $r->status() . '. Check the token.',
+                'body_sample' => Str::limit($r->body(), 200),
+            ];
+        } catch (\Throwable $e) {
+            return ['status' => 'error', 'message' => 'Could not reach the courier API: ' . $e->getMessage()];
+        }
+    }
+
+    // ------------------------------------------------------- payment settings
+    public function getPaymentSettings(Request $request)
+    {
+        $p = $this->options()['payments'] ?? [];
+        $out = [];
+        foreach (['bkash', 'nagad', 'bank'] as $g) {
+            $cfg = $p[$g] ?? [];
+            $out[$g] = [
+                'enabled'   => (bool) ($cfg['enabled'] ?? false),
+                'mode'      => $cfg['mode'] ?? 'sandbox',
+                'has_creds' => !empty($cfg['app_key']) || !empty($cfg['merchant_id']) || !empty($cfg['account']),
+            ];
+        }
+        return ['status' => 'success', 'payments' => $out];
+    }
+
+    public function updatePaymentSettings(Request $request)
+    {
+        $data = $request->validate([
+            'gateway'     => 'required|in:bkash,nagad,bank',
+            'enabled'     => 'nullable|boolean',
+            'mode'        => 'nullable|in:sandbox,live',
+            'app_key'     => 'nullable|string',
+            'app_secret'  => 'nullable|string',
+            'username'    => 'nullable|string',
+            'password'    => 'nullable|string',
+            'merchant_id' => 'nullable|string',
+            'account'     => 'nullable|string',
+        ]);
+        $settings = Settings::first();
+        $options  = $settings->options;
+        $payments = $options['payments'] ?? [];
+        $cur = $payments[$data['gateway']] ?? [];
+        $payments[$data['gateway']] = array_merge($cur, array_filter([
+            'enabled'     => array_key_exists('enabled', $data) ? (bool) $data['enabled'] : ($cur['enabled'] ?? false),
+            'mode'        => $data['mode'] ?? ($cur['mode'] ?? 'sandbox'),
+            'app_key'     => $data['app_key'] ?? null,
+            'app_secret'  => $data['app_secret'] ?? null,
+            'username'    => $data['username'] ?? null,
+            'password'    => $data['password'] ?? null,
+            'merchant_id' => $data['merchant_id'] ?? null,
+            'account'     => $data['account'] ?? null,
+        ], fn ($v) => $v !== null));
+        $options['payments'] = $payments;
+        $settings->update(['options' => $options]);
+        return $this->getPaymentSettings($request);
+    }
+
+    /** Test a payment gateway's stored credentials. */
+    public function testPayment(Request $request, $gateway)
+    {
+        $cfg = ($this->options()['payments'] ?? [])[$gateway] ?? [];
+        try {
+            switch ($gateway) {
+                case 'bkash':
+                    $base = ($cfg['mode'] ?? 'sandbox') === 'live'
+                        ? 'https://tokenized.pay.bka.sh/v1.2.0-beta'
+                        : 'https://tokenized.sandbox.bka.sh/v1.2.0-beta';
+                    $r = Http::withHeaders([
+                        'username'     => $cfg['username'] ?? '',
+                        'password'     => $cfg['password'] ?? '',
+                        'Content-Type' => 'application/json',
+                        'Accept'       => 'application/json',
+                    ])->timeout(25)->post($base . '/tokenized/checkout/token/grant', [
+                        'app_key'    => $cfg['app_key'] ?? '',
+                        'app_secret' => $cfg['app_secret'] ?? '',
+                    ]);
+                    $ok = $r->successful() && !empty($r->json('id_token'));
+                    return [
+                        'status'  => $ok ? 'ok' : 'error',
+                        'http'    => $r->status(),
+                        'message' => $ok
+                            ? 'bKash credentials valid ✓ (' . ($cfg['mode'] ?? 'sandbox') . ' token received).'
+                            : 'bKash rejected the credentials (' . $r->status() . '). ' . Str::limit($r->body(), 140),
+                    ];
+                case 'nagad':
+                    $ok = !empty($cfg['merchant_id']) && !empty($cfg['app_key']);
+                    return [
+                        'status'  => $ok ? 'ok' : 'error',
+                        'message' => $ok
+                            ? 'Nagad merchant id & key are set ✓ (the full handshake runs at checkout).'
+                            : 'Missing Nagad merchant id / app key.',
+                    ];
+                case 'bank':
+                    $ok = !empty($cfg['account']);
+                    return [
+                        'status'  => $ok ? 'ok' : 'error',
+                        'message' => $ok ? 'Bank transfer details saved ✓.' : 'No bank account details saved.',
+                    ];
+                default:
+                    return ['status' => 'error', 'message' => 'Unknown gateway.'];
+            }
+        } catch (\Throwable $e) {
+            return ['status' => 'error', 'message' => 'Could not reach the gateway: ' . $e->getMessage()];
+        }
+    }
+
+    // ------------------------------------------------------- order line items
+    /**
+     * Add / remove / update products on an existing order and recompute totals.
+     * Body: { order_id, add:[{product_id, quantity}], remove:[product_id], set:[{product_id, quantity}] }
+     */
+    public function editOrderItems(Request $request)
+    {
+        $request->validate(['order_id' => 'required']);
+        $order = Order::with('products')->findOrFail($request->order_id);
+
+        foreach ((array) $request->input('remove', []) as $pid) {
+            $order->products()->detach($pid);
+        }
+        $addOrSet = array_merge((array) $request->input('add', []), (array) $request->input('set', []));
+        foreach ($addOrSet as $it) {
+            $pid = $it['product_id'] ?? null;
+            $product = $pid ? Product::find($pid) : null;
+            if (!$product) {
+                continue;
+            }
+            $qty = max(1, (int) ($it['quantity'] ?? 1));
+            // The admin can override the line price (a damaged copy, a haggled deal, a
+            // wrong catalogue price). Without one we fall back to the book's own price.
+            $unit = isset($it['price']) && $it['price'] !== '' && (float) $it['price'] >= 0
+                ? (float) $it['price']
+                : (float) ($product->sale_price ?: $product->price);
+            $order->products()->syncWithoutDetaching([
+                $product->id => [
+                    'order_quantity' => $qty,
+                    'unit_price'     => $unit,
+                    'subtotal'       => $unit * $qty,
+                ],
+            ]);
+        }
+
+        $order->load('products');
+        $amount = 0;
+        foreach ($order->products as $p) {
+            $amount += (float) ($p->pivot->subtotal ?? 0);
+        }
+        $order->amount = $amount;
+        $order->total = max(0, $amount + (float) ($order->sales_tax ?? 0)
+            + (float) ($order->delivery_fee ?? 0) - (float) ($order->discount ?? 0));
+        $order->save();
+
+        return [
+            'status' => 'success',
+            'order'  => [
+                'id'     => $order->id,
+                'amount' => $order->amount,
+                'total'  => $order->total,
+                'products' => $order->products->map(fn ($p) => [
+                    'id'   => $p->id,
+                    'name' => $p->name,
+                    'qty'  => (int) ($p->pivot->order_quantity ?? 0),
+                    'unit_price' => (float) ($p->pivot->unit_price ?? 0),
+                    'subtotal'   => (float) ($p->pivot->subtotal ?? 0),
+                ]),
+            ],
+        ];
+    }
+
+    // --------------------------------------------------- courier: create shipment
+    /** Create a shipment/consignment for an order with the selected courier. */
+    public function createShipment(Request $request, $provider)
+    {
+        $cfg = ($this->options()['couriers'] ?? [])[$provider] ?? [];
+        if (empty($cfg['enabled'])) {
+            throw new MarvelException(ucfirst($provider) . ' is not enabled in Settings → Couriers & Payments.');
+        }
+        $order = Order::findOrFail($request->order_id);
+        $addr = is_array($order->shipping_address) ? $order->shipping_address : [];
+        $address = trim(($addr['street_address'] ?? '') . ' ' . ($addr['city'] ?? '') . ' ' . ($addr['state'] ?? ''));
+        $shipArea = $addr['city'] ?? $addr['state'] ?? null;
+
+        try {
+            switch ($provider) {
+                case 'steadfast':
+                    $r = Http::withHeaders([
+                        'Api-Key' => $cfg['api_key'] ?? '', 'Secret-Key' => $cfg['secret'] ?? '',
+                        'Content-Type' => 'application/json',
+                    ])->timeout(30)->post('https://portal.packzy.com/api/v1/create_order', [
+                        'invoice'           => $order->tracking_number,
+                        'recipient_name'    => $order->customer_name,
+                        'recipient_phone'   => $order->customer_contact,
+                        'recipient_address' => $address ?: 'N/A',
+                        'cod_amount'        => (float) $order->total,
+                        'note'              => $order->note,
+                    ]);
+                    break;
+                case 'redx':
+                    $base = rtrim($cfg['base_url'] ?? '', '/') ?: 'https://openapi.redx.com.bd/v1.0.0-beta';
+                    $headers = ['API-ACCESS-TOKEN' => 'Bearer ' . ($cfg['token'] ?? '')];
+                    // RedX requires a delivery_area_id — resolve it from /areas by city/state name.
+                    $cityName = $addr['city'] ?? $addr['state'] ?? 'Dhaka';
+                    [$areaId, $areaName] = $this->redxResolveArea($base, $headers, $cityName);
+                    $shipArea = $areaName ?: $cityName;
+                    $payload = [
+                        'customer_name'          => $order->customer_name ?: 'Customer',
+                        'customer_phone'         => $order->customer_contact,
+                        'delivery_area'          => $areaName ?: $cityName,
+                        'customer_address'       => $address ?: 'N/A',
+                        'merchant_invoice_id'    => $order->tracking_number,
+                        'cash_collection_amount' => (string) round((float) $order->total),
+                        'parcel_weight'          => (int) ($cfg['default_weight'] ?? 500),
+                        'value'                  => (int) round((float) $order->total),
+                    ];
+                    if ($areaId) {
+                        $payload['delivery_area_id'] = $areaId;
+                    }
+                    if (!empty($cfg['pickup_store_id'])) {
+                        $payload['pickup_store_id'] = (int) $cfg['pickup_store_id'];
+                    }
+                    if (!empty($order->note)) {
+                        $payload['instruction'] = Str::limit($order->note, 190, '');
+                    }
+                    $r = Http::withHeaders($headers)->timeout(30)->post($base . '/parcel', $payload);
+                    break;
+                default:
+                    throw new MarvelException('Automatic shipment creation for ' . ucfirst($provider) . ' is not wired yet — mark it manually for now.');
+            }
+            if ($r->successful()) {
+                $body = $r->json();
+                // Pull the courier's own tracking id out of the (provider-specific) response.
+                $tracking = $body['tracking_id']
+                    ?? ($body['consignment']['consignment_id'] ?? null)
+                    ?? ($body['consignment']['tracking_code'] ?? null)
+                    ?? ($body['data']['tracking_id'] ?? null);
+                $order->logistics_provider = $provider;
+                if ($tracking) {
+                    $order->note = trim(($order->note ? $order->note . ' | ' : '') . strtoupper($provider) . ': ' . $tracking);
+                }
+                // Persist courier entry into ops_meta so the order board shows the
+                // tracking id + area (confirms the parcel was registered).
+                $ops = (array) ($order->ops_meta ?? []);
+                $ops['courier'] = $provider;
+                $ops['courier_tracking_id'] = $tracking;
+                $ops['courier_area'] = $shipArea;
+                $ops['courier_sent_at'] = now()->toIso8601String();
+                $order->ops_meta = $ops;
+                $order->save();
+                return [
+                    'status'      => 'success',
+                    'provider'    => $provider,
+                    'tracking_id' => $tracking,
+                    'area'        => $shipArea,
+                    'response'    => $body,
+                ];
+            }
+            throw new MarvelException(ucfirst($provider) . ' error ' . $r->status() . ': ' . Str::limit($r->body(), 200));
+        } catch (MarvelException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new MarvelException('Shipment failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Resolve a RedX delivery_area_id from an area/city name by scanning /areas.
+     * Returns [id, name]; [null, null] if nothing matches (caller falls back).
+     */
+    protected function redxResolveArea(string $base, array $headers, string $cityName): array
+    {
+        try {
+            $res = Http::withHeaders($headers)->timeout(20)->get($base . '/areas');
+            if (!$res->successful()) {
+                return [null, null];
+            }
+            $areas = $res->json('areas') ?? $res->json('data') ?? $res->json() ?? [];
+            $needle = mb_strtolower(trim($cityName));
+            $best = null;
+            foreach ($areas as $a) {
+                $nm = mb_strtolower((string) ($a['name'] ?? ''));
+                if ($nm === '') {
+                    continue;
+                }
+                if ($nm === $needle) {
+                    return [(int) ($a['id'] ?? 0), $a['name'] ?? $cityName];
+                }
+                if (!$best && $needle !== '' && (str_contains($nm, $needle) || str_contains($needle, $nm))) {
+                    $best = $a;
+                }
+            }
+            if ($best) {
+                return [(int) ($best['id'] ?? 0), $best['name'] ?? $cityName];
+            }
+            // last resort: first area returned (keeps the parcel from failing hard)
+            $first = $areas[0] ?? null;
+            return $first ? [(int) ($first['id'] ?? 0), $first['name'] ?? $cityName] : [null, null];
+        } catch (\Throwable $e) {
+            return [null, null];
+        }
+    }
+
+    /**
+     * Track a shipment with the courier. GET courier-track/{provider}?tracking_id=...
+     */
+    public function courierTrack(Request $request, $provider)
+    {
+        $cfg = ($this->options()['couriers'] ?? [])[$provider] ?? [];
+        $trackingId = (string) $request->input('tracking_id', '');
+        if ($trackingId === '') {
+            throw new MarvelException('tracking_id is required.');
+        }
+        try {
+            switch ($provider) {
+                case 'redx':
+                    $base = rtrim($cfg['base_url'] ?? '', '/') ?: 'https://openapi.redx.com.bd/v1.0.0-beta';
+                    $r = Http::withHeaders(['API-ACCESS-TOKEN' => 'Bearer ' . ($cfg['token'] ?? '')])
+                        ->timeout(25)->get($base . '/parcel/track/' . $trackingId);
+                    break;
+                case 'steadfast':
+                    $r = Http::withHeaders([
+                        'Api-Key' => $cfg['api_key'] ?? '', 'Secret-Key' => $cfg['secret'] ?? '',
+                    ])->timeout(25)->get('https://portal.packzy.com/api/v1/status_by_cid/' . $trackingId);
+                    break;
+                default:
+                    throw new MarvelException('Tracking for ' . ucfirst($provider) . ' is not wired yet.');
+            }
+            return [
+                'status'   => $r->successful() ? 'success' : 'error',
+                'http'     => $r->status(),
+                'tracking' => $r->json(),
+            ];
+        } catch (MarvelException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new MarvelException('Tracking failed: ' . $e->getMessage());
+        }
+    }
+
+    // --------------------------------------------------------- payment: bKash
+    /**
+     * Start a bKash tokenized payment for an order and return the bKash URL.
+     * Requires bKash creds saved in Settings → Couriers & Payments.
+     */
+    public function bkashCreate(Request $request)
+    {
+        $cfg = ($this->options()['payments'] ?? [])['bkash'] ?? [];
+        if (empty($cfg['enabled']) || empty($cfg['app_key'])) {
+            throw new MarvelException('bKash is not configured. Add credentials in Settings → Couriers & Payments.');
+        }
+        $order = Order::findOrFail($request->order_id);
+        $base = ($cfg['mode'] ?? 'sandbox') === 'live'
+            ? 'https://tokenized.pay.bka.sh/v1.2.0-beta'
+            : 'https://tokenized.sandbox.bka.sh/v1.2.0-beta';
+        try {
+            $grant = Http::withHeaders([
+                'username' => $cfg['username'] ?? '', 'password' => $cfg['password'] ?? '',
+                'Content-Type' => 'application/json',
+            ])->timeout(30)->post($base . '/tokenized/checkout/token/grant', [
+                'app_key' => $cfg['app_key'], 'app_secret' => $cfg['app_secret'] ?? '',
+            ]);
+            $token = $grant->json('id_token');
+            if (!$token) {
+                throw new MarvelException('bKash token error: ' . Str::limit($grant->body(), 200));
+            }
+            $create = Http::withHeaders([
+                'Authorization' => $token, 'X-APP-Key' => $cfg['app_key'], 'Content-Type' => 'application/json',
+            ])->timeout(30)->post($base . '/tokenized/checkout/create', [
+                'mode' => '0011',
+                'payerReference' => (string) $order->customer_contact,
+                'callbackURL' => 'https://indobangla.tech/backend/bkash-callback',
+                'amount' => (string) $order->total,
+                'currency' => 'BDT',
+                'intent' => 'sale',
+                'merchantInvoiceNumber' => $order->tracking_number,
+            ]);
+            return ['status' => 'success', 'bkash' => $create->json()];
+        } catch (MarvelException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new MarvelException('bKash create failed: ' . $e->getMessage());
+        }
+    }
+
+    // ----------------------------------------------------- home real sections
+    /** Deal of the day: the published in-stock book with the biggest discount. */
+    public function dealOfTheDay(Request $request)
+    {
+        // Fetch the top discounted candidates and pick the first one that actually has a
+        // cover image (the `image` column can hold JSON null / {} which is NOT SQL NULL,
+        // so a whereNotNull filter alone lets image-less books slip through).
+        $candidates = Product::query()
+            ->where('status', 'publish')
+            ->where('type_id', 8)
+            ->whereNotNull('sale_price')
+            ->where('sale_price', '>', 0)
+            ->whereColumn('sale_price', '<', 'price')
+            ->where('quantity', '>', 0)
+            ->orderByRaw('(price - sale_price) / price DESC')
+            ->limit(20)
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'quantity', 'image']);
+        $p = $candidates->first(function ($x) {
+            $img = is_array($x->image) ? ($x->image['original'] ?? null) : null;
+            return !empty($img);
+        });
+        if (!$p) {
+            return ['status' => 'success', 'deal' => null];
+        }
+        return [
+            'status' => 'success',
+            'deal'   => [
+                'id' => $p->id, 'name' => $p->name, 'slug' => $p->slug,
+                'price' => (float) $p->price, 'sale_price' => (float) $p->sale_price,
+                'quantity' => (int) $p->quantity,
+                'off' => (int) round((1 - $p->sale_price / $p->price) * 100),
+                'image' => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                'url' => '/products/' . $p->slug,
+            ],
+        ];
+    }
+
+    /** Popular books for the "frequently bought together" bundle (real products). */
+    public function popularBooks(Request $request)
+    {
+        $limit = min((int) ($request->input('limit', 3)), 8);
+        $items = Product::query()
+            ->where('status', 'publish')
+            ->where('type_id', 8)
+            ->where('quantity', '>', 0)
+            ->orderByDesc('sold_quantity')
+            ->limit($limit * 4 + 8)
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'image'])
+            ->filter(function ($p) {
+                $img = is_array($p->image) ? ($p->image['original'] ?? null) : null;
+                return !empty($img);
+            })
+            ->take($limit)
+            ->values();
+        $data = $items->map(fn ($p) => [
+            'id' => $p->id, 'name' => $p->name, 'slug' => $p->slug,
+            'price' => (float) $p->price,
+            'sale_price' => (float) ($p->sale_price ?: $p->price),
+            'image' => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+            'url' => '/products/' . $p->slug,
+        ]);
+        return ['status' => 'success', 'products' => $data];
+    }
+
+    /**
+     * Category-wise book rails for the home page: the top book categories, each with a
+     * handful of in-stock books that actually have a cover image.
+     */
+    public function homeCategories(Request $request)
+    {
+        $catLimit = min((int) ($request->input('categories', 5)), 8);
+        $perCat   = min((int) ($request->input('per', 6)), 12);
+
+        $cats = \Marvel\Database\Models\Category::query()
+            ->where('type_id', 8)
+            ->whereHas('products', fn ($q) => $q->where('status', 'publish')->where('quantity', '>', 0))
+            ->withCount(['products' => fn ($q) => $q->where('status', 'publish')->where('type_id', 8)->where('quantity', '>', 0)])
+            ->orderByDesc('products_count')
+            ->limit($catLimit + 3)
+            ->get(['id', 'name', 'slug']);
+
+        $sections = [];
+        foreach ($cats as $cat) {
+            $products = Product::query()
+                ->where('status', 'publish')
+                ->where('type_id', 8)
+                ->where('quantity', '>', 0)
+                ->whereHas('categories', fn ($q) => $q->where('categories.id', $cat->id))
+                ->orderByDesc('sold_quantity')
+                ->limit($perCat * 3 + 6)
+                ->get(['id', 'name', 'slug', 'price', 'sale_price', 'image'])
+                ->filter(fn ($p) => is_array($p->image) && !empty($p->image['original']))
+                ->take($perCat)
+                ->values();
+            if ($products->count() < 2) {
+                continue;
+            }
+            $sections[] = [
+                'category' => ['id' => $cat->id, 'name' => $cat->name, 'slug' => $cat->slug],
+                'products' => $products->map(fn ($p) => [
+                    'id' => $p->id, 'name' => $p->name, 'slug' => $p->slug,
+                    'price' => (float) $p->price,
+                    'sale_price' => (float) ($p->sale_price ?: $p->price),
+                    'image' => $p->image['original'] ?? null,
+                    'url' => '/products/' . $p->slug,
+                ]),
+            ];
+            if (count($sections) >= $catLimit) {
+                break;
+            }
+        }
+        return ['status' => 'success', 'sections' => $sections];
+    }
+
+    /**
+     * Public in-stock book listing for the storefront (home "All books", category pages).
+     * Only quantity>0 books with a cover are returned (out-of-stock never shown up front).
+     * `seed` gives a stable random order per page-load (so each reload feels fresh but
+     * pagination stays consistent); `category` filters by category slug.
+     */
+    public function booksListing(Request $request)
+    {
+        $limit = min(max((int) $request->input('limit', 20), 1), 40);
+        $page  = max(1, (int) $request->input('page', 1));
+        $seed  = $request->input('seed');
+        $text  = trim((string) $request->input('text', ''));
+
+        $query = Product::query()
+            ->where('status', 'publish')
+            ->where('type_id', 8)
+            ->whereNotNull('image')
+            ->with(['type:id,slug,name,settings', 'author:id,name,slug']);
+
+        // Out-of-stock books stay hidden on browse, but appear when the user searches.
+        if ($text === '') {
+            $query->where('quantity', '>', 0);
+        }
+
+        if ($cat = $request->input('category')) {
+            $query->whereHas('categories', fn ($c) => $c->where('categories.slug', $cat));
+        }
+        if ($text !== '') {
+            // Smart search: whole-phrase match (name / bangla / slug / author / category)
+            // PLUS per-word + phonetic (SOUNDEX) matching for typo/spelling tolerance,
+            // across both Bangla and English fields.
+            $like    = '%' . $text . '%';
+            $tokens  = array_slice(preg_split('/\s+/u', $text, -1, PREG_SPLIT_NO_EMPTY) ?: [], 0, 6);
+            $query->where(function ($q) use ($like, $tokens) {
+                $q->where('name', 'like', $like)
+                    ->orWhere('bangla_name', 'like', $like)
+                    ->orWhere('slug', 'like', $like)
+                    ->orWhereHas('author', fn ($a) => $a->where('name', 'like', $like))
+                    ->orWhereHas('categories', fn ($c) =>
+                        $c->where('categories.name', 'like', $like)->orWhere('categories.slug', 'like', $like));
+                foreach ($tokens as $tok) {
+                    $tl = '%' . $tok . '%';
+                    $q->orWhere('name', 'like', $tl)
+                        ->orWhere('bangla_name', 'like', $tl)
+                        ->orWhere('slug', 'like', $tl)
+                        ->orWhereHas('author', fn ($a) => $a->where('name', 'like', $tl));
+
+                    // SOUNDEX only understands Latin letters. On Bangla it collapses almost
+                    // every word to the same code, so searching "পাতালজাতক" dragged in every
+                    // book starting with প. Keep the typo tolerance for English titles only.
+                    $isAscii = strlen($tok) === mb_strlen($tok);
+                    if ($isAscii && mb_strlen($tok) >= 3) {
+                        $q->orWhereRaw('SOUNDEX(name) = SOUNDEX(?)', [$tok]);
+                    }
+                }
+            });
+        }
+        if ($text !== '') {
+            // Relevance-ish: exact-ish name match first, then in-stock, then newest.
+            $query->orderByRaw('(name LIKE ?) DESC', ['%' . $text . '%'])
+                ->orderByRaw('(quantity > 0) DESC')
+                ->orderByDesc('created_at');
+        } elseif ($seed !== null && $seed !== '') {
+            $query->orderByRaw('RAND(?)', [(int) $seed]);
+        } elseif ($request->boolean('random')) {
+            $query->inRandomOrder();
+        } else {
+            $query->orderByDesc('created_at');
+        }
+
+        $p = $query->paginate($limit, ['*'], 'page', $page);
+
+        // "Did you mean" suggestion when the query barely matched — find the
+        // closest book/category by phonetic name so a misspelled title/slug
+        // still points the reader to the right book.
+        $suggestion = null;
+        if ($text !== '' && $page === 1 && $p->total() <= 1) {
+            $firstTok = $tokens[0] ?? $text;
+            $near = Product::query()
+                ->where('status', 'publish')->where('type_id', 8)->whereNotNull('image')
+                ->where(function ($q) use ($firstTok) {
+                    $q->whereRaw('SOUNDEX(name) = SOUNDEX(?)', [$firstTok])
+                        ->orWhere('name', 'like', mb_substr($firstTok, 0, 3) . '%')
+                        ->orWhere('slug', 'like', mb_substr($firstTok, 0, 3) . '%');
+                })
+                ->orderByDesc('sold_quantity')
+                ->first(['name', 'slug']);
+            if ($near) {
+                $suggestion = ['name' => $near->name, 'slug' => $near->slug];
+            }
+        }
+
+        return [
+            'data'         => $p->items(),
+            'current_page' => $p->currentPage(),
+            'last_page'    => $p->lastPage(),
+            'total'        => $p->total(),
+            'suggestion'   => $suggestion,
+        ];
+    }
+
+    /** Related in-stock books for the single product page: by author, by category, recommended. */
+    public function relatedBooks(Request $request)
+    {
+        $pid = $request->input('product_id');
+        $product = Product::with('categories:id')->find($pid);
+        if (!$product) {
+            return ['status' => 'success', 'by_author' => [], 'by_category' => [], 'recommended' => []];
+        }
+        $base = fn () => Product::query()
+            ->where('status', 'publish')->where('type_id', 8)
+            ->where('quantity', '>', 0)->whereNotNull('image')
+            ->where('id', '!=', $pid)
+            ->with(['type:id,slug,settings', 'author:id,name,slug']);
+
+        $byAuthor = $product->author_id
+            ? $base()->where('author_id', $product->author_id)->inRandomOrder()->limit(12)->get()
+            : collect();
+
+        $catIds = $product->categories->pluck('id');
+        $byCategory = $catIds->isNotEmpty()
+            ? $base()->whereHas('categories', fn ($c) => $c->whereIn('categories.id', $catIds))
+                ->where(fn ($q) => $product->author_id ? $q->where('author_id', '!=', $product->author_id)->orWhereNull('author_id') : $q)
+                ->inRandomOrder()->limit(16)->get()
+            : collect();
+
+        $recommended = $base()->orderByDesc('sold_quantity')->limit(16)->get();
+
+        return [
+            'status'      => 'success',
+            'by_author'   => $byAuthor->values(),
+            'by_category' => $byCategory->values(),
+            'recommended' => $recommended->values(),
+        ];
+    }
+
+    /**
+     * Ensure the bundle-tier coupons exist and return them (real coupons the
+     * customer can apply at checkout). Buy-more-save-more pricing tiers.
+     */
+    public function bundleCoupons(Request $request)
+    {
+        $tiers = [
+            ['code' => 'BOOK3', 'amount' => 15, 'label' => 'Pick 3 books'],
+            ['code' => 'BOOK5', 'amount' => 25, 'label' => 'Pick 5 books'],
+            ['code' => 'BOOK10', 'amount' => 35, 'label' => 'Pick 10 books'],
+        ];
+        foreach ($tiers as $t) {
+            \Marvel\Database\Models\Coupon::firstOrCreate(
+                ['code' => $t['code']],
+                [
+                    'language'    => DEFAULT_LANGUAGE ?? 'en',
+                    'description' => $t['label'] . ' and save ' . $t['amount'] . '%',
+                    'type'        => 'percentage',
+                    'amount'      => $t['amount'],
+                    'minimum_cart_amount' => 0,
+                    'active_from' => now(),
+                    'expire_at'   => now()->addYear(),
+                    'is_approve'  => true,
+                ]
+            );
+        }
+        return ['status' => 'success', 'tiers' => $tiers];
+    }
+
+    /**
+     * Reader's Club sign-up (real membership capture + welcome coupon).
+     * Full monthly auto-billing would need recurring payment infra; this stores
+     * the member and issues a real member coupon they can use immediately.
+     */
+    public function clubJoin(Request $request)
+    {
+        $data = $request->validate([
+            'email'   => 'required|email',
+            'contact' => 'nullable|string',
+        ]);
+        $settings = Settings::first();
+        $options  = $settings->options;
+        $members  = $options['club_members'] ?? [];
+        $already  = collect($members)->firstWhere('email', $data['email']);
+        if (!$already) {
+            $members[] = [
+                'email'   => $data['email'],
+                'contact' => $data['contact'] ?? null,
+                'joined'  => now()->toDateTimeString(),
+            ];
+            $options['club_members'] = $members;
+            $settings->update(['options' => $options]);
+        }
+        // real member coupon
+        \Marvel\Database\Models\Coupon::firstOrCreate(
+            ['code' => 'READCLUB'],
+            [
+                'language'    => DEFAULT_LANGUAGE ?? 'en',
+                'description' => "Reader's Club member — 20% off",
+                'type'        => 'percentage',
+                'amount'      => 20,
+                'minimum_cart_amount' => 0,
+                'active_from' => now(),
+                'expire_at'   => now()->addYear(),
+                'is_approve'  => true,
+            ]
+        );
+        return [
+            'status'  => 'success',
+            'member'  => $data['email'],
+            'coupon'  => 'READCLUB',
+            'discount' => 20,
+        ];
+    }
+
+    /**
+     * #8 — Coupon analytics: real per-coupon redemption count, sales generated,
+     * and discount given, aggregated from the orders table (coupon_id). The admin
+     * UI computes profit/ROI/tier client-side from these real numbers.
+     */
+    public function couponAnalytics(Request $request)
+    {
+        $coupons = \Marvel\Database\Models\Coupon::query()
+            ->select('id', 'code', 'type', 'amount', 'active_from', 'expire_at', 'created_at')
+            ->orderByDesc('created_at')
+            ->get();
+
+        // Aggregate order figures grouped by coupon_id in a single query.
+        $stats = Order::query()
+            ->whereNotNull('coupon_id')
+            ->selectRaw('coupon_id, COUNT(*) as uses, COALESCE(SUM(total),0) as sales, COALESCE(SUM(discount),0) as discount_given')
+            ->groupBy('coupon_id')
+            ->get()
+            ->keyBy('coupon_id');
+
+        $now = now();
+        $rows = $coupons->map(function ($c) use ($stats, $now) {
+            $s = $stats->get($c->id);
+            $active = !$c->expire_at || \Carbon\Carbon::parse($c->expire_at)->greaterThanOrEqualTo($now);
+            return [
+                'id'             => (int) $c->id,
+                'code'           => $c->code,
+                'type'           => $c->type,
+                'amount'         => (float) $c->amount,
+                'active'         => (bool) $active,
+                'expire_at'      => $c->expire_at ? (string) $c->expire_at : null,
+                'uses'           => $s ? (int) $s->uses : 0,
+                'sales'          => $s ? (float) $s->sales : 0,
+                'discount_given' => $s ? (float) $s->discount_given : 0,
+            ];
+        })->values();
+
+        return ['coupons' => $rows];
+    }
+
+    /**
+     * Superadmin command-center summary — real aggregates from the live DB. Each
+     * block is computed defensively so a single failing query never 500s the
+     * whole dashboard; sections with no data source stay client-side sample.
+     */
+    public function dashboardSummary(Request $request)
+    {
+        $bn = ['জানু', 'ফেব', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্ট', 'অক্টো', 'নভে', 'ডিসে'];
+        $safe = function (callable $fn, $fallback) {
+            try {
+                return $fn();
+            } catch (\Throwable $e) {
+                return $fallback;
+            }
+        };
+
+        // ---- today vs yesterday ----
+        $today = $safe(function () {
+            $t = Order::whereDate('created_at', now()->toDateString());
+            $y = Order::whereDate('created_at', now()->subDay()->toDateString());
+            return [
+                'orders'          => (clone $t)->count(),
+                'revenue'         => (float) (clone $t)->sum('total'),
+                'yesterdayOrders' => (clone $y)->count(),
+                'yesterdayRevenue' => (float) (clone $y)->sum('total'),
+            ];
+        }, null);
+
+        // ---- new accounts (last 7 days) ----
+        $newAccounts = $safe(fn () => \Marvel\Database\Models\User::where('created_at', '>=', now()->subDays(7))->count(), null);
+        $newAccountsPrev = $safe(fn () => \Marvel\Database\Models\User::whereBetween('created_at', [now()->subDays(14), now()->subDays(7)])->count(), 0);
+
+        // ---- last 7 months sales ----
+        $sales = $safe(function () use ($bn) {
+            $rows = [];
+            for ($i = 6; $i >= 0; $i--) {
+                $m = now()->subMonths($i);
+                $q = Order::whereYear('created_at', $m->year)->whereMonth('created_at', $m->month);
+                $rows[] = [
+                    'm'      => $bn[$m->month - 1],
+                    'sales'  => (float) (clone $q)->sum('total'),
+                    'orders' => (clone $q)->count(),
+                ];
+            }
+            return $rows;
+        }, null);
+
+        // ---- order status breakdown ----
+        $status = $safe(function () {
+            $counts = Order::selectRaw('order_status, COUNT(*) c')->groupBy('order_status')->pluck('c', 'order_status');
+            $get = fn ($k) => (int) ($counts[$k] ?? 0);
+            return [
+                'completed'  => $get('order-completed') + $get('order-out-for-delivery') + $get('order-at-local-facility'),
+                'processing' => $get('order-processing'),
+                'pending'    => $get('order-pending'),
+                'cancelled'  => $get('order-cancelled') + $get('order-failed'),
+                'refunded'   => $get('order-refunded'),
+            ];
+        }, null);
+
+        // ---- reviews / feedback ----
+        $feedback = $safe(function () {
+            $total = \Marvel\Database\Models\Review::count();
+            if (!$total) {
+                return null;
+            }
+            $avg = (float) \Marvel\Database\Models\Review::avg('rating');
+            $pos = \Marvel\Database\Models\Review::where('rating', '>=', 4)->count();
+            $neu = \Marvel\Database\Models\Review::where('rating', 3)->count();
+            $neg = \Marvel\Database\Models\Review::where('rating', '<', 3)->count();
+            return [
+                'avgRating'    => round($avg, 1),
+                'totalReviews' => $total,
+                'positive'     => (int) round($pos / $total * 100),
+                'neutral'      => (int) round($neu / $total * 100),
+                'negative'     => (int) round($neg / $total * 100),
+            ];
+        }, null);
+
+        // ---- top vendors (by order count) ----
+        $topVendors = $safe(function () {
+            return Shop::withCount(['orders', 'products'])
+                ->orderByDesc('orders_count')
+                ->limit(5)->get(['id', 'name'])
+                ->map(fn ($s) => [
+                    'name'   => $s->name,
+                    'orders' => (int) $s->orders_count,
+                    'products' => (int) $s->products_count,
+                ])->values();
+        }, null);
+
+        // ---- category-wise book counts ----
+        $categorySales = $safe(function () {
+            return \Marvel\Database\Models\Category::where('type_id', 8)
+                ->withCount(['products' => fn ($q) => $q->where('status', 'publish')])
+                ->orderByDesc('products_count')
+                ->limit(5)->get(['id', 'name'])
+                ->map(fn ($c) => ['name' => $c->name, 'value' => (int) $c->products_count])
+                ->values();
+        }, null);
+
+        // ---- issues (cancel / refund) ----
+        $issues = $safe(function () use ($status) {
+            $s = $status ?? [];
+            return [
+                'cancelled' => (int) ($s['cancelled'] ?? 0),
+                'refunded'  => (int) ($s['refunded'] ?? 0),
+            ];
+        }, null);
+
+        // ---- monthly cancel / refund flow (last 5 months) ----
+        $issueFlow = $safe(function () use ($bn) {
+            $rows = [];
+            for ($i = 4; $i >= 0; $i--) {
+                $m = now()->subMonths($i);
+                $q = Order::whereYear('created_at', $m->year)->whereMonth('created_at', $m->month);
+                $rows[] = [
+                    'm'      => $bn[$m->month - 1],
+                    'cancel' => (clone $q)->whereIn('order_status', ['order-cancelled', 'order-failed'])->count(),
+                    'return' => (clone $q)->where('order_status', 'order-refunded')->count(),
+                    'refund' => (clone $q)->where('order_status', 'order-refunded')->count(),
+                ];
+            }
+            return $rows;
+        }, null);
+
+        // ---- vendor activity: products added this month vs last, top shops ----
+        $vendorActivity = $safe(function () {
+            $thisM = \Illuminate\Support\Facades\DB::table('products')
+                ->select('shop_id', \Illuminate\Support\Facades\DB::raw('COUNT(*) c'))
+                ->where('created_at', '>=', now()->startOfMonth())
+                ->groupBy('shop_id')->pluck('c', 'shop_id');
+            $lastM = \Illuminate\Support\Facades\DB::table('products')
+                ->select('shop_id', \Illuminate\Support\Facades\DB::raw('COUNT(*) c'))
+                ->whereBetween('created_at', [now()->subMonth()->startOfMonth(), now()->startOfMonth()])
+                ->groupBy('shop_id')->pluck('c', 'shop_id');
+            $shops = Shop::orderByDesc('id')->limit(60)->get(['id', 'name'])->keyBy('id');
+            $ids = collect($thisM->keys())->merge($lastM->keys())->unique()->take(30);
+            return $ids->map(function ($sid) use ($thisM, $lastM, $shops) {
+                $now = (int) ($thisM[$sid] ?? 0);
+                $prev = (int) ($lastM[$sid] ?? 0);
+                $status = $now === 0 && $prev > 0 ? 'dormant' : ($now < $prev ? 'declining' : ($now > $prev ? 'growing' : 'steady'));
+                return [
+                    'name'   => optional($shops->get($sid))->name ?? ('Shop #' . $sid),
+                    'now'    => $now,
+                    'prev'   => $prev,
+                    'status' => $status,
+                ];
+            })->sortBy(fn ($v) => $v['status'] === 'dormant' ? 0 : ($v['status'] === 'declining' ? 1 : 2))
+                ->take(6)->values();
+        }, null);
+
+        // ---- alerts from real signals ----
+        $alerts = $safe(function () use ($status) {
+            $out = [];
+            $pending = (int) ($status['pending'] ?? 0);
+            if ($pending > 0) {
+                $out[] = ['type' => $pending > 20 ? 'critical' : 'warning', 'title' => $pending . ' টি অর্ডার pending', 'detail' => 'প্রসেস করা বাকি — অর্ডার প্যানেল দেখুন।', 'tag' => 'Orders'];
+            }
+            $lowStock = Product::where('status', 'publish')->where('type_id', 8)->whereBetween('quantity', [1, 3])->count();
+            if ($lowStock > 0) {
+                $out[] = ['type' => 'warning', 'title' => $lowStock . ' টি বই কম স্টকে', 'detail' => 'স্টক ৩ বা তার কম — রিস্টক করুন।', 'tag' => 'Stock'];
+            }
+            $pendingResell = Product::where('is_resell', true)->whereRaw("JSON_EXTRACT(resell_meta, '$.status') = 'pending'")->count();
+            if ($pendingResell > 0) {
+                $out[] = ['type' => 'warning', 'title' => $pendingResell . ' টি রিসেল লিস্টিং অপেক্ষমাণ', 'detail' => 'অ্যাপ্রুভ করা বাকি — Book Resell দেখুন।', 'tag' => 'Resell'];
+            }
+            $pendingPayouts = User::where('reseller_meta->is_reseller', true)->get(['reseller_meta'])
+                ->reduce(fn ($c, $u) => $c + collect(($u->reseller_meta['payouts'] ?? []))->where('status', 'requested')->count(), 0);
+            if ($pendingPayouts > 0) {
+                $out[] = ['type' => 'warning', 'title' => $pendingPayouts . ' টি payout রিকোয়েস্ট', 'detail' => 'রিসেলার bKash payout — Reseller Business দেখুন।', 'tag' => 'Payout'];
+            }
+            return $out;
+        }, null);
+
+        return [
+            'today'          => $today,
+            'newAccounts'    => $newAccounts,
+            'newAccountsPrev' => $newAccountsPrev,
+            'sales'          => $sales,
+            'orderStatus'    => $status,
+            'feedback'       => $feedback,
+            'topVendors'     => $topVendors,
+            'categorySales'  => $categorySales,
+            'issues'         => $issues,
+            'issueFlow'      => $issueFlow,
+            'vendorActivity' => $vendorActivity,
+            'alerts'         => $alerts,
+            'generatedAt'    => now()->toDateTimeString(),
+        ];
+    }
+
+    // ============================================================ BOOK RESELL (Mode A)
+    private const RESELL_CONDITIONS = ['used', 'good', 'like_new', 'readable'];
+
+    /**
+     * The shop everything we create belongs to.
+     *
+     * This used to hard-code the slug `indobangla-store`. A database import replaced the
+     * shops table and that slug stopped existing, which silently broke every feature that
+     * creates products or orders. It is now a setting, and the fallback is "whichever shop
+     * actually holds the catalogue" — so a future import cannot break it either.
+     */
+    public static function resolveMainShopId(): ?int
+    {
+        $options = optional(Settings::first())->options ?? [];
+        $id = (int) ($options['main_shop_id'] ?? 0);
+        if ($id > 0 && Shop::whereKey($id)->exists()) {
+            return $id;
+        }
+
+        $shop = $this->mainShop();
+        if ($shop) {
+            return (int) $shop->id;
+        }
+
+        $busiest = DB::table('products')->whereNotNull('shop_id')
+            ->groupBy('shop_id')->orderByRaw('COUNT(*) DESC')->value('shop_id');
+
+        return $busiest ? (int) $busiest : optional(Shop::orderBy('id')->first())->id;
+    }
+
+    private function mainShopId(): ?int
+    {
+        return self::resolveMainShopId();
+    }
+
+    private function mainShop(): ?Shop
+    {
+        $id = $this->mainShopId();
+        return $id ? Shop::find($id) : null;
+    }
+
+    /** #5 — tell ReplyGenie an (advance/full) payment landed so it can message the customer. */
+    private function notifyReplygeniePayment($order, float $paid, string $type): void
+    {
+        try {
+            $token = ($this->options()['replygenie'] ?? [])['token'] ?? '';
+            if (!$token) {
+                return;
+            }
+            Http::timeout(8)
+                ->withHeaders(['X-Connect-Token' => $token])
+                ->post('https://replygenie.cloud/api/webhook/website/payment', [
+                    'order_id'        => (int) $order->id,
+                    'tracking_number' => $order->tracking_number,
+                    'paid_bdt'        => round($paid),
+                    'payment_type'    => $type,
+                    'status'          => 'APPROVED',
+                ]);
+        } catch (\Throwable $e) {
+            // best-effort; a failed webhook must never block the customer's payment
+        }
+    }
+
+    /**
+     * #4 — ReplyGenie: create an (optionally pre-order) product from an Amazon
+     * link + given fields, and return the new id/slug.
+     */
+    private function agentCreateProduct(Request $request)
+    {
+        $data = $request->validate([
+            'title'       => 'required|string',
+            'price_bdt'   => 'required|numeric|min:1',
+            'quantity'    => 'nullable|integer|min:0',
+            'stock'       => 'nullable|integer|min:0',
+            'amazon_url'  => 'nullable|string',
+            'image_url'   => 'nullable|string',
+            'source'      => 'nullable|string',
+            'weight_kg'   => 'nullable|numeric',
+            'preorder'    => 'nullable|boolean',
+            'sale_price'  => 'nullable|numeric',
+            'image'       => 'nullable|string',
+            'author'      => 'nullable|string',
+            'description' => 'nullable|string',
+        ]);
+        $preorder = $request->boolean('preorder');
+        // support both `image` and the spec's `image_url`
+        $imageUrl = $data['image'] ?? ($data['image_url'] ?? null);
+
+        // Idempotency: same Amazon link ⇒ return the existing product, don't duplicate.
+        if (!empty($data['amazon_url'])) {
+            $existing = Product::where('external_product_url', $data['amazon_url'])->first();
+            if ($existing) {
+                return [
+                    'status'          => 'success',
+                    'product_id'      => (int) $existing->id,
+                    'slug'            => $existing->slug,
+                    'already_existed' => true,
+                    'preorder'        => (bool) preg_match('/প্রি-অর্ডার/u', (string) $existing->description),
+                    'url'             => '/products/' . $existing->slug,
+                ];
+            }
+        }
+
+        $p = new Product();
+        $p->name         = $data['title'];
+        $p->type_id      = 8;
+        $p->shop_id      = $this->mainShopId();
+        $p->price        = (float) $data['price_bdt'];
+        $p->sale_price   = !empty($data['sale_price']) ? (float) $data['sale_price'] : null;
+        $p->min_price    = $p->sale_price ?: $p->price;
+        $p->max_price    = $p->price;
+        // Stock comes from the caller when it sends one (`quantity` or `stock`); only fall
+        // back to a default when it doesn't, so an order can never exceed the real stock.
+        $sentQty = $request->has('quantity') ? $request->input('quantity')
+            : ($request->has('stock') ? $request->input('stock') : null);
+        $p->quantity     = $sentQty !== null && $sentQty !== ''
+            ? max(0, (int) $sentQty)
+            : ($preorder ? 100 : 1);
+        $p->in_stock     = 1;
+        $p->status       = 'publish';
+        $p->product_type = 'simple';
+        $p->is_digital   = 0;
+        $p->is_external   = 0;
+        // Amazon link stashed on the (unused for internal) external URL field for reference.
+        if (!empty($data['amazon_url'])) {
+            $p->external_product_url = $data['amazon_url'];
+        }
+        $note = [];
+        if ($preorder) {
+            $note[] = '🔖 প্রি-অর্ডার — Amazon থেকে আনা হবে।';
+        }
+        if (!empty($data['weight_kg'])) {
+            $note[] = 'ওজন: ' . $data['weight_kg'] . ' কেজি।';
+        }
+        $p->description = trim(($data['description'] ?? '') . "\n" . implode(' ', $note));
+        if (!empty($imageUrl)) {
+            $p->image = ['original' => $imageUrl, 'thumbnail' => $imageUrl];
+        }
+        $p->save();
+
+        if (!empty($data['author'])) {
+            $author = \Marvel\Database\Models\Author::firstOrCreate(
+                ['name' => $data['author']],
+                ['slug' => Str::slug($data['author']) . '-' . Str::random(4), 'language' => DEFAULT_LANGUAGE ?? 'en'],
+            );
+            $p->author_id = $author->id;
+            $p->save();
+        }
+
+        return [
+            'status'          => 'success',
+            'product_id'      => (int) $p->id,
+            'slug'            => $p->slug,
+            'already_existed' => false,
+            'preorder'        => $preorder,
+            'url'             => '/products/' . $p->slug,
+        ];
+    }
+
+    /** Customer: books this user has actually purchased (eligible to resell). */
+    public function resellEligibleBooks(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        $ids = \Illuminate\Support\Facades\DB::table('order_product')
+            ->join('orders', 'orders.id', '=', 'order_product.order_id')
+            ->where('orders.customer_id', $user->id)
+            ->pluck('order_product.product_id')->unique()->values();
+        $books = Product::whereIn('id', $ids)
+            ->where('is_resell', false)
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'image', 'author_id'])
+            ->map(fn ($p) => [
+                'id' => $p->id,
+                'name' => $p->name,
+                'slug' => $p->slug,
+                'price' => (float) $p->price,
+                'image' => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+            ]);
+        return ['data' => $books];
+    }
+
+    /** Customer: create a resell listing (a draft Product pending admin approval). */
+    public function resellCreate(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        $data = $request->validate([
+            'original_id' => 'required|integer',
+            'price'       => 'required|numeric|min:1',
+            'condition'   => 'required|string',
+            'images'      => 'required|array|min:1',
+            'delivery_by' => 'nullable|string', // 'self' | 'indobangla'
+            'note'        => 'nullable|string',
+        ]);
+        if (!in_array($data['condition'], self::RESELL_CONDITIONS, true)) {
+            throw new MarvelException('Invalid condition.');
+        }
+        $original = Product::find($data['original_id']);
+        if (!$original) {
+            throw new MarvelException('Original book not found.');
+        }
+        // Price cannot exceed IndoBangla's price for this book.
+        $cap = (float) ($original->sale_price ?: $original->price);
+        if ((float) $data['price'] > $cap) {
+            throw new MarvelException('Resell price cannot exceed ৳' . round($cap) . '.');
+        }
+        $first = $data['images'][0];
+        $img = is_array($first) ? $first : ['original' => $first, 'thumbnail' => $first];
+
+        $product = new Product();
+        $product->name = $original->name . ' — Resold (' . ucfirst(str_replace('_', ' ', $data['condition'])) . ')';
+        $product->type_id = $original->type_id ?: 8;
+        $product->shop_id = $this->mainShopId();
+        $product->author_id = $original->author_id;
+        $product->price = (float) $data['price'];
+        $product->sale_price = null;
+        $product->min_price = (float) $data['price'];
+        $product->max_price = (float) $data['price'];
+        $product->quantity = 1;
+        $product->in_stock = 1;
+        $product->status = 'draft';           // hidden until admin approves
+        $product->product_type = 'simple';
+        $product->is_digital = 0;
+        $product->description = $data['note'] ?? $original->description;
+        $product->image = $img;
+        $product->gallery = array_map(fn ($x) => is_array($x) ? $x : ['original' => $x, 'thumbnail' => $x], $data['images']);
+        $product->is_resell = true;
+        $product->resell_meta = [
+            'seller_id'    => (int) $user->id,
+            'seller_name'  => $user->name,
+            'condition'    => $data['condition'],
+            'status'       => 'pending',
+            'original_id'  => (int) $original->id,
+            'delivery_by'  => in_array($data['delivery_by'] ?? '', ['self', 'indobangla'], true) ? $data['delivery_by'] : 'self',
+            'buyer_id'     => null,
+            'buyer_name'   => null,
+            'created_at'   => now()->toDateTimeString(),
+        ];
+        $product->save();
+
+        return ['status' => 'success', 'id' => $product->id];
+    }
+
+    /** Customer: my resell listings + current wallet balance. */
+    public function resellMyBooks(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        $items = Product::where('is_resell', true)
+            ->whereRaw("JSON_EXTRACT(resell_meta, '$.seller_id') = ?", [$user->id])
+            ->orderByDesc('id')->get(['id', 'name', 'slug', 'price', 'image', 'status', 'resell_meta'])
+            ->map(fn ($p) => [
+                'id' => $p->id,
+                'name' => $p->name,
+                'slug' => $p->slug,
+                'price' => (float) $p->price,
+                'image' => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                'status' => $p->resell_meta['status'] ?? 'pending',
+                'condition' => $p->resell_meta['condition'] ?? null,
+                'buyer_name' => $p->resell_meta['buyer_name'] ?? null,
+                'delivery_by' => $p->resell_meta['delivery_by'] ?? 'self',
+            ]);
+        $wallet = Wallet::where('customer_id', $user->id)->first();
+        $balance = $wallet ? $this->walletPointsToCurrency($wallet->available_points) : 0;
+        return ['data' => $items, 'wallet_balance' => $balance, 'conditions' => self::RESELL_CONDITIONS];
+    }
+
+    /** Admin: list resell listings, optionally by status. */
+    public function resellAdminList(Request $request)
+    {
+        $status = $request->input('status'); // pending | approved | sold | rejected
+        $q = Product::where('is_resell', true)->orderByDesc('id');
+        if ($status) {
+            $q->whereRaw("JSON_EXTRACT(resell_meta, '$.status') = ?", [$status]);
+        }
+        $items = $q->get(['id', 'name', 'slug', 'price', 'image', 'gallery', 'status', 'resell_meta'])
+            ->map(fn ($p) => [
+                'id' => $p->id,
+                'name' => $p->name,
+                'price' => (float) $p->price,
+                'image' => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                'gallery' => collect($p->gallery ?? [])->map(fn ($g) => is_array($g) ? ($g['original'] ?? null) : $g)->filter()->values(),
+                'meta' => $p->resell_meta,
+            ]);
+        return ['data' => $items];
+    }
+
+    /** Admin: approve or reject a resell listing. */
+    public function resellModerate(Request $request)
+    {
+        $data = $request->validate(['id' => 'required|integer', 'action' => 'required|string']);
+        $product = Product::where('is_resell', true)->findOrFail($data['id']);
+        $meta = $product->resell_meta ?? [];
+        if ($data['action'] === 'approve') {
+            $product->status = 'publish';
+            $meta['status'] = 'approved';
+        } elseif ($data['action'] === 'reject') {
+            $product->status = 'draft';
+            $meta['status'] = 'rejected';
+        } else {
+            throw new MarvelException('Invalid action.');
+        }
+        $product->resell_meta = $meta;
+        $product->save();
+        return ['status' => 'success', 'resell_status' => $meta['status']];
+    }
+
+    /**
+     * Admin: mark a resell listing as sold — records the buyer, hides the listing,
+     * and credits the seller's wallet with the sale price (usable on next orders).
+     */
+    public function resellMarkSold(Request $request)
+    {
+        $data = $request->validate([
+            'id'         => 'required|integer',
+            'buyer_name' => 'nullable|string',
+            'buyer_id'   => 'nullable|integer',
+        ]);
+        $product = Product::where('is_resell', true)->findOrFail($data['id']);
+        $meta = $product->resell_meta ?? [];
+        if (($meta['status'] ?? null) === 'sold') {
+            return ['status' => 'already_sold'];
+        }
+        $meta['status'] = 'sold';
+        $meta['buyer_name'] = $data['buyer_name'] ?? ($meta['buyer_name'] ?? null);
+        $meta['buyer_id'] = $data['buyer_id'] ?? ($meta['buyer_id'] ?? null);
+        $meta['sold_at'] = now()->toDateTimeString();
+        $product->resell_meta = $meta;
+        $product->status = 'draft';   // remove from the storefront once sold
+        $product->quantity = 0;
+        $product->save();
+
+        // Credit the seller's wallet balance with the sale price.
+        $sellerId = (int) ($meta['seller_id'] ?? 0);
+        $credited = 0;
+        if ($sellerId) {
+            $wallet = Wallet::firstOrCreate(['customer_id' => $sellerId]);
+            $pts = $this->currencyToWalletPoints((float) $product->price);
+            $wallet->total_points = ($wallet->total_points ?? 0) + $pts;
+            $wallet->available_points = ($wallet->available_points ?? 0) + $pts;
+            $wallet->save();
+            $credited = (float) $product->price;
+        }
+        return ['status' => 'success', 'credited' => $credited];
+    }
+
+    // ============================================================ RESELLER BUSINESS (Mode B)
+    private function resellerConfig(): array
+    {
+        $o = $this->options();
+        $r = $o['reseller'] ?? [];
+        return [
+            'open_fee'       => (float) ($r['open_fee'] ?? 1000),
+            'discount_pct'   => (float) ($r['discount_pct'] ?? 5),   // reseller cost = base * (1 - this%)
+            'markup_cap_pct' => (float) ($r['markup_cap_pct'] ?? 5), // may raise price up to this% above base
+            'hold_days'      => (int) ($r['hold_days'] ?? 7),
+        ];
+    }
+
+    private function resellerMeta(User $user): array
+    {
+        $m = $user->reseller_meta ?? [];
+        return array_merge([
+            'is_reseller' => false,
+            'opened_at'   => null,
+            'available'   => 0,
+            'pending'     => 0,
+            'products'    => [],
+            'ledger'      => [],
+            'payouts'     => [],
+        ], is_array($m) ? $m : []);
+    }
+
+    private function saveResellerMeta(User $user, array $meta): void
+    {
+        $user->reseller_meta = $meta;
+        $user->save();
+    }
+
+    /** Customer: my reseller status + config. */
+    public function resellerStatus(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        return ['config' => $this->resellerConfig(), 'meta' => $this->resellerMeta($user)];
+    }
+
+    /** Customer: open a reseller account (fee applies). */
+    public function resellerOpen(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        $meta = $this->resellerMeta($user);
+        if ($meta['is_reseller']) {
+            return ['status' => 'already_open', 'meta' => $meta];
+        }
+        $cfg = $this->resellerConfig();
+        $meta['is_reseller'] = true;
+        $meta['opened_at'] = now()->toDateTimeString();
+        $meta['ledger'][] = ['type' => 'open_fee', 'amount' => -$cfg['open_fee'], 'at' => now()->toDateTimeString(), 'note' => 'Reseller account opening fee'];
+        $this->saveResellerMeta($user, $meta);
+        return ['status' => 'success', 'meta' => $meta];
+    }
+
+    /** Customer: add an IndoBangla product to my reseller shop at my price. */
+    public function resellerAddProduct(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        $data = $request->validate(['product_id' => 'required|integer', 'my_price' => 'required|numeric|min:1']);
+        $meta = $this->resellerMeta($user);
+        if (!$meta['is_reseller']) {
+            throw new MarvelException('Open a reseller account first.');
+        }
+        $product = Product::find($data['product_id']);
+        if (!$product || $product->is_resell) {
+            throw new MarvelException('Product not found.');
+        }
+        $cfg = $this->resellerConfig();
+        $base = (float) ($product->sale_price ?: $product->price);
+        $cost = round($base * (1 - $cfg['discount_pct'] / 100), 2);
+        $cap  = round($base * (1 + $cfg['markup_cap_pct'] / 100), 2);
+        $my   = (float) $data['my_price'];
+        if ($my < $base || $my > $cap) {
+            throw new MarvelException('Your price must be between ৳' . round($base) . ' and ৳' . round($cap) . '.');
+        }
+        // upsert by product_id
+        $meta['products'] = collect($meta['products'])->reject(fn ($p) => (int) $p['product_id'] === (int) $product->id)->values()->all();
+        $meta['products'][] = [
+            'product_id' => (int) $product->id,
+            'name'       => $product->name,
+            'image'      => is_array($product->image) ? ($product->image['original'] ?? null) : null,
+            'slug'       => $product->slug,
+            'base_price' => $base,
+            'cost'       => $cost,
+            'my_price'   => $my,
+            'margin'     => round($my - $cost, 2),
+            'sold_count' => 0,
+            'added_at'   => now()->toDateTimeString(),
+        ];
+        $this->saveResellerMeta($user, $meta);
+        return ['status' => 'success', 'meta' => $meta];
+    }
+
+    public function resellerRemoveProduct(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        $data = $request->validate(['product_id' => 'required|integer']);
+        $meta = $this->resellerMeta($user);
+        $meta['products'] = collect($meta['products'])->reject(fn ($p) => (int) $p['product_id'] === (int) $data['product_id'])->values()->all();
+        $this->saveResellerMeta($user, $meta);
+        return ['status' => 'success', 'meta' => $meta];
+    }
+
+    /** Customer: request a bKash payout from available balance. */
+    public function resellerRequestPayout(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        $data = $request->validate(['amount' => 'required|numeric|min:1', 'bkash' => 'required|string']);
+        $meta = $this->resellerMeta($user);
+        if (!$meta['is_reseller']) {
+            throw new MarvelException('Not a reseller.');
+        }
+        if ((float) $data['amount'] > (float) $meta['available']) {
+            throw new MarvelException('Requested amount exceeds available balance.');
+        }
+        $meta['available'] = round($meta['available'] - $data['amount'], 2);
+        $meta['payouts'][] = [
+            'amount' => (float) $data['amount'],
+            'bkash'  => $data['bkash'],
+            'status' => 'requested',
+            'at'     => now()->toDateTimeString(),
+        ];
+        $meta['ledger'][] = ['type' => 'payout_request', 'amount' => -(float) $data['amount'], 'at' => now()->toDateTimeString(), 'note' => 'bKash payout requested'];
+        $this->saveResellerMeta($user, $meta);
+        return ['status' => 'success', 'meta' => $meta];
+    }
+
+    // ---- Admin (super-admin) ----
+    public function resellerConfigAdmin(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate([
+                'open_fee'       => 'nullable|numeric',
+                'discount_pct'   => 'nullable|numeric',
+                'markup_cap_pct' => 'nullable|numeric',
+                'hold_days'      => 'nullable|integer',
+            ]);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['reseller'] = [
+                'open_fee'       => (float) ($data['open_fee'] ?? 1000),
+                'discount_pct'   => (float) ($data['discount_pct'] ?? 5),
+                'markup_cap_pct' => (float) ($data['markup_cap_pct'] ?? 5),
+                'hold_days'      => (int) ($data['hold_days'] ?? 7),
+            ];
+            $settings->update(['options' => $options]);
+        }
+        return $this->resellerConfig();
+    }
+
+    public function resellerAdminList(Request $request)
+    {
+        $users = User::whereNotNull('reseller_meta')
+            ->where('reseller_meta->is_reseller', true)
+            ->get(['id', 'name', 'email', 'reseller_meta']);
+        $rows = $users->map(function ($u) {
+            $m = $this->resellerMeta($u);
+            return [
+                'id' => $u->id, 'name' => $u->name, 'email' => $u->email,
+                'available' => (float) $m['available'], 'pending' => (float) $m['pending'],
+                'products' => collect($m['products'])->map(fn ($p) => [
+                    'product_id' => $p['product_id'], 'name' => $p['name'],
+                    'my_price' => $p['my_price'], 'cost' => $p['cost'], 'margin' => $p['margin'], 'sold_count' => $p['sold_count'] ?? 0,
+                ])->values(),
+                'payouts' => collect($m['payouts'])->map(fn ($p, $i) => array_merge($p, ['index' => $i]))->values(),
+                'opened_at' => $m['opened_at'],
+            ];
+        });
+        return ['data' => $rows];
+    }
+
+    /** Admin: record a reseller sale — credits the reseller's margin into pending (held). */
+    public function resellerRecordSale(Request $request)
+    {
+        $data = $request->validate(['reseller_id' => 'required|integer', 'product_id' => 'required|integer', 'qty' => 'nullable|integer']);
+        $user = User::findOrFail($data['reseller_id']);
+        $meta = $this->resellerMeta($user);
+        $qty = max(1, (int) ($data['qty'] ?? 1));
+        $found = false;
+        $meta['products'] = collect($meta['products'])->map(function ($p) use ($data, $qty, &$found, &$meta) {
+            if ((int) $p['product_id'] === (int) $data['product_id']) {
+                $found = true;
+                $p['sold_count'] = ($p['sold_count'] ?? 0) + $qty;
+                $credit = round(($p['margin'] ?? 0) * $qty, 2);
+                $meta['pending'] = round(($meta['pending'] ?? 0) + $credit, 2);
+                $meta['ledger'][] = ['type' => 'sale', 'amount' => $credit, 'at' => now()->toDateTimeString(), 'note' => $qty . '× ' . $p['name'] . ' sold (held)', 'product_id' => $p['product_id']];
+            }
+            return $p;
+        })->all();
+        if (!$found) {
+            throw new MarvelException('Product not in this reseller\'s shop.');
+        }
+        $this->saveResellerMeta($user, $meta);
+        return ['status' => 'success'];
+    }
+
+    /** Admin: release held earnings to available (after the hold period / delivery). */
+    public function resellerRelease(Request $request)
+    {
+        $data = $request->validate(['reseller_id' => 'required|integer', 'amount' => 'nullable|numeric']);
+        $user = User::findOrFail($data['reseller_id']);
+        $meta = $this->resellerMeta($user);
+        $amount = isset($data['amount']) ? min((float) $data['amount'], (float) $meta['pending']) : (float) $meta['pending'];
+        if ($amount <= 0) {
+            return ['status' => 'nothing_to_release'];
+        }
+        $meta['pending'] = round($meta['pending'] - $amount, 2);
+        $meta['available'] = round($meta['available'] + $amount, 2);
+        $meta['ledger'][] = ['type' => 'release', 'amount' => $amount, 'at' => now()->toDateTimeString(), 'note' => 'Held earnings released to available'];
+        $this->saveResellerMeta($user, $meta);
+        return ['status' => 'success', 'released' => $amount];
+    }
+
+    /** Admin: all payout requests across resellers. */
+    public function resellerPayouts(Request $request)
+    {
+        $users = User::where('reseller_meta->is_reseller', true)->get(['id', 'name', 'reseller_meta']);
+        $rows = [];
+        foreach ($users as $u) {
+            $m = $this->resellerMeta($u);
+            foreach ($m['payouts'] as $i => $p) {
+                $rows[] = array_merge($p, ['reseller_id' => $u->id, 'reseller_name' => $u->name, 'index' => $i]);
+            }
+        }
+        return ['data' => $rows];
+    }
+
+    /** Admin: approve (mark paid) or reject a payout request. */
+    public function resellerPayoutAction(Request $request)
+    {
+        $data = $request->validate(['reseller_id' => 'required|integer', 'index' => 'required|integer', 'action' => 'required|string']);
+        $user = User::findOrFail($data['reseller_id']);
+        $meta = $this->resellerMeta($user);
+        if (!isset($meta['payouts'][$data['index']])) {
+            throw new MarvelException('Payout request not found.');
+        }
+        $payout = $meta['payouts'][$data['index']];
+        if ($payout['status'] !== 'requested') {
+            return ['status' => 'already_processed'];
+        }
+        if ($data['action'] === 'approve') {
+            $meta['payouts'][$data['index']]['status'] = 'paid';
+            $meta['payouts'][$data['index']]['paid_at'] = now()->toDateTimeString();
+            $meta['ledger'][] = ['type' => 'payout_paid', 'amount' => 0, 'at' => now()->toDateTimeString(), 'note' => 'bKash payout ৳' . $payout['amount'] . ' paid to ' . $payout['bkash']];
+        } elseif ($data['action'] === 'reject') {
+            $meta['payouts'][$data['index']]['status'] = 'rejected';
+            $meta['available'] = round($meta['available'] + $payout['amount'], 2); // refund to balance
+            $meta['ledger'][] = ['type' => 'payout_rejected', 'amount' => $payout['amount'], 'at' => now()->toDateTimeString(), 'note' => 'Payout rejected — refunded to balance'];
+        } else {
+            throw new MarvelException('Invalid action.');
+        }
+        $this->saveResellerMeta($user, $meta);
+        return ['status' => 'success'];
+    }
+
+    // ============================================================ ROTATING HERO BANNERS (#1)
+    private function defaultBanners(): array
+    {
+        return [
+            ['style' => 'parchment', 'badge' => 'IndoBangla গ্যালারি', 'headline' => 'ইতিহাস ও প্রবন্ধ', 'subtext' => 'জানার আনন্দ, শেখার গভীরতা — সেরা লেখকদের বই, ১০০% অরিজিনাল প্রিন্টে।', 'cta_text' => 'দেখুন', 'cta_link' => '/books/search?category=history', 'category' => 'history'],
+            ['style' => 'cloth', 'badge' => 'IndoBangla গ্যালারি', 'headline' => 'সাহিত্য ও কথাসাহিত্য', 'subtext' => 'গল্প-উপন্যাসের জগতে ডুব দিন — কালজয়ী সব লেখকের বই।', 'cta_text' => 'দেখুন', 'cta_link' => '/books/search?category=fiction', 'category' => 'fiction'],
+            ['style' => 'kraft', 'badge' => 'IndoBangla গ্যালারি', 'headline' => 'রহস্য, থ্রিলার ও রোমাঞ্চ', 'subtext' => 'প্রতিটি পাতায় টান টান উত্তেজনা — সেরা থ্রিলার সংগ্রহ।', 'cta_text' => 'দেখুন', 'cta_link' => '/books/search?category=thriller', 'category' => 'thriller'],
+            ['style' => 'library', 'badge' => 'IndoBangla ক্যাটালগ', 'headline' => 'বাংলা বইয়ের সংগ্রহ', 'subtext' => 'কলকাতা ও বাংলাদেশের সেরা বই — এক ঠিকানায়।', 'cta_text' => 'দেখুন', 'cta_link' => '/books/search?category=bengali-books', 'category' => 'bengali-books'],
+        ];
+    }
+
+    private function normalizeBanners($raw): array
+    {
+        $styles = ['parchment', 'cloth', 'kraft', 'library'];
+        $out = [];
+        foreach ((array) $raw as $b) {
+            if (!is_array($b) || empty($b['headline'])) {
+                continue;
+            }
+            $out[] = [
+                'style'    => in_array($b['style'] ?? '', $styles, true) ? $b['style'] : 'parchment',
+                'badge'    => (string) ($b['badge'] ?? 'IndoBangla গ্যালারি'),
+                'headline' => (string) $b['headline'],
+                'subtext'  => (string) ($b['subtext'] ?? ''),
+                'cta_text' => (string) ($b['cta_text'] ?? 'দেখুন'),
+                'cta_link' => (string) ($b['cta_link'] ?? '/books/search'),
+                'category' => (string) ($b['category'] ?? ''),
+            ];
+        }
+        return $out;
+    }
+
+    /** Public: storefront reads the rotating hero banners. */
+    public function rotatingBanners(Request $request)
+    {
+        $opts = $this->options();
+        $banners = $this->normalizeBanners($opts['rotating_banners'] ?? null);
+        return ['banners' => $banners ?: $this->defaultBanners()];
+    }
+
+    /** Admin: read/update the rotating banners (super-admin). */
+    public function rotatingBannersSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate(['banners' => 'nullable|array']);
+            $banners = $this->normalizeBanners($data['banners'] ?? []);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['rotating_banners'] = $banners;
+            $settings->update(['options' => $options]);
+        }
+        $opts = $this->options();
+        $banners = $this->normalizeBanners($opts['rotating_banners'] ?? null);
+        return ['banners' => $banners ?: $this->defaultBanners()];
+    }
+
+    // ============================================================ PURCHASED-BEFORE (#1)
+    /** Customer: has this user bought this product before? (latest order + date) */
+    public function purchaseCheck(Request $request)
+    {
+        $user = $request->user();
+        $pid = (int) $request->input('product_id');
+        if (!$user || !$pid) {
+            return ['purchased' => false];
+        }
+        $row = \Illuminate\Support\Facades\DB::table('order_product')
+            ->join('orders', 'orders.id', '=', 'order_product.order_id')
+            ->where('orders.customer_id', $user->id)
+            ->where('order_product.product_id', $pid)
+            ->orderByDesc('orders.created_at')
+            ->select('orders.id', 'orders.tracking_number', 'orders.created_at')
+            ->first();
+        if (!$row) {
+            return ['purchased' => false];
+        }
+        return [
+            'purchased'        => true,
+            'order_id'         => (int) $row->id,
+            'tracking_number'  => $row->tracking_number,
+            'date'             => $row->created_at,
+        ];
+    }
+
+    // ============================================================ SAVED BOOKS / PRICE (#7)
+    /**
+     * Admin: books saved to wishlists, aggregated with who saved them + price.
+     *
+     * Supports a free-text search (book / author / publisher / saver), author and
+     * publisher filters, a saved-at date window, sorting and pagination.
+     */
+    public function wishlistInsights(Request $request)
+    {
+        $search        = trim((string) $request->input('search', ''));
+        $authorId      = (int) $request->input('author_id', 0);
+        $publisherId   = (int) $request->input('manufacturer_id', 0);
+        $from          = trim((string) $request->input('from', ''));
+        $to            = trim((string) $request->input('to', ''));
+        $sort          = (string) $request->input('sort', 'saved');
+        $page          = max(1, (int) $request->input('page', 1));
+        $limit         = min(60, max(1, (int) $request->input('limit', 20)));
+
+        // The date window narrows both which books show up and how many saves we count
+        // for them, so "most saved this month" means what it says.
+        $window  = '';
+        $windowBindings = [];
+        if ($from !== '') {
+            $window .= ' AND w.created_at >= ?';
+            $windowBindings[] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $window .= ' AND w.created_at <= ?';
+            $windowBindings[] = $to . ' 23:59:59';
+        }
+
+        $countSql = "COALESCE((SELECT COUNT(*) FROM wishlists w WHERE w.product_id = products.id{$window}), 0)";
+        $lastSql  = "(SELECT MAX(w.created_at) FROM wishlists w WHERE w.product_id = products.id{$window})";
+
+        $query = Product::query()
+            ->with(['author:id,name', 'manufacturer:id,name'])
+            ->select('products.*')
+            ->selectRaw("{$countSql} AS wishlist_count", $windowBindings)
+            ->selectRaw("{$lastSql} AS last_saved_at", $windowBindings)
+            // Only books that actually sit in someone's wishlist (inside the window).
+            ->whereRaw("EXISTS (SELECT 1 FROM wishlists w WHERE w.product_id = products.id{$window})", $windowBindings);
+
+        if ($search !== '') {
+            $like = '%' . $search . '%';
+            $query->where(function ($w) use ($like) {
+                $w->where('products.name', 'like', $like)
+                    ->orWhere('products.bangla_name', 'like', $like)
+                    ->orWhere('products.slug', 'like', $like)
+                    ->orWhereHas('author', fn ($a) => $a->where('name', 'like', $like))
+                    ->orWhereHas('manufacturer', fn ($m) => $m->where('name', 'like', $like))
+                    // …or the name/email of whoever saved it.
+                    ->orWhereRaw(
+                        'EXISTS (SELECT 1 FROM wishlists w JOIN users u ON u.id = w.user_id
+                                 WHERE w.product_id = products.id AND (u.name LIKE ? OR u.email LIKE ?))',
+                        [$like, $like]
+                    );
+            });
+        }
+        if ($authorId > 0) {
+            $query->where('products.author_id', $authorId);
+        }
+        if ($publisherId > 0) {
+            $query->where('products.manufacturer_id', $publisherId);
+        }
+
+        switch ($sort) {
+            case 'recent':     $query->orderByDesc('last_saved_at'); break;
+            case 'oldest':     $query->orderBy('last_saved_at'); break;
+            case 'price_high': $query->orderByDesc('products.price'); break;
+            case 'price_low':  $query->orderBy('products.price'); break;
+            case 'name':       $query->orderBy('products.name'); break;
+            default:           $query->orderByDesc('wishlist_count')->orderByDesc('last_saved_at');
+        }
+
+        $paginator = $query->paginate($limit, ['*'], 'page', $page);
+
+        // Who saved each book on this page — one query, not one per row.
+        $savers = \Illuminate\Support\Facades\DB::table('wishlists')
+            ->join('users', 'users.id', '=', 'wishlists.user_id')
+            ->whereIn('wishlists.product_id', collect($paginator->items())->pluck('id'))
+            ->orderByDesc('wishlists.created_at')
+            ->get(['wishlists.product_id', 'wishlists.created_at', 'users.name', 'users.email'])
+            ->groupBy('product_id');
+
+        $data = collect($paginator->items())->map(function ($p) use ($savers) {
+            $rows = $savers->get($p->id, collect());
+            return [
+                'product_id'    => (int) $p->id,
+                'name'          => $p->name,
+                'slug'          => $p->slug,
+                'price'         => (float) $p->price,
+                'sale_price'    => (float) ($p->sale_price ?: 0),
+                'image'         => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                'author'        => $p->author->name ?? null,
+                'publisher'     => $p->manufacturer->name ?? null,
+                'count'         => (int) $p->wishlist_count,
+                'last_saved_at' => $p->last_saved_at,
+                'users'         => $rows->take(25)->pluck('name')->values(),
+                'savers'        => $rows->take(25)->map(fn ($r) => [
+                    'name'  => $r->name,
+                    'email' => $r->email,
+                    'date'  => $r->created_at,
+                ])->values(),
+            ];
+        })->values();
+
+        return [
+            'data'         => $data,
+            'total'        => $paginator->total(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            // Dropdown options, limited to authors/publishers that actually have saved books.
+            'authors'      => $this->wishlistFacets('author_id', 'authors'),
+            'publishers'   => $this->wishlistFacets('manufacturer_id', 'manufacturers'),
+        ];
+    }
+
+    /** Distinct authors / publishers among books that are in at least one wishlist. */
+    protected function wishlistFacets(string $column, string $table)
+    {
+        return \Illuminate\Support\Facades\DB::table($table)
+            ->whereIn('id', function ($q) use ($column) {
+                $q->select("products.{$column}")->from('products')
+                    ->whereNotNull("products.{$column}")
+                    ->whereRaw('EXISTS (SELECT 1 FROM wishlists w WHERE w.product_id = products.id)');
+            })
+            ->orderBy('name')
+            ->get(['id', 'name']);
+    }
+
+    /** Admin: quick-edit a product's price (keeps min/max in sync). */
+    public function productQuickPrice(Request $request)
+    {
+        $data = $request->validate([
+            'product_id' => 'required|integer',
+            'price'      => 'required|numeric|min:0',
+            'sale_price' => 'nullable|numeric',
+        ]);
+        $p = Product::findOrFail($data['product_id']);
+        $p->price = (float) $data['price'];
+        $p->sale_price = !empty($data['sale_price']) ? (float) $data['sale_price'] : null;
+        $p->min_price = $p->sale_price ?: $p->price;
+        $p->max_price = $p->price;
+        $p->save();
+        return ['status' => 'success', 'price' => (float) $p->price, 'sale_price' => (float) ($p->sale_price ?: 0)];
+    }
+
+    // ============================================================ PRE-HOME PAGE (#8)
+    /** Public: whether the pre-home intro page is active. */
+    public function prehome(Request $request)
+    {
+        $o = $this->options();
+        return ['enabled' => (bool) ($o['prehome_enabled'] ?? false)];
+    }
+
+    /** Admin: toggle the pre-home intro page (super-admin). */
+    public function prehomeSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate(['enabled' => 'nullable|boolean']);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['prehome_enabled'] = (bool) ($data['enabled'] ?? false);
+            $settings->update(['options' => $options]);
+        }
+        $o = $this->options();
+        return ['enabled' => (bool) ($o['prehome_enabled'] ?? false)];
+    }
+
+    // ============================================================ VENDORS REPORT (#6)
+    /** Admin: per-vendor revenue, sells, this/last month, status — real data. */
+    public function vendorReport(Request $request)
+    {
+        $now = now();
+        $agg = Order::selectRaw('shop_id, COUNT(*) as sells, COALESCE(SUM(total),0) as revenue')
+            ->whereNotNull('shop_id')->groupBy('shop_id')->get()->keyBy('shop_id');
+        $thisM = Order::selectRaw('shop_id, COALESCE(SUM(total),0) as t')
+            ->where('created_at', '>=', $now->copy()->startOfMonth())->whereNotNull('shop_id')
+            ->groupBy('shop_id')->pluck('t', 'shop_id');
+        $lastM = Order::selectRaw('shop_id, COALESCE(SUM(total),0) as t')
+            ->whereBetween('created_at', [$now->copy()->subMonth()->startOfMonth(), $now->copy()->startOfMonth()])
+            ->whereNotNull('shop_id')->groupBy('shop_id')->pluck('t', 'shop_id');
+
+        $data = Shop::withCount('products')->get(['id', 'name', 'slug', 'is_active'])
+            ->map(function ($s) use ($agg, $thisM, $lastM) {
+                $a = $agg->get($s->id);
+                return [
+                    'id'         => (int) $s->id,
+                    'name'       => $s->name,
+                    'slug'       => $s->slug,
+                    'status'     => $s->is_active ? 'Active' : 'Inactive',
+                    'products'   => (int) $s->products_count,
+                    'totalSells' => $a ? (int) $a->sells : 0,
+                    'revenue'    => $a ? (float) $a->revenue : 0,
+                    'thisMonth'  => (float) ($thisM[$s->id] ?? 0),
+                    'lastMonth'  => (float) ($lastM[$s->id] ?? 0),
+                    'suspicious' => (bool) preg_match('/[<>]|payload|xss|hacker|@.*\./i', (string) $s->name),
+                ];
+            })
+            ->sortByDesc('revenue')->values();
+        return ['data' => $data];
+    }
+
+    // ============================================================ CONVERSION-RATE PRICING (#7)
+    private function conversionConfig(): array
+    {
+        $c = $this->options()['conversion'] ?? [];
+        return [
+            'rate'      => (float) ($c['rate'] ?? 2),        // Indian default multiplier
+            'bd_rate'   => (float) ($c['bd_rate'] ?? 1),     // Bangladeshi default
+            'sale_rate' => (float) ($c['sale_rate'] ?? 0),   // 0 = no auto sale price
+            'overrides' => array_values(array_filter((array) ($c['overrides'] ?? []), 'is_array')),
+            'schedule'  => is_array($c['schedule'] ?? null) ? $c['schedule'] : null,
+            'tiers'     => (array) ($c['tiers'] ?? []),   // silver|gold|premium => rate
+        ];
+    }
+
+    // ---------------------------------------------------------- MEMBERSHIP CARDS
+    /** A tier rate against the normal rate is just a percentage off. */
+    private function memberPercent(?string $tier, array $cfg): int
+    {
+        $rate = (float) ($cfg['tiers'][$tier] ?? 0);
+        $normal = $cfg['rate'] > 0 ? $cfg['rate'] : 2;
+        if (!$tier || $rate <= 0 || $rate >= $normal) {
+            return 0;
+        }
+        return (int) round((1 - ($rate / $normal)) * 100);
+    }
+
+    /**
+     * The member's 8-digit card number *is* their coupon code, so the tier discount
+     * flows through the normal checkout coupon box with no separate pricing path.
+     * No tier (or a tier rate that isn't a discount) → the card's coupon is removed.
+     */
+    private function syncMemberCoupon($user, array $cfg): int
+    {
+        $no = (string) ($user->membership_no ?? '');
+        if ($no === '') {
+            return 0;
+        }
+        $percent = $this->memberPercent($user->membership_tier, $cfg);
+        $coupon = Coupon::withTrashed()->where('code', $no)->first();
+        if ($percent <= 0) {
+            $coupon?->forceDelete();
+            return 0;
+        }
+        $coupon = $coupon ?: new Coupon(['code' => $no]);
+        $coupon->fill([
+            'code'        => $no,
+            'type'        => CouponType::PERCENTAGE_COUPON,
+            'amount'      => $percent,
+            'description' => ucfirst((string) $user->membership_tier) . ' membership card',
+            'language'    => 'en',
+            'is_approve'  => true,
+            'target'      => true,          // logged-in customers only
+            'user_id'     => $user->id,     // and only *this* member — enforced on verify + order
+            'active_from' => now(),
+            'expire_at'   => now()->addYears(5),
+        ]);
+        $coupon->deleted_at = null;
+        $coupon->save();
+        return $percent;
+    }
+
+    /** Admin: read/save the membership tier rates (and re-sync every member's card coupon). */
+    public function membershipTiers(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate(['tiers' => 'required|array']);
+            $tiers = [];
+            foreach ($data['tiers'] as $k => $v) {
+                $k = strtolower((string) $k);
+                if (in_array($k, ['silver', 'gold', 'premium'], true) && (float) $v > 0) {
+                    $tiers[$k] = (float) $v;
+                }
+            }
+            $settings = Settings::first();
+            $options = $settings->options ?? [];
+            $options['conversion'] = array_merge((array) ($options['conversion'] ?? []), ['tiers' => $tiers]);
+            $settings->options = $options;
+            $settings->save();
+
+            $cfg = $this->conversionConfig();
+            $synced = 0;
+            User::whereNotNull('membership_tier')->chunkById(300, function ($users) use ($cfg, &$synced) {
+                foreach ($users as $u) {
+                    $this->syncMemberCoupon($u, $cfg);
+                    $synced++;
+                }
+            });
+            return ['status' => 'success', 'tiers' => $tiers, 'synced' => $synced];
+        }
+
+        $cfg = $this->conversionConfig();
+        $counts = User::whereNotNull('membership_tier')
+            ->selectRaw('membership_tier, count(*) as c')->groupBy('membership_tier')
+            ->pluck('c', 'membership_tier');
+        return [
+            'rate'    => $cfg['rate'],
+            'tiers'   => $cfg['tiers'],
+            'percent' => collect(['silver', 'gold', 'premium'])
+                ->mapWithKeys(fn ($t) => [$t => $this->memberPercent($t, $cfg)]),
+            'members' => $counts,
+        ];
+    }
+
+    /** Admin: find customers by name / email / phone / card number. */
+    public function membershipSearch(Request $request)
+    {
+        $q = trim((string) $request->query('q', ''));
+        if (strlen($q) < 2) {
+            return ['data' => []];
+        }
+        $users = User::where(fn ($w) => $w->where('name', 'like', "%{$q}%")
+            ->orWhere('email', 'like', "%{$q}%")
+            ->orWhere('mobile_number', 'like', "%{$q}%")
+            ->orWhere('membership_no', 'like', "{$q}%"))
+            ->limit(8)
+            ->get(['id', 'name', 'email', 'membership_no', 'membership_tier']);
+        return ['data' => $users];
+    }
+
+    /** Admin: give a customer a tier (or clear it) — their card coupon follows. */
+    public function membershipAssign(Request $request)
+    {
+        $data = $request->validate([
+            'user_id' => 'required|integer',
+            'tier'    => 'nullable|string|in:silver,gold,premium',
+        ]);
+        $user = User::findOrFail($data['user_id']);
+        $user->membership_tier = $data['tier'] ?: null;
+        $user->saveQuietly();
+
+        $cfg = $this->conversionConfig();
+        $percent = $this->syncMemberCoupon($user, $cfg);
+        return [
+            'status'        => 'success',
+            'user_id'       => $user->id,
+            'name'          => $user->name,
+            'membership_no' => $user->membership_no,
+            'tier'          => $user->membership_tier,
+            'percent'       => $percent,
+            'message'       => $user->membership_tier
+                ? "{$user->name} এখন " . ucfirst($user->membership_tier) . " — কার্ড {$user->membership_no} দিলে {$percent}% ছাড়।"
+                : "{$user->name} এর মেম্বারশিপ সরানো হয়েছে।",
+        ];
+    }
+
+    /** Re-price every book that has an MRP, at the current config. Returns the count. */
+    private function repriceAll(array $cfg): int
+    {
+        $n = 0;
+        Product::where('type_id', 8)->whereNotNull('mrp')->where('mrp', '>', 0)->with('categories:id')
+            ->chunkById(300, function ($books) use ($cfg, &$n) {
+                foreach ($books as $p) {
+                    $r = $this->resolveConversionRate($p, $cfg);
+                    $price = $this->roundPrice($p->mrp * $r['rate']);
+                    $sale  = $r['sale_rate'] > 0 ? $this->roundPrice($p->mrp * $r['sale_rate']) : null;
+                    if ($sale !== null && $sale >= $price) {
+                        $sale = null;
+                    }
+                    $p->price = $price;
+                    $p->sale_price = $sale;
+                    $p->min_price = $sale ?: $price;
+                    $p->max_price = $price;
+                    $p->saveQuietly();
+                    $n++;
+                }
+            });
+        return $n;
+    }
+
+    /**
+     * Cron (hourly, key-guarded): when a scheduled rate's window has passed, restore the
+     * rates that were in force before it and re-price every book back.
+     */
+    public function conversionCron(Request $request)
+    {
+        $token = $this->options()['replygenie']['token'] ?? '';
+        if (!$token || (string) $request->query('key') !== (string) $token) {
+            abort(401);
+        }
+        $c = $this->options()['conversion'] ?? [];
+        $s = is_array($c['schedule'] ?? null) ? $c['schedule'] : null;
+        if (empty($s['enabled']) || empty($s['until'])) {
+            return ['status' => 'idle'];
+        }
+        if (now()->lt(Carbon::parse($s['until']))) {
+            return ['status' => 'waiting', 'until' => $s['until']];
+        }
+        $prev = (array) ($s['prev'] ?? []);
+        $settings = Settings::first();
+        $options = $settings->options ?? [];
+
+        // Restore the *whole* config exactly as it was before the scheduled rate —
+        // rebuilding it field-by-field silently dropped the sale rate and the tiers.
+        if (!empty($prev['snapshot'])) {
+            $restored = (array) $prev['snapshot'];
+            $restored['schedule'] = null;
+            $options['conversion'] = $restored;
+            $settings->options = $options;
+            $settings->save();
+            $repriced = $this->repriceAll($this->conversionConfig());
+            return [
+                'status'        => 'reverted',
+                'restored_rate' => (float) ($restored['rate'] ?? 2),
+                'restored_sale' => (float) ($restored['sale_rate'] ?? 0),
+                'repriced'      => $repriced,
+            ];
+        }
+
+        // Legacy schedules (saved before snapshots existed): keep everything else intact.
+        $options['conversion'] = array_merge($c, [
+            'rate'      => (float) ($prev['rate'] ?? 2),
+            'bd_rate'   => (float) ($prev['bd_rate'] ?? 1),
+            'sale_rate' => (float) ($prev['sale_rate'] ?? 0),
+            'schedule'  => null,
+        ]);
+        $settings->options = $options;
+        $settings->save();
+
+        $repriced = $this->repriceAll($this->conversionConfig());
+        return ['status' => 'reverted', 'restored_rate' => $options['conversion']['rate'], 'repriced' => $repriced];
+    }
+
+    /** Most-specific rate for a product: product > author+publisher > author > publisher > category > origin. */
+    private function resolveConversionRate($product, array $cfg): array
+    {
+        $catIds = method_exists($product, 'categories') ? $product->categories->pluck('id')->all() : [];
+        $aid = (int) ($product->author_id ?? 0);
+        $mid = (int) ($product->manufacturer_id ?? 0);
+        $pid = (int) $product->id;
+
+        $match = function ($type, $test) use ($cfg) {
+            foreach ($cfg['overrides'] as $o) {
+                if (($o['type'] ?? '') === $type && $test($o)) {
+                    return ['rate' => (float) ($o['rate'] ?? $cfg['rate']), 'sale_rate' => (float) ($o['sale_rate'] ?? $cfg['sale_rate'])];
+                }
+            }
+            return null;
+        };
+
+        return $match('product', fn ($o) => (int) ($o['id'] ?? 0) === $pid)
+            ?? $match('author_in_publisher', fn ($o) => (int) ($o['id'] ?? 0) === $aid && (int) ($o['id2'] ?? 0) === $mid)
+            ?? $match('author', fn ($o) => (int) ($o['id'] ?? 0) === $aid)
+            ?? $match('publisher', fn ($o) => (int) ($o['id'] ?? 0) === $mid)
+            ?? $match('category', fn ($o) => in_array((int) ($o['id'] ?? 0), $catIds, true))
+            ?? [
+                'rate'      => ($product->book_origin ?? 'indian') === 'bd' ? $cfg['bd_rate'] : $cfg['rate'],
+                'sale_rate' => $cfg['sale_rate'],
+            ];
+    }
+
+    /** Admin: read/update conversion config (global rates + scope overrides). */
+    public function conversionSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate([
+                'rate'      => 'nullable|numeric',
+                'bd_rate'   => 'nullable|numeric',
+                'sale_rate' => 'nullable|numeric',
+                'overrides' => 'nullable|array',
+                'schedule'  => 'nullable|array',
+            ]);
+            // A scheduled rate remembers the rates in force *before* it, so the cron can
+            // put them back when the window ends. Re-saving inside a live window keeps
+            // the original "previous" rates — never the temporary ones.
+            $before = $this->conversionConfig();
+            $sched = (array) ($data['schedule'] ?? []);
+            $schedule = null;
+            if (!empty($sched['enabled'])) {
+                $until = ($sched['mode'] ?? 'duration') === 'range' && !empty($sched['end'])
+                    ? Carbon::parse($sched['end'])->endOfDay()
+                    : now()->add(($sched['unit'] ?? 'hour') === 'day' ? 'days' : 'hours', max(1, (int) ($sched['amount'] ?? 24)));
+                $snapshot = $before;
+                unset($snapshot['schedule']);   // the config exactly as it stands right now
+                $schedule = [
+                    'enabled' => true,
+                    'until'   => $until->toDateTimeString(),
+                    'prev'    => $before['schedule']['prev'] ?? [
+                        'rate'      => $before['rate'],
+                        'bd_rate'   => $before['bd_rate'],
+                        'sale_rate' => $before['sale_rate'],
+                        'snapshot'  => $snapshot,
+                    ],
+                ];
+            }
+            $overrides = [];
+            foreach ((array) ($data['overrides'] ?? []) as $o) {
+                if (empty($o['type']) || !isset($o['rate'])) {
+                    continue;
+                }
+                $overrides[] = [
+                    'type'      => (string) $o['type'],
+                    'id'        => (int) ($o['id'] ?? 0),
+                    'id2'       => (int) ($o['id2'] ?? 0),
+                    'label'     => (string) ($o['label'] ?? ''),
+                    'rate'      => (float) $o['rate'],
+                    'sale_rate' => (float) ($o['sale_rate'] ?? 0),
+                ];
+            }
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['conversion'] = [
+                'rate'      => (float) ($data['rate'] ?? 2),
+                'bd_rate'   => (float) ($data['bd_rate'] ?? 1),
+                'sale_rate' => (float) ($data['sale_rate'] ?? 0),
+                'overrides' => $overrides,
+                'schedule'  => $schedule,
+            ];
+            $settings->update(['options' => $options]);
+        }
+        return $this->conversionConfig();
+    }
+
+    /**
+     * Admin: recompute selling prices from MRP for every book (optionally a scope),
+     * using the resolved conversion rate. Books without an MRP are left untouched.
+     */
+    /** Apply the scope filter (category / author / publisher / product) to a query. */
+    private function conversionScope($q, string $scope, int $scopeId)
+    {
+        if ($scope === 'category' && $scopeId) {
+            $q->whereHas('categories', fn ($c) => $c->where('categories.id', $scopeId));
+        } elseif ($scope === 'author' && $scopeId) {
+            $q->where('author_id', $scopeId);
+        } elseif ($scope === 'publisher' && $scopeId) {
+            $q->where('manufacturer_id', $scopeId);
+        } elseif ($scope === 'product' && $scopeId) {
+            $q->where('id', $scopeId);
+        }
+        return $q;
+    }
+
+    /**
+     * Exclusions: books matching ANY of these are left completely alone, whatever the
+     * include-filters say. Exclude always wins — that's the point of an exception list.
+     */
+    private function conversionExclude($q, array $f)
+    {
+        $ints = fn ($v) => array_values(array_filter(array_map('intval', (array) $v)));
+        $cats = $ints($f['categories'] ?? []);
+        $auth = $ints($f['authors'] ?? []);
+        $pub  = $ints($f['publishers'] ?? []);
+        $prod = $ints($f['products'] ?? []);
+        if ($cats) {
+            $q->whereDoesntHave('categories', fn ($c) => $c->whereIn('categories.id', $cats));
+        }
+        if ($auth) {
+            $q->where(fn ($w) => $w->whereNull('author_id')->orWhereNotIn('author_id', $auth));
+        }
+        if ($pub) {
+            $q->where(fn ($w) => $w->whereNull('manufacturer_id')->orWhereNotIn('manufacturer_id', $pub));
+        }
+        if ($prod) {
+            $q->whereNotIn('id', $prod);
+        }
+        return $q;
+    }
+
+    /**
+     * Multi-criteria filter: books must match ALL provided groups (AND), and any
+     * of the ids within a group (OR). e.g. publisher X AND category in [A,B].
+     */
+    private function conversionFilters($q, array $f)
+    {
+        $ints = fn ($v) => array_values(array_filter(array_map('intval', (array) $v)));
+        $cats = $ints($f['categories'] ?? []);
+        $auth = $ints($f['authors'] ?? []);
+        $pub  = $ints($f['publishers'] ?? []);
+        $prod = $ints($f['products'] ?? []);
+        if ($cats) {
+            $q->whereHas('categories', fn ($c) => $c->whereIn('categories.id', $cats));
+        }
+        if ($auth) {
+            $q->whereIn('author_id', $auth);
+        }
+        if ($pub) {
+            $q->whereIn('manufacturer_id', $pub);
+        }
+        if ($prod) {
+            $q->whereIn('id', $prod);
+        }
+        return $q;
+    }
+
+    /**
+     * Admin: re-price books in a scope.
+     *  mode=reprice (default) → price = MRP × rate; skips books without an MRP.
+     *  mode=set_mrp → MRP = round(current price ÷ rate); keeps the price the same,
+     *                 so existing books get an MRP without any visible price change,
+     *                 ready to be re-priced when the rate changes.
+     * Returns the list of books whose price actually changed (old → new) + counts.
+     */
+    public function conversionApply(Request $request)
+    {
+        $cfg = $this->conversionConfig();
+        $scope = (string) $request->input('scope', 'all');
+        $scopeId = (int) $request->input('id', 0);
+        $filters = (array) $request->input('filters', []);
+        $exclude = (array) $request->input('exclude', []);
+        $mode = $request->input('mode') === 'set_mrp' ? 'set_mrp' : 'reprice';
+        $assumed = (float) $request->input('assumed_rate', 0);
+
+        // Prefer multi-criteria `filters`; fall back to the single scope/id. Exclusions
+        // are applied on top of whichever was used, and always win.
+        $base = function () use ($filters, $exclude, $scope, $scopeId) {
+            $q = Product::query()->where('type_id', 8)->with(['categories:id', 'author:id,name', 'manufacturer:id,name']);
+            $q = $filters
+                ? $this->conversionFilters($q, $filters)
+                : $this->conversionScope($q, $scope, $scopeId);
+            return array_filter($exclude) ? $this->conversionExclude($q, $exclude) : $q;
+        };
+
+        // How many in-scope books still have no MRP (they can't be re-priced yet).
+        $withoutMrp = (clone $base())->where(fn ($w) => $w->whereNull('mrp')->orWhere('mrp', '<=', 0))->count();
+
+        $updated = 0;
+        $changes = [];
+        $q = $base();
+        if ($mode === 'reprice') {
+            $q->whereNotNull('mrp')->where('mrp', '>', 0);
+        }
+        $q->chunkById(300, function ($books) use ($cfg, $mode, $assumed, &$updated, &$changes) {
+            foreach ($books as $p) {
+                $r = $this->resolveConversionRate($p, $cfg);
+                if ($mode === 'set_mrp') {
+                    $rate = $assumed > 0 ? $assumed : ($r['rate'] > 0 ? $r['rate'] : 1);
+                    // MRP is derived from the REGULAR price (price = MRP × rate),
+                    // never the discounted sale price — using sale_price here gives a
+                    // too-low MRP and throws off every later re-price.
+                    $p->mrp = round((float) $p->price / $rate);
+                    if (empty($p->book_origin)) {
+                        $p->book_origin = 'indian';
+                    }
+                    $p->saveQuietly();
+                    $updated++;
+                    continue;
+                }
+                if (empty($p->mrp) || $p->mrp <= 0) {
+                    continue;
+                }
+                $old = round((float) $p->price);
+                $price = $this->roundPrice($p->mrp * $r['rate']);
+                $sale  = $r['sale_rate'] > 0 ? $this->roundPrice($p->mrp * $r['sale_rate']) : null;
+                if ($sale !== null && $sale >= $price) {
+                    $sale = null;
+                }
+                $p->price = $price;
+                $p->sale_price = $sale;
+                $p->min_price = $sale ?: $price;
+                $p->max_price = $price;
+                $p->saveQuietly();
+                $updated++;
+                if ($old != $price && count($changes) < 500) {
+                    $changes[] = [
+                        'product_id' => (int) $p->id,
+                        'name'       => $p->name,
+                        'slug'       => $p->slug,
+                        'image'      => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                        'author'     => $p->author->name ?? null,
+                        'publisher'  => $p->manufacturer->name ?? null,
+                        'old_price'  => $old,
+                        'new_price'  => $price,
+                        'mrp'        => (float) $p->mrp,
+                    ];
+                }
+            }
+        });
+
+        // Prices moved — drop the cached catalog responses so the shop shows them now.
+        if ($mode !== 'set_mrp' && $changes) {
+            Cache::increment('catalog:version');
+        }
+
+        return [
+            'status'      => 'success',
+            'mode'        => $mode,
+            'updated'     => $updated,
+            'without_mrp' => $withoutMrp,
+            'changed'     => count($changes),
+            'changes'     => $changes,
+        ];
+    }
+
+    /**
+     * Admin: turn a "coupon conversion rate" into a real percentage coupon.
+     * A coupon rate of 1.6 against a normal rate of 2 is simply 20% off, so it rides
+     * the existing checkout discount flow instead of a second pricing path.
+     */
+    public function conversionCoupon(Request $request)
+    {
+        $data = $request->validate([
+            'code'      => 'required|string|max:40',
+            'rate'      => 'required|numeric|min:0.01',
+            'expire_at' => 'nullable|date',
+        ]);
+        $cfg = $this->conversionConfig();
+        $normal = $cfg['rate'] > 0 ? $cfg['rate'] : 2;
+        if ($data['rate'] >= $normal) {
+            throw new MarvelException("Coupon rate must be lower than the normal rate (×{$normal}).");
+        }
+        $percent = (int) round((1 - ($data['rate'] / $normal)) * 100);
+        $code = strtoupper(preg_replace('/\s+/', '', $data['code']));
+
+        $coupon = Coupon::withTrashed()->firstOrNew(['code' => $code]);
+        $coupon->fill([
+            'type'        => CouponType::PERCENTAGE_COUPON,
+            'amount'      => $percent,
+            'description' => "Conversion rate ×{$data['rate']} (normal ×{$normal})",
+            'language'    => 'en',
+            'is_approve'  => true,
+            'target'      => false,
+            'active_from' => now(),
+            'expire_at'   => !empty($data['expire_at']) ? Carbon::parse($data['expire_at'])->endOfDay() : now()->addYear(),
+        ]);
+        $coupon->deleted_at = null;
+        $coupon->save();
+
+        return [
+            'status'    => 'success',
+            'code'      => $code,
+            'percent'   => $percent,
+            'rate'      => (float) $data['rate'],
+            'expire_at' => $coupon->expire_at,
+            'message'   => "কুপন {$code} — রেট ×{$data['rate']} মানে {$percent}% ছাড় (সাধারণ রেট ×{$normal})।",
+        ];
+    }
+
+    // ============================================================ FEATURE REGISTRY + HEALTH
+    /**
+     * Admin: every feature we've shipped, with a live probe of each. A feature that can't
+     * actually work (its table/column/token is gone) comes back red — so a broken deploy
+     * shows up here instead of in a customer's face.
+     */
+    public function featureRegistry(Request $request)
+    {
+        $out = [];
+        foreach (FeatureRegistry::features() as $f) {
+            $status = 'ok';
+            $note = null;
+            try {
+                $res = ($f['check'])();
+                if (is_array($res) && isset($res['fail'])) {
+                    $status = 'fail';
+                    $note = $res['fail'];
+                } elseif (is_array($res) && isset($res['warn'])) {
+                    $status = 'warn';
+                    $note = $res['warn'];
+                } elseif (is_string($res)) {
+                    $note = $res;
+                }
+            } catch (\Throwable $e) {
+                // A probe that blows up *is* a broken feature — report it, don't hide it.
+                $status = 'fail';
+                $note = 'probe error: ' . $e->getMessage();
+            }
+
+            $out[] = [
+                'key'     => $f['key'],
+                'name'    => $f['name'],
+                'detail'  => $f['detail'] ?? null,
+                'area'    => $f['area'] ?? 'Other',
+                'version' => $f['version'] ?? '1.0.0',
+                'date'    => $f['date'] ?? null,
+                'admin'   => $f['admin'] ?? null,
+                'status'  => $status,
+                'note'    => $note,
+            ];
+        }
+
+        $counts = [
+            'total' => count($out),
+            'ok'    => count(array_filter($out, fn ($f) => $f['status'] === 'ok')),
+            'warn'  => count(array_filter($out, fn ($f) => $f['status'] === 'warn')),
+            'fail'  => count(array_filter($out, fn ($f) => $f['status'] === 'fail')),
+        ];
+
+        return ['data' => $out, 'counts' => $counts, 'checked_at' => now()->toIso8601String()];
+    }
+
+    // ============================================================ DELIVERY AREAS
+    /**
+     * The real RedX delivery-area list, cached for a day. The checkout address form
+     * autocompletes from this, so what the customer picks is exactly what the courier
+     * knows — no more area mismatches when a shipment is booked.
+     */
+    public function courierAreas(Request $request)
+    {
+        $areas = Cache::remember('redx:areas', 86400, function () {
+            $cfg = ($this->options()['couriers'] ?? [])['redx'] ?? [];
+            $token = $cfg['token'] ?? '';
+            if (!$token) {
+                return [];
+            }
+            $base = rtrim($cfg['base_url'] ?? '', '/') ?: 'https://openapi.redx.com.bd/v1.0.0-beta';
+            if (!str_starts_with($base, 'http')) {
+                $base = 'https://' . $base;
+            }
+            try {
+                $res = Http::withHeaders(['API-ACCESS-TOKEN' => 'Bearer ' . $token])
+                    ->timeout(25)->get($base . '/areas');
+                if (!$res->successful()) {
+                    return [];
+                }
+                return collect($res->json('areas') ?? [])->map(fn ($a) => [
+                    'id'       => $a['id'] ?? null,
+                    'name'     => $a['name'] ?? '',
+                    'district' => $a['district_name'] ?? ($a['division_name'] ?? ''),
+                    'zone'     => $a['zone_name'] ?? '',
+                ])->filter(fn ($a) => $a['name'] !== '')->values()->all();
+            } catch (\Throwable $e) {
+                return [];
+            }
+        });
+
+        // Optional server-side filter so the form can query instead of shipping 5k rows.
+        $q = trim((string) $request->query('q', ''));
+        if ($q !== '') {
+            $needle = mb_strtolower($q);
+            $areas = collect($areas)->filter(
+                fn ($a) => str_contains(mb_strtolower($a['name'] . ' ' . $a['district'] . ' ' . $a['zone']), $needle)
+            )->take(25)->values()->all();
+        }
+
+        return ['data' => $areas, 'total' => count($areas)];
+    }
+
+    // ============================================================ SUPPORT TICKETS (#10)
+    /** Customer: open a ticket. */
+    public function ticketCreate(Request $request)
+    {
+        $data = $request->validate([
+            'subject'  => 'required|string|max:160',
+            'message'  => 'required|string|max:2000',
+            'category' => 'nullable|string|max:40',
+            'order_id' => 'nullable|integer',
+        ]);
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('টিকেট খুলতে লগইন করুন।');
+        }
+        $id = DB::table('support_tickets')->insertGetId([
+            'customer_id'   => $user->id,
+            'order_id'      => $data['order_id'] ?? null,
+            'subject'       => $data['subject'],
+            'category'      => $data['category'] ?? 'other',
+            'status'        => 'open',
+            'last_reply_at' => now(),
+            'created_at'    => now(),
+            'updated_at'    => now(),
+        ]);
+        DB::table('support_ticket_messages')->insert([
+            'ticket_id'  => $id,
+            'sender'     => 'customer',
+            'message'    => $data['message'],
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        return ['status' => 'success', 'id' => $id, 'message' => 'টিকেট খোলা হয়েছে — আমরা শীঘ্রই উত্তর দেব।'];
+    }
+
+    /** Customer: my tickets (with the full thread). Admin: every ticket. */
+    public function ticketList(Request $request)
+    {
+        $user = $request->user();
+        $isAdmin = $user && $user->hasPermissionTo(Permission::SUPER_ADMIN);
+
+        $q = DB::table('support_tickets as t')
+            ->leftJoin('users as u', 'u.id', '=', 't.customer_id')
+            ->leftJoin('orders as o', 'o.id', '=', 't.order_id')
+            ->select('t.*', 'u.name as customer', 'u.email', 'u.mobile_number as contact', 'o.tracking_number');
+        if (!$isAdmin) {
+            if (!$user) {
+                return ['data' => [], 'counts' => []];
+            }
+            $q->where('t.customer_id', $user->id);
+        }
+        if ($request->filled('status')) {
+            $q->where('t.status', $request->input('status'));
+        }
+        $rows = $q->orderByDesc('t.last_reply_at')->limit(200)->get();
+
+        $msgs = DB::table('support_ticket_messages')
+            ->whereIn('ticket_id', $rows->pluck('id'))
+            ->orderBy('id')
+            ->get()
+            ->groupBy('ticket_id');
+
+        $data = $rows->map(fn ($t) => [
+            'id'       => (int) $t->id,
+            'subject'  => $t->subject,
+            'category' => $t->category,
+            'status'   => $t->status,
+            'customer' => $t->customer,
+            'contact'  => $t->contact ?: $t->email,
+            'order'    => $t->tracking_number,
+            'created_at'    => $t->created_at,
+            'last_reply_at' => $t->last_reply_at,
+            'messages' => collect($msgs[$t->id] ?? [])->map(fn ($m) => [
+                'sender'  => $m->sender,
+                'message' => $m->message,
+                'at'      => $m->created_at,
+            ])->values(),
+        ]);
+
+        $counts = DB::table('support_tickets')
+            ->when(!$isAdmin && $user, fn ($x) => $x->where('customer_id', $user->id))
+            ->selectRaw('status, count(*) as c')->groupBy('status')->pluck('c', 'status');
+
+        return ['data' => $data, 'counts' => $counts];
+    }
+
+    /** Customer or admin: reply on a ticket (admin replies flip it to "answered"). */
+    public function ticketReply(Request $request)
+    {
+        $data = $request->validate([
+            'ticket_id' => 'required|integer',
+            'message'   => 'required|string|max:2000',
+        ]);
+        $user = $request->user();
+        $ticket = DB::table('support_tickets')->where('id', $data['ticket_id'])->first();
+        if (!$ticket) {
+            throw new MarvelException('Ticket not found.');
+        }
+        $isAdmin = $user && $user->hasPermissionTo(Permission::SUPER_ADMIN);
+        if (!$isAdmin && (!$user || (int) $ticket->customer_id !== (int) $user->id)) {
+            throw new MarvelException('এই টিকেটটি আপনার নয়।');
+        }
+
+        DB::table('support_ticket_messages')->insert([
+            'ticket_id'  => $ticket->id,
+            'sender'     => $isAdmin ? 'admin' : 'customer',
+            'message'    => $data['message'],
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('support_tickets')->where('id', $ticket->id)->update([
+            'status'        => $isAdmin ? 'answered' : 'open',
+            'last_reply_at' => now(),
+            'updated_at'    => now(),
+        ]);
+        return ['status' => 'success'];
+    }
+
+    /** Admin: close (or reopen) a ticket. */
+    public function ticketStatus(Request $request)
+    {
+        $data = $request->validate([
+            'ticket_id' => 'required|integer',
+            'status'    => 'required|string|in:open,answered,closed',
+        ]);
+        DB::table('support_tickets')->where('id', $data['ticket_id'])
+            ->update(['status' => $data['status'], 'updated_at' => now()]);
+        return ['status' => 'success'];
+    }
+
+    // ============================================================ RESTOCK REQUESTS (#12)
+    private const RESTOCK_FREE = 3;          // free requests per customer
+    private const RESTOCK_POINTS = 10;       // wallet points per request beyond that
+
+    /**
+     * How many free requests a customer has left. The free allowance only burns once the
+     * admin has *confirmed* a request and the customer still hasn't ordered the book —
+     * asking for books that were never restocked costs them nothing.
+     */
+    private function restockQuota(int $customerId): array
+    {
+        $confirmedUnordered = DB::table('restock_requests')
+            ->where('customer_id', $customerId)
+            ->where('status', 'confirmed')
+            ->count();
+        $free = max(0, self::RESTOCK_FREE - $confirmedUnordered);
+        $wallet = Wallet::where('customer_id', $customerId)->first();
+        return [
+            'free_left'           => $free,
+            'confirmed_unordered' => $confirmedUnordered,
+            'costs_points'        => $free === 0,
+            'points_per_request'  => self::RESTOCK_POINTS,
+            'wallet_points'       => (int) ($wallet->available_points ?? 0),
+        ];
+    }
+
+    /** Customer: ask for an out-of-stock book to be restocked. */
+    public function restockRequest(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('রিকোয়েস্ট করতে লগইন করুন।');
+        }
+        $product = Product::findOrFail((int) $request->input('product_id'));
+
+        if (DB::table('restock_requests')->where('customer_id', $user->id)->where('product_id', $product->id)->exists()) {
+            throw new MarvelException('এই বইয়ের জন্য আপনি আগেই রিকোয়েস্ট করেছেন।');
+        }
+
+        $quota = $this->restockQuota($user->id);
+        $charged = 0;
+
+        // Out of free requests: each one now costs wallet points — the shop warns first,
+        // and we still refuse if the wallet can't cover it.
+        if ($quota['costs_points']) {
+            $wallet = Wallet::where('customer_id', $user->id)->first();
+            $have = (int) ($wallet->available_points ?? 0);
+            if ($have < self::RESTOCK_POINTS) {
+                throw new MarvelException(
+                    'আপনার ' . self::RESTOCK_FREE . 'টি ফ্রি রিকোয়েস্ট শেষ এবং সেগুলোর বই এখনো অর্ডার করেননি। '
+                    . 'নতুন রিকোয়েস্টে ' . self::RESTOCK_POINTS . ' পয়েন্ট লাগবে, কিন্তু আপনার আছে ' . $have . '।'
+                );
+            }
+            $wallet->available_points = $have - self::RESTOCK_POINTS;
+            $wallet->save();
+            $charged = self::RESTOCK_POINTS;
+        }
+
+        $id = DB::table('restock_requests')->insertGetId([
+            'customer_id'    => $user->id,
+            'product_id'     => $product->id,
+            'status'         => 'requested',
+            'points_charged' => $charged,
+            // What the customer actually wants — edition, language, cover.
+            'customer_note'  => $request->input('note') ?: null,
+            'created_at'     => now(),
+            'updated_at'     => now(),
+        ]);
+
+        return [
+            'status'  => 'success',
+            'id'      => $id,
+            'charged' => $charged,
+            'quota'   => $this->restockQuota($user->id),
+            'message' => $charged
+                ? "রিকোয়েস্ট জমা হয়েছে। {$charged} পয়েন্ট কাটা হয়েছে।"
+                : 'রিকোয়েস্ট জমা হয়েছে — বইটি আনা গেলে আপনাকে জানাব।',
+        ];
+    }
+
+    /** Customer: my restock requests + how much quota is left. */
+    public function restockMine(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return ['data' => [], 'quota' => null];
+        }
+        $rows = DB::table('restock_requests as r')
+            ->leftJoin('products as p', 'p.id', '=', 'r.product_id')
+            ->where('r.customer_id', $user->id)
+            ->select('r.*', 'p.name', 'p.slug', 'p.image', 'p.price', 'p.quantity as stock')
+            ->orderByDesc('r.id')
+            ->get()
+            ->map(function ($r) {
+                $img = json_decode($r->image ?? 'null', true);
+                return [
+                    'id'            => (int) $r->id,
+                    'product_id'    => (int) $r->product_id,
+                    'name'          => $r->name,
+                    'slug'          => $r->slug,
+                    'image'         => is_array($img) ? ($img['original'] ?? null) : null,
+                    'status'        => $r->status,
+                    'price'         => (float) ($r->confirmed_price ?: $r->price),
+                    'in_stock'      => (int) $r->stock > 0,
+                    'points'        => (int) $r->points_charged,
+                    'admin_note'    => $r->admin_note,
+                    'customer_note' => $r->customer_note,
+                    'eta_days'      => $r->eta_days ? (int) $r->eta_days : null,
+                    // Derived, not stored: editing eta_days later moves the date with it.
+                    'expected_date' => $this->restockExpectedDate($r),
+                    'created_at'    => $r->created_at,
+                ];
+            });
+
+        return ['data' => $rows, 'quota' => $this->restockQuota($user->id)];
+    }
+
+    /** Admin: every restock request. */
+    public function restockList(Request $request)
+    {
+        $rows = DB::table('restock_requests as r')
+            ->leftJoin('products as p', 'p.id', '=', 'r.product_id')
+            ->leftJoin('users as u', 'u.id', '=', 'r.customer_id')
+            ->select(
+                'r.*',
+                'p.name as product', 'p.image as product_image', 'p.price', 'p.quantity as stock',
+                'u.name as customer', 'u.mobile_number as contact', 'u.email',
+            )
+            ->when($request->filled('status'), fn ($q) => $q->where('r.status', $request->input('status')))
+            ->orderByDesc('r.id')
+            ->limit(300)
+            ->get();
+
+        // Group by book: what the admin actually wants to see is "how many people want this".
+        $data = $rows->map(function ($r) {
+            $img = json_decode($r->product_image ?? 'null', true);
+            return [
+                'id'              => (int) $r->id,
+                'product_id'      => (int) $r->product_id,
+                'product'         => $r->product,
+                'image'           => is_array($img) ? ($img['original'] ?? null) : null,
+                'price'           => (float) $r->price,
+                'stock'           => (int) $r->stock,
+                'customer'        => $r->customer,
+                'contact'         => $r->contact ?: $r->email,
+                'status'          => $r->status,
+                'points'          => (int) $r->points_charged,
+                // Sent back so the admin form can be re-opened and edited at any time.
+                'confirmed_price' => $r->confirmed_price ? (float) $r->confirmed_price : null,
+                'admin_note'      => $r->admin_note,
+                'customer_note'   => $r->customer_note,
+                'eta_days'        => $r->eta_days ? (int) $r->eta_days : null,
+                'expected_date'   => $this->restockExpectedDate($r),
+                'created_at'      => $r->created_at,
+            ];
+        });
+
+        $demand = $data->groupBy('product_id')->map->count();
+        $counts = DB::table('restock_requests')->selectRaw('status, count(*) as c')->groupBy('status')->pluck('c', 'status');
+        return ['data' => $data, 'demand' => $demand, 'counts' => $counts];
+    }
+
+    /**
+     * Admin: decide on a restock request. Confirming brings the book back — stock, an
+     * updated price, and pre-order mode so ordering it demands the 50% advance.
+     */
+    public function restockAction(Request $request)
+    {
+        $data = $request->validate([
+            'id'       => 'required|integer',
+            'action'   => 'required|string|in:confirm,decline',
+            'price'    => 'nullable|numeric|min:1',
+            'quantity' => 'nullable|integer|min:1',
+            'note'     => 'nullable|string|max:300',
+            'eta_days' => 'nullable|integer|min:1|max:365',
+        ]);
+        $req = DB::table('restock_requests')->where('id', $data['id'])->first();
+        if (!$req) {
+            throw new MarvelException('Request not found.');
+        }
+
+        if ($data['action'] === 'decline') {
+            DB::table('restock_requests')->where('id', $req->id)->update([
+                'status' => 'declined', 'admin_note' => $data['note'] ?? null, 'updated_at' => now(),
+            ]);
+            return ['status' => 'success', 'new_status' => 'declined'];
+        }
+
+        // Re-confirming is allowed and expected: the admin can come back and change the
+        // price, the quantity or the ETA at any time. Changing the price here only moves
+        // the book's *future* price — orders already placed keep the unit_price stored on
+        // their line, so nobody's bill changes retroactively.
+        $product = Product::findOrFail($req->product_id);
+        if (!empty($data['price'])) {
+            $product->price = (float) $data['price'];
+            $product->max_price = (float) $data['price'];
+            $product->min_price = (float) ($product->sale_price ?: $data['price']);
+        }
+        $product->quantity = (int) ($data['quantity'] ?? max(1, (int) $product->quantity));
+        $product->in_stock = 1;
+        // A restocked book is sold pre-order style: 50% up front.
+        $product->is_preorder = true;
+        $product->preorder_advance_pct = 50;
+        $product->saveQuietly();
+        Cache::increment('catalog:version');
+
+        $update = [
+            'status'          => 'confirmed',
+            'confirmed_price' => $product->price,
+            'admin_note'      => $data['note'] ?? null,
+            'updated_at'      => now(),
+        ];
+        if (array_key_exists('eta_days', $data) && $data['eta_days'] !== null) {
+            $update['eta_days'] = (int) $data['eta_days'];
+        }
+        // The clock starts at the first confirm and is not reset by later edits.
+        if (empty($req->confirmed_at)) {
+            $update['confirmed_at'] = now();
+        }
+        DB::table('restock_requests')->where('id', $req->id)->update($update);
+
+        $fresh = DB::table('restock_requests')->where('id', $req->id)->first();
+        $eta = $this->restockExpectedDate($fresh);
+
+        return [
+            'status'        => 'success',
+            'new_status'    => 'confirmed',
+            'price'         => (float) $product->price,
+            'expected_date' => $eta,
+            'message'       => "বইটি আনা যাবে — দাম ৳" . round($product->price)
+                . ($eta ? ", আনুমানিক {$eta}-এর মধ্যে আসবে" : '')
+                . ", ৫০% অগ্রিমে অর্ডার করা যাবে।",
+        ];
+    }
+
+    /** When the book should land: the day it was confirmed, plus however long admin said. */
+    private function restockExpectedDate($row): ?string
+    {
+        if (empty($row->eta_days)) {
+            return null;
+        }
+        $from = !empty($row->confirmed_at)
+            ? \Carbon\Carbon::parse($row->confirmed_at)
+            : \Carbon\Carbon::parse($row->created_at);
+        return $from->addDays((int) $row->eta_days)->toDateString();
+    }
+
+    // ============================================================ EXCHANGE / RETURN (#16, #17)
+    private const REPORT_DAYS = 3;    // must tell us within 3 days of delivery
+    private const EXCHANGE_DAYS = 7;  // and the swap must finish within 7
+
+    /** Where an order stands in its exchange window. */
+    private function exchangeWindow(Order $order): array
+    {
+        $ops = (array) ($order->ops_meta ?? []);
+        $delivered = $ops['delivered_at'] ?? null;
+        if (!$delivered || $order->order_status !== 'order-completed') {
+            return ['delivered' => false, 'open' => false];
+        }
+        $d = Carbon::parse($delivered);
+        $reportBy = $d->copy()->addDays(self::REPORT_DAYS);
+        $exchangeBy = $d->copy()->addDays(self::EXCHANGE_DAYS);
+        $hasRequest = DB::table('exchange_requests')->where('order_id', $order->id)->exists();
+
+        // Report within 3 days, or the window shuts by itself.
+        $open = $hasRequest ? now()->lte($exchangeBy) : now()->lte($reportBy);
+
+        return [
+            'delivered'      => true,
+            'delivered_at'   => $d->toIso8601String(),
+            'report_by'      => $reportBy->toIso8601String(),
+            'exchange_by'    => $exchangeBy->toIso8601String(),
+            'report_days'    => self::REPORT_DAYS,
+            'exchange_days'  => self::EXCHANGE_DAYS,
+            'hours_to_report' => max(0, (int) now()->diffInHours($reportBy, false)),
+            'days_to_report' => max(0, (int) now()->diffInDays($reportBy, false)),
+            'open'           => $open,
+            'has_request'    => $hasRequest,
+            'closed_reason'  => $open ? null : ($hasRequest ? 'exchange window (7 days) is over' : 'no problem was reported within 3 days'),
+        ];
+    }
+
+    /** Customer/admin: the exchange window + which books can still be swapped. */
+    public function exchangeWindowInfo(Request $request)
+    {
+        $order = Order::with('products')->findOrFail($request->input('order_id'));
+        $window = $this->exchangeWindow($order);
+        $existing = DB::table('exchange_requests')->where('order_id', $order->id)->get()->keyBy('product_id');
+
+        $items = $order->products->map(fn ($p) => [
+            'product_id' => (int) $p->id,
+            'name'       => $p->name,
+            'image'      => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+            'quantity'   => (int) ($p->pivot->order_quantity ?? 1),
+            'price'      => (float) ($p->pivot->unit_price ?? $p->price),
+            // A resold (second-hand) copy is sold as-seen: no exchange, no return.
+            'is_resell'  => (bool) $p->is_resell,
+            'eligible'   => !$p->is_resell,
+            'request'    => isset($existing[$p->id]) ? [
+                'id'     => (int) $existing[$p->id]->id,
+                'status' => $existing[$p->id]->status,
+                'type'   => $existing[$p->id]->type,
+            ] : null,
+        ]);
+
+        return ['window' => $window, 'items' => $items, 'tracking_number' => $order->tracking_number];
+    }
+
+    /** Customer: report a problem with one book and ask for an exchange or a return. */
+    public function exchangeRequest(Request $request)
+    {
+        $data = $request->validate([
+            'order_id'   => 'required|integer',
+            'product_id' => 'required|integer',
+            'quantity'   => 'nullable|integer|min:1',
+            'type'       => 'nullable|string|in:exchange,return',
+            'reason'     => 'required|string|max:60',
+            'note'       => 'nullable|string|max:500',
+            'images'     => 'nullable|array',
+        ]);
+
+        $order = Order::with('products')->findOrFail($data['order_id']);
+        $window = $this->exchangeWindow($order);
+        if (!$window['delivered']) {
+            throw new MarvelException('অর্ডারটি এখনো ডেলিভারি হয়নি।');
+        }
+        if (!$window['open']) {
+            throw new MarvelException('এক্সচেঞ্জের সময় শেষ — ' . $window['closed_reason'] . '.');
+        }
+        $line = $order->products->firstWhere('id', (int) $data['product_id']);
+        if (!$line) {
+            throw new MarvelException('এই বইটি অর্ডারে নেই।');
+        }
+        if ($line->is_resell) {
+            throw new MarvelException('রিসেল (ব্যবহৃত) বই এক্সচেঞ্জ বা রিটার্ন করা যায় না — অর্ডারের আগেই তা জানানো হয়েছিল।');
+        }
+        if (DB::table('exchange_requests')->where('order_id', $order->id)->where('product_id', $line->id)->exists()) {
+            throw new MarvelException('এই বইয়ের জন্য আগেই একটি রিকোয়েস্ট আছে।');
+        }
+
+        $id = DB::table('exchange_requests')->insertGetId([
+            'order_id'    => $order->id,
+            'product_id'  => $line->id,
+            'customer_id' => $order->customer_id,
+            'quantity'    => min((int) ($data['quantity'] ?? 1), (int) ($line->pivot->order_quantity ?? 1)),
+            'type'        => $data['type'] ?? 'exchange',
+            'reason'      => $data['reason'],
+            'note'        => $data['note'] ?? null,
+            'images'      => json_encode($data['images'] ?? []),
+            'status'      => 'requested',
+            'created_at'  => now(),
+            'updated_at'  => now(),
+        ]);
+
+        return ['status' => 'success', 'id' => $id, 'message' => 'রিকোয়েস্ট জমা হয়েছে — আমরা যোগাযোগ করব।'];
+    }
+
+    /** Admin: every exchange/return request, newest first. */
+    public function exchangeList(Request $request)
+    {
+        $rows = DB::table('exchange_requests as e')
+            ->leftJoin('orders as o', 'o.id', '=', 'e.order_id')
+            ->leftJoin('products as p', 'p.id', '=', 'e.product_id')
+            ->select(
+                'e.*',
+                'o.tracking_number',
+                'o.customer_name',
+                'o.customer_contact',
+                'o.total as order_total',
+                'p.name as product_name',
+                'p.image as product_image',
+                'p.quantity as product_stock',
+            )
+            ->when($request->filled('status'), fn ($q) => $q->where('e.status', $request->input('status')))
+            ->orderByDesc('e.id')
+            ->limit(200)
+            ->get();
+
+        $data = $rows->map(function ($r) {
+            $img = json_decode($r->product_image ?? 'null', true);
+            return [
+                'id'           => (int) $r->id,
+                'order_id'     => (int) $r->order_id,
+                'tracking'     => $r->tracking_number,
+                'customer'     => $r->customer_name,
+                'contact'      => $r->customer_contact,
+                'product_id'   => (int) $r->product_id,
+                'product'      => $r->product_name,
+                'image'        => is_array($img) ? ($img['original'] ?? null) : null,
+                'stock'        => (int) $r->product_stock,
+                'quantity'     => (int) $r->quantity,
+                'type'         => $r->type,
+                'reason'       => $r->reason,
+                'note'         => $r->note,
+                'status'       => $r->status,
+                'restock'      => (bool) $r->restock,
+                'admin_note'   => $r->admin_note,
+                'created_at'   => $r->created_at,
+            ];
+        });
+
+        $counts = DB::table('exchange_requests')->selectRaw('status, count(*) as c')->groupBy('status')->pluck('c', 'status');
+        return ['data' => $data, 'counts' => $counts, 'total' => $data->count()];
+    }
+
+    /**
+     * Admin: move a request along. The stock rules live here —
+     *  approve  → nothing moves yet (the book is still with the customer)
+     *  received → the returned copy is back; it goes on the shelf only if `restock` is set
+     *             (a damaged copy must NOT be resold), and the replacement copy comes off stock
+     *  completed/rejected → closes the request
+     */
+    public function exchangeAction(Request $request)
+    {
+        $data = $request->validate([
+            'id'         => 'required|integer',
+            'action'     => 'required|string|in:approve,reject,received,complete',
+            'restock'    => 'nullable|boolean',
+            'admin_note' => 'nullable|string|max:500',
+        ]);
+
+        $req = DB::table('exchange_requests')->where('id', $data['id'])->first();
+        if (!$req) {
+            throw new MarvelException('Request not found.');
+        }
+
+        $update = ['updated_at' => now()];
+        if ($request->filled('admin_note')) {
+            $update['admin_note'] = $data['admin_note'];
+        }
+        $stockMsg = '';
+
+        switch ($data['action']) {
+            case 'approve':
+                $update['status'] = 'approved';
+                break;
+
+            case 'reject':
+                $update['status'] = 'rejected';
+                break;
+
+            case 'received':
+                $update['status'] = 'received';
+                $restock = (bool) ($data['restock'] ?? false);
+                $update['restock'] = $restock;
+
+                $book = Product::find($req->product_id);
+                if ($book) {
+                    // The damaged copy only returns to stock if the admin says it's sellable.
+                    if ($restock) {
+                        $book->quantity = (int) $book->quantity + (int) $req->quantity;
+                        $stockMsg .= "ফেরত আসা {$req->quantity} কপি স্টকে যোগ হয়েছে। ";
+                    } else {
+                        $stockMsg .= 'ফেরত কপি স্টকে যোগ হয়নি (বিক্রয়যোগ্য নয়)। ';
+                    }
+                    // An exchange ships a fresh copy — that one leaves stock.
+                    if ($req->type === 'exchange') {
+                        $book->quantity = max(0, (int) $book->quantity - (int) $req->quantity);
+                        $stockMsg .= "বদলি {$req->quantity} কপি স্টক থেকে বাদ গেছে।";
+                    }
+                    $book->in_stock = $book->quantity > 0 ? 1 : 0;
+                    $book->saveQuietly();
+                    Cache::increment('catalog:version');
+                }
+                break;
+
+            case 'complete':
+                $update['status'] = 'completed';
+                break;
+        }
+
+        DB::table('exchange_requests')->where('id', $req->id)->update($update);
+
+        // keep the order's own log honest
+        $order = Order::find($req->order_id);
+        if ($order) {
+            $ops = (array) ($order->ops_meta ?? []);
+            $ops['notes'] = array_slice(array_merge($ops['notes'] ?? [], [[
+                'at'   => now()->toIso8601String(),
+                'by'   => 'admin',
+                'text' => "এক্সচেঞ্জ #{$req->id} — {$update['status']}. {$stockMsg}",
+            ]]), -30);
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+        }
+
+        return ['status' => 'success', 'new_status' => $update['status'], 'stock' => trim($stockMsg)];
+    }
+
+    // ============================================================ ABANDONED CHECKOUT (#20)
+    /** Shop: called when someone lands on the checkout page with a cart. */
+    public function checkoutIntent(Request $request)
+    {
+        $data = $request->validate([
+            'items' => 'nullable|array',
+            'total' => 'nullable|numeric',
+        ]);
+        $user = $request->user();
+        $items = collect((array) ($data['items'] ?? []))->take(30)->values()->all();
+        if (!$items) {
+            return ['status' => 'ignored'];
+        }
+
+        // One open intent per customer — refresh it rather than piling up a row per visit.
+        $intent = DB::table('checkout_intents')
+            ->where('converted', false)
+            ->when($user, fn ($q) => $q->where('customer_id', $user->id))
+            ->when(!$user, fn ($q) => $q->whereNull('customer_id')->where('contact', (string) $request->input('contact', '')))
+            ->orderByDesc('id')
+            ->first();
+
+        $row = [
+            'customer_id' => $user?->id,
+            'name'        => $user?->name ?? $request->input('name'),
+            'contact'     => (string) ($request->input('contact') ?? $user?->mobile_number ?? ''),
+            'email'       => $user?->email,
+            'items'       => json_encode($items),
+            'total'       => (float) ($data['total'] ?? 0),
+            'item_count'  => count($items),
+            'updated_at'  => now(),
+        ];
+        if ($intent) {
+            DB::table('checkout_intents')->where('id', $intent->id)->update($row);
+            return ['status' => 'success', 'id' => $intent->id];
+        }
+        $row['created_at'] = now();
+        $id = DB::table('checkout_intents')->insertGetId($row);
+        return ['status' => 'success', 'id' => $id];
+    }
+
+    /** Admin: everyone who reached checkout and never placed the order. */
+    public function abandonedCheckouts(Request $request)
+    {
+        $rows = DB::table('checkout_intents')
+            ->where('converted', false)
+            ->orderByDesc('updated_at')
+            ->limit(200)
+            ->get();
+
+        $data = $rows->map(fn ($r) => [
+            'id'         => (int) $r->id,
+            'name'       => $r->name ?: 'Guest',
+            'contact'    => $r->contact,
+            'email'      => $r->email,
+            'items'      => json_decode($r->items ?? '[]', true),
+            'item_count' => (int) $r->item_count,
+            'total'      => (float) $r->total,
+            'contacted'  => (bool) $r->contacted,
+            'hours_ago'  => (int) Carbon::parse($r->updated_at)->diffInHours(now()),
+            'updated_at' => $r->updated_at,
+        ]);
+
+        return [
+            'data'  => $data,
+            'total' => $data->count(),
+            'value' => round($data->sum('total')),
+        ];
+    }
+
+    /** Admin: tick one off once the customer has been called. */
+    public function abandonedContacted(Request $request)
+    {
+        $id = (int) $request->input('id');
+        DB::table('checkout_intents')->where('id', $id)->update(['contacted' => true, 'updated_at' => now()]);
+        return ['status' => 'success'];
+    }
+
+    /** Recompute an order's money from its lines. */
+    private function recalcOrder(Order $order): void
+    {
+        $order->load('products');
+        $amount = 0;
+        foreach ($order->products as $p) {
+            $amount += (float) ($p->pivot->subtotal ?? 0);
+        }
+        $order->amount = $amount;
+        $order->total = max(0, $amount + (float) ($order->sales_tax ?? 0)
+            + (float) ($order->delivery_fee ?? 0) - (float) ($order->discount ?? 0));
+        $order->saveQuietly();
+    }
+
+    /**
+     * Admin: move a book (or part of its quantity) from one order to another — the
+     * customer ordered it on the wrong order, or two orders are being merged. Both
+     * orders' totals are recomputed, and the line price travels with the book.
+     */
+    public function orderMoveItem(Request $request)
+    {
+        $data = $request->validate([
+            'from_order_id' => 'required|integer',
+            'to_order'      => 'required',            // id or tracking number
+            'product_id'    => 'required|integer',
+            'quantity'      => 'nullable|integer|min:1',
+        ]);
+
+        $from = Order::with('products')->findOrFail($data['from_order_id']);
+        $to = Order::where('id', $data['to_order'])
+            ->orWhere('tracking_number', $data['to_order'])
+            ->first();
+        if (!$to) {
+            throw new MarvelException('Target order not found.');
+        }
+        if ((int) $to->id === (int) $from->id) {
+            throw new MarvelException('Source and target order are the same.');
+        }
+
+        $line = $from->products->firstWhere('id', (int) $data['product_id']);
+        if (!$line) {
+            throw new MarvelException('That book is not on this order.');
+        }
+        $have = (int) ($line->pivot->order_quantity ?? 1);
+        $move = min($have, max(1, (int) ($data['quantity'] ?? $have)));
+        $unit = (float) ($line->pivot->unit_price ?? $line->price);
+
+        // take it off the source (or just reduce the quantity)
+        if ($move >= $have) {
+            $from->products()->detach($line->id);
+        } else {
+            $left = $have - $move;
+            $from->products()->updateExistingPivot($line->id, [
+                'order_quantity' => $left,
+                'unit_price'     => $unit,
+                'subtotal'       => $unit * $left,
+            ]);
+        }
+
+        // add it to the target, stacking onto an existing line if the book is already there
+        $to->load('products');
+        $existing = $to->products->firstWhere('id', $line->id);
+        $newQty = $move + ($existing ? (int) ($existing->pivot->order_quantity ?? 0) : 0);
+        $to->products()->syncWithoutDetaching([
+            $line->id => [
+                'order_quantity' => $newQty,
+                'unit_price'     => $unit,
+                'subtotal'       => $unit * $newQty,
+            ],
+        ]);
+
+        $this->recalcOrder($from);
+        $this->recalcOrder($to);
+
+        $note = "{$move}× \"{$line->name}\" সরানো হয়েছে অর্ডার #{$from->tracking_number} → #{$to->tracking_number}";
+        foreach ([$from, $to] as $o) {
+            $ops = (array) ($o->ops_meta ?? []);
+            $ops['notes'] = array_slice(array_merge($ops['notes'] ?? [], [[
+                'at' => now()->toIso8601String(), 'by' => 'admin', 'text' => $note,
+            ]]), -30);
+            $o->ops_meta = $ops;
+            $o->saveQuietly();
+        }
+
+        return [
+            'status'  => 'success',
+            'moved'   => $move,
+            'from'    => ['id' => $from->id, 'tracking_number' => $from->tracking_number, 'total' => (float) $from->total],
+            'to'      => ['id' => $to->id, 'tracking_number' => $to->tracking_number, 'total' => (float) $to->total],
+            'message' => $note,
+        ];
+    }
+
+    // ============================================================ PRE-ORDER
+    /** The pre-order clock: starts when the advance clears, stops on delivery. 28 days = late. */
+    private function preorderClock(Order $order): array
+    {
+        $ops = (array) ($order->ops_meta ?? []);
+        $started = $ops['preorder']['started_at'] ?? ($ops['paid_at'] ?? null);
+        $delivered = in_array($order->order_status, ['order-completed', 'order-delivered'], true);
+        $end = $delivered ? ($order->updated_at ?? now()) : now();
+
+        if (!$started) {
+            return ['days' => null, 'running' => false, 'delivered' => $delivered, 'late' => false, 'started_at' => null];
+        }
+        $days = (int) Carbon::parse($started)->startOfDay()->diffInDays(Carbon::parse($end)->startOfDay());
+        return [
+            'days'       => $days,
+            'running'    => !$delivered,
+            'delivered'  => $delivered,
+            'late'       => !$delivered && $days > 28,     // window blown
+            'started_at' => (string) $started,
+        ];
+    }
+
+    /** All orders that carry a pre-order (they all have an `advance` block in ops_meta). */
+    private function preorderOrders()
+    {
+        return Order::whereRaw("JSON_EXTRACT(ops_meta, '$.advance') IS NOT NULL");
+    }
+
+    /** Admin: the pre-order board summary — pending / processing / delivered / overdue. */
+    public function preorderSummary(Request $request)
+    {
+        $counts = ['pending_advance' => 0, 'processing' => 0, 'delivered' => 0, 'overdue' => 0, 'total' => 0];
+        $overdue = [];
+
+        $this->preorderOrders()->with('products:id,name')->chunkById(300, function ($orders) use (&$counts, &$overdue) {
+            foreach ($orders as $o) {
+                $counts['total']++;
+                $clock = $this->preorderClock($o);
+                $paid = (float) $o->paid_total > 0;
+
+                if ($clock['delivered']) {
+                    $counts['delivered']++;
+                } elseif (!$paid) {
+                    $counts['pending_advance']++;
+                } else {
+                    $counts['processing']++;
+                }
+                if ($clock['late']) {
+                    $counts['overdue']++;
+                    if (count($overdue) < 50) {
+                        $overdue[] = [
+                            'order_id'        => (int) $o->id,
+                            'tracking_number' => $o->tracking_number,
+                            'customer_name'   => $o->customer_name,
+                            'days'            => $clock['days'],
+                            'total'           => (float) $o->total,
+                            'paid'            => (float) $o->paid_total,
+                        ];
+                    }
+                }
+            }
+        });
+
+        return ['counts' => $counts, 'overdue' => $overdue, 'window_days' => 28];
+    }
+
+    /** Admin: which books are open for pre-order, and how they're tracking. */
+    public function preorderProducts(Request $request)
+    {
+        $items = Product::where('is_preorder', true)
+            ->with(['author:id,name', 'manufacturer:id,name'])
+            ->orderByDesc('preorder_count')
+            ->limit(300)
+            ->get();
+
+        $data = $items->map(function ($p) {
+            $until  = $p->preorder_until ? Carbon::parse($p->preorder_until) : null;
+            $closed = $until && $until->isPast();
+            $limit  = $p->preorder_limit ? (int) $p->preorder_limit : null;
+            $count  = (int) $p->preorder_count;
+            $full   = $limit !== null && $count >= $limit;
+            return [
+                'product_id' => (int) $p->id,
+                'name'       => $p->name,
+                'slug'       => $p->slug,
+                'image'      => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                'author'     => $p->author->name ?? null,
+                'publisher'  => $p->manufacturer->name ?? null,
+                'price'      => (float) $p->price,
+                'advance_pct' => (int) ($p->preorder_advance_pct ?: 50),
+                'until'      => $p->preorder_until,
+                'limit'      => $limit,               // null = unlimited
+                'count'      => $count,
+                'remaining'  => $limit !== null ? max(0, $limit - $count) : null,
+                'status'     => $closed ? 'closed' : ($full ? 'full' : 'open'),
+            ];
+        });
+
+        return ['data' => $data, 'total' => $data->count()];
+    }
+
+    /** Admin: open/close a book for pre-order straight from the pre-order list. */
+    public function preorderUpdate(Request $request)
+    {
+        $data = $request->validate([
+            'product_id'   => 'required|integer',
+            'is_preorder'  => 'required|boolean',
+            'until'        => 'nullable|date',
+            'limit'        => 'nullable|integer|min:0',      // 0/null = unlimited
+            'advance_pct'  => 'nullable|integer|min:1|max:100',
+        ]);
+        $p = Product::findOrFail($data['product_id']);
+        $p->is_preorder = (bool) $data['is_preorder'];
+        $p->preorder_until = $data['until'] ?? null;
+        $p->preorder_limit = !empty($data['limit']) ? (int) $data['limit'] : null;
+        $p->preorder_advance_pct = (int) ($data['advance_pct'] ?? 50);
+        $p->saveQuietly();
+        Cache::increment('catalog:version');
+
+        return ['status' => 'success', 'product_id' => $p->id, 'is_preorder' => (bool) $p->is_preorder];
+    }
+
+    // ============================================================ CUSTOMERS OVERVIEW
+    /** Order statuses that mean the money is real. */
+    private const PAID_STATUSES = [
+        'order-completed', 'order-processing', 'order-out-for-delivery', 'order-at-local-facility',
+    ];
+
+    /**
+     * Admin: the customers page — headline numbers, a revenue trend, segments, and the
+     * customer rows with what each has actually spent and ordered.
+     */
+    public function customersOverview(Request $request)
+    {
+        $search = trim((string) $request->input('search', ''));
+        $page   = max(1, (int) $request->input('page', 1));
+        $limit  = min(60, max(1, (int) $request->input('limit', 20)));
+
+        $paid = "'" . implode("','", self::PAID_STATUSES) . "'";
+        $spentSql  = "COALESCE((SELECT SUM(o.total) FROM orders o WHERE o.customer_id = users.id AND o.order_status IN ($paid)),0)";
+        $ordersSql = "COALESCE((SELECT COUNT(*) FROM orders o WHERE o.customer_id = users.id),0)";
+        $doneSql   = "COALESCE((SELECT COUNT(*) FROM orders o WHERE o.customer_id = users.id AND o.order_status = 'order-completed'),0)";
+        $backSql   = "COALESCE((SELECT COUNT(*) FROM orders o WHERE o.customer_id = users.id AND o.order_status IN ('order-refunded','order-cancelled')),0)";
+        $lastSql   = "(SELECT MAX(o.created_at) FROM orders o WHERE o.customer_id = users.id)";
+        $rateSql   = "(SELECT AVG(r.rating) FROM reviews r WHERE r.user_id = users.id)";
+
+        $base = User::query()
+            ->whereHas('permissions', fn ($q) => $q->where('name', Permission::CUSTOMER));
+
+        $rows = (clone $base)
+            ->with('wallet:id,customer_id,available_points')
+            ->select('users.*')
+            ->selectRaw("$spentSql AS spent")
+            ->selectRaw("$ordersSql AS orders_count")
+            ->selectRaw("$doneSql AS delivered_count")
+            ->selectRaw("$backSql AS returned_count")
+            ->selectRaw("$lastSql AS last_order_at")
+            ->selectRaw("$rateSql AS avg_rating");
+
+        if ($search !== '') {
+            $like = '%' . $search . '%';
+            $rows->where(fn ($w) => $w->where('users.name', 'like', $like)
+                ->orWhere('users.email', 'like', $like));
+        }
+
+        $paginator = $rows->orderByDesc('spent')->paginate($limit, ['*'], 'page', $page);
+
+        // The three most recent orders per customer on this page — one query, not one each.
+        $ids = collect($paginator->items())->pluck('id');
+        $recent = \Illuminate\Support\Facades\DB::table('orders')
+            ->whereIn('customer_id', $ids)
+            ->orderByDesc('created_at')
+            ->get(['id', 'customer_id', 'tracking_number', 'total', 'order_status', 'created_at'])
+            ->groupBy('customer_id');
+
+        $data = collect($paginator->items())->map(function ($u) use ($recent) {
+            $spent = (float) $u->spent;
+            $done = (int) $u->delivered_count;
+            $back = (int) $u->returned_count;
+            $settled = $done + $back;
+            return [
+                'id'            => (int) $u->id,
+                'name'          => $u->name,
+                'email'         => $u->email,
+                'contact'       => $u->profile->contact ?? null,
+                'is_active'     => (bool) $u->is_active,
+                'wallet_points' => (int) ($u->wallet->available_points ?? 0),
+                'spent'         => round($spent),
+                'orders_count'  => (int) $u->orders_count,
+                'delivered'     => $done,
+                'returned'      => $back,
+                // Happiness is just how much of what they settled actually stuck.
+                'happiness'     => $settled > 0 ? (int) round($done / $settled * 100) : 100,
+                'rating'        => $u->avg_rating ? round((float) $u->avg_rating, 1) : null,
+                'last_order_at' => $u->last_order_at,
+                'segment'       => $spent >= 25000 ? 'high' : ($spent >= 5000 ? 'regular' : 'low'),
+                'orders'        => ($recent->get($u->id) ?? collect())->take(3)->map(fn ($o) => [
+                    'no'     => $o->tracking_number,
+                    'amount' => round((float) $o->total),
+                    'status' => $o->order_status,
+                    'date'   => $o->created_at,
+                ])->values(),
+            ];
+        })->values();
+
+        return [
+            'data'         => $data,
+            'total'        => $paginator->total(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'stats'        => $this->customerStats($base, $paid),
+            'trend'        => $this->revenueTrend($paid),
+        ];
+    }
+
+    /** Headline numbers + segment split across every customer, not just this page. */
+    private function customerStats($base, string $paid): array
+    {
+        $spentExpr = "COALESCE((SELECT SUM(o.total) FROM orders o WHERE o.customer_id = users.id AND o.order_status IN ($paid)),0)";
+
+        $revenue = (float) \Illuminate\Support\Facades\DB::table('orders')
+            ->whereIn('order_status', self::PAID_STATUSES)->sum('total');
+
+        $high = (clone $base)->whereRaw("$spentExpr >= 25000")->count();
+        $regular = (clone $base)->whereRaw("$spentExpr >= 5000 AND $spentExpr < 25000")->count();
+        $low = (clone $base)->whereRaw("$spentExpr < 5000")->count();
+
+        // Nobody home for two months, but they did buy once — worth chasing.
+        $atRisk = (clone $base)
+            ->whereRaw("(SELECT MAX(o.created_at) FROM orders o WHERE o.customer_id = users.id) < ?", [now()->subDays(60)])
+            ->count();
+
+        return [
+            'total'         => $high + $regular + $low,
+            'total_revenue' => round($revenue),
+            'high_value'    => $high,
+            'regular'       => $regular,
+            'low_value'     => $low,
+            'new_30d'       => (clone $base)->where('users.created_at', '>=', now()->subDays(30))->count(),
+            'at_risk'       => $atRisk,
+        ];
+    }
+
+    /** Revenue for each of the last 6 months, oldest first. */
+    private function revenueTrend(string $paid): array
+    {
+        $out = [];
+        for ($i = 5; $i >= 0; $i--) {
+            $month = now()->subMonths($i);
+            $total = (float) \Illuminate\Support\Facades\DB::table('orders')
+                ->whereIn('order_status', self::PAID_STATUSES)
+                ->whereYear('created_at', $month->year)
+                ->whereMonth('created_at', $month->month)
+                ->sum('total');
+            $out[] = ['label' => $month->format('M'), 'value' => round($total)];
+        }
+        return $out;
+    }
+
+    // ============================================================ 1-MINUTE BOOK CHALLENGE
+    /** Rules of the challenge. Admin owns every number here. */
+    private function challengeConfig(): array
+    {
+        $o = $this->options();
+        $c = is_array($o['challenge'] ?? null) ? $o['challenge'] : [];
+        return [
+            'enabled'         => (bool) ($c['enabled'] ?? false),
+            'duration_sec'    => (int) ($c['duration_sec'] ?? 60),
+            'per_book_pct'    => (float) ($c['per_book_pct'] ?? 1),
+            'cap_pct'         => (float) ($c['cap_pct'] ?? 10),
+            'stake_points'    => (int) ($c['stake_points'] ?? 100),
+            'coupon_minutes'  => (int) ($c['coupon_minutes'] ?? 20),
+            'daily_limit'     => (int) ($c['daily_limit'] ?? 1),
+        ];
+    }
+
+    /**
+     * Public: the challenge rules, for the home-page banner.
+     *
+     * Guests need to see this too — the banner is how they find out the game exists — so it
+     * carries no wallet or run state, only the rules.
+     */
+    public function challengeInfo(Request $request)
+    {
+        $cfg = $this->challengeConfig();
+        return [
+            'enabled'      => $cfg['enabled'],
+            'duration_sec' => $cfg['duration_sec'],
+            'per_book_pct' => $cfg['per_book_pct'],
+            'cap_pct'      => $cfg['cap_pct'],
+            'stake_points' => $cfg['stake_points'],
+            'daily_limit'  => $cfg['daily_limit'],
+        ];
+    }
+
+    /** Admin: read/write the challenge rules (super-admin). */
+    public function challengeSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate([
+                'enabled'        => 'nullable|boolean',
+                'duration_sec'   => 'nullable|integer|min:10|max:600',
+                'per_book_pct'   => 'nullable|numeric|min:0|max:100',
+                'cap_pct'        => 'nullable|numeric|min:0|max:100',
+                'stake_points'   => 'nullable|integer|min:0',
+                'coupon_minutes' => 'nullable|integer|min:1|max:1440',
+                'daily_limit'    => 'nullable|integer|min:1|max:20',
+            ]);
+            $settings = Settings::first();
+            $options = $settings->options;
+            $options['challenge'] = array_merge(
+                $this->challengeConfig(),
+                array_filter($data, fn ($v) => $v !== null)
+            );
+            $settings->options = $options;
+            $settings->save();
+        }
+        return $this->challengeConfig();
+    }
+
+    /**
+     * A run whose minute ran out without a checkout has lost its stake — and so has one
+     * that earned a coupon and then let it expire without ordering.
+     */
+    private function expireRun(ChallengeRun $run): ChallengeRun
+    {
+        if ($run->status === ChallengeRun::RUNNING && $run->expires_at->isPast()) {
+            $run->status = ChallengeRun::FORFEITED;
+            $run->save();
+        }
+        if ($run->status === ChallengeRun::CHECKOUT && $run->coupon_id) {
+            $coupon = \Marvel\Database\Models\Coupon::find($run->coupon_id);
+            if (!$coupon || now()->gt(\Carbon\Carbon::parse($coupon->expire_at))) {
+                $run->status = ChallengeRun::FORFEITED;
+                $run->save();
+            }
+        }
+        return $run;
+    }
+
+    /** Is the customer mid-challenge — still playing, or holding an unspent coupon? */
+    private function pendingRun(int $userId): ?ChallengeRun
+    {
+        $run = ChallengeRun::where('user_id', $userId)
+            ->whereIn('status', [ChallengeRun::RUNNING, ChallengeRun::CHECKOUT])
+            ->latest('id')->first();
+        if (!$run) {
+            return null;
+        }
+        $run = $this->expireRun($run);
+        return in_array($run->status, [ChallengeRun::RUNNING, ChallengeRun::CHECKOUT], true)
+            ? $run
+            : null;
+    }
+
+    /** How many runs the customer has already used up today. */
+    private function runsToday(int $userId): int
+    {
+        return ChallengeRun::where('user_id', $userId)
+            ->where('created_at', '>=', now()->startOfDay())
+            ->count();
+    }
+
+    /** Customer: can I play, and is a run already going? */
+    public function challengeStatus(Request $request)
+    {
+        $user = $request->user();
+        $cfg = $this->challengeConfig();
+        $wallet = Wallet::where('customer_id', $user->id)->first();
+        $points = (float) ($wallet->available_points ?? 0);
+
+        $active = ChallengeRun::where('user_id', $user->id)
+            ->where('status', ChallengeRun::RUNNING)
+            ->latest('id')->first();
+        if ($active) {
+            $active = $this->expireRun($active);
+        }
+        $live = $active && $active->isLive() ? $active : null;
+
+        $used = $this->runsToday($user->id);
+        $reason = null;
+        if (!$cfg['enabled']) {
+            $reason = 'চ্যালেঞ্জ এখন বন্ধ আছে।';
+        } elseif ($points < $cfg['stake_points']) {
+            $reason = "চ্যালেঞ্জে অংশ নিতে ওয়ালেটে অন্তত {$cfg['stake_points']} পয়েন্ট থাকতে হবে। আপনার আছে " . round($points) . "।";
+        } elseif (!$live && $used >= $cfg['daily_limit']) {
+            $reason = 'আজকের চ্যালেঞ্জ শেষ — আগামীকাল আবার চেষ্টা করুন।';
+        }
+
+        // `pending` is what tells the shop to keep the customer's old cart parked: it stays
+        // true from the moment the minute starts until they either order or lose the coupon.
+        $pending = $this->pendingRun($user->id);
+
+        return [
+            'config'      => $cfg,
+            'points'      => round($points),
+            'used_today'  => $used,
+            'eligible'    => $reason === null && !$live,
+            'reason'      => $reason,
+            'pending'     => (bool) $pending,
+            'active'      => $live ? [
+                'run_id'       => $live->id,
+                'books'        => $live->books_count,
+                'seconds_left' => max(0, now()->diffInSeconds($live->expires_at, false)),
+                'discount_pct' => $this->challengeDiscount($live->books_count, $cfg),
+            ] : null,
+        ];
+    }
+
+    /** Books added → percent off, capped. */
+    private function challengeDiscount(int $books, array $cfg): float
+    {
+        return min($books * $cfg['per_book_pct'], $cfg['cap_pct']);
+    }
+
+    /**
+     * Customer: start the minute.
+     *
+     * The stake is taken here, up front. That is what makes an abandoned run settle itself:
+     * walking away costs the points with no background job needed, and finishing the order
+     * hands them straight back (see ChallengeRun::settleForOrder).
+     */
+    public function challengeStart(Request $request)
+    {
+        $user = $request->user();
+        $cfg = $this->challengeConfig();
+
+        if (!$cfg['enabled']) {
+            throw new MarvelException('চ্যালেঞ্জ এখন বন্ধ আছে।');
+        }
+
+        // One run at a time, per person — a second tab cannot open its own minute.
+        $active = ChallengeRun::where('user_id', $user->id)
+            ->where('status', ChallengeRun::RUNNING)->latest('id')->first();
+        if ($active) {
+            $this->expireRun($active);
+            if ($active->isLive()) {
+                throw new MarvelException('চ্যালেঞ্জ ইতিমধ্যেই চলছে — অন্য ট্যাবটি ব্যবহার করুন।');
+            }
+        }
+
+        if ($this->runsToday($user->id) >= $cfg['daily_limit']) {
+            throw new MarvelException('আজকের চ্যালেঞ্জ শেষ — আগামীকাল আবার চেষ্টা করুন।');
+        }
+
+        $wallet = Wallet::where('customer_id', $user->id)->first();
+        $stake = $cfg['stake_points'];
+        if (!$wallet || (float) $wallet->available_points < $stake) {
+            throw new MarvelException("চ্যালেঞ্জে অংশ নিতে ওয়ালেটে অন্তত {$stake} পয়েন্ট থাকতে হবে।");
+        }
+
+        $run = null;
+        DB::transaction(function () use (&$run, $user, $wallet, $stake, $cfg) {
+            if ($stake > 0) {
+                $wallet->available_points -= $stake;
+                $wallet->points_used += $stake;
+                $wallet->save();
+            }
+            $run = ChallengeRun::create([
+                'user_id'       => $user->id,
+                'session_token' => Str::random(48),
+                'started_at'    => now(),
+                'expires_at'    => now()->addSeconds($cfg['duration_sec']),
+                'status'        => ChallengeRun::RUNNING,
+                'product_ids'   => [],
+                'points_staked' => $stake,
+            ]);
+        });
+
+        return [
+            'status'        => 'success',
+            'run_id'        => $run->id,
+            'token'         => $run->session_token,
+            'seconds_left'  => $cfg['duration_sec'],
+            'staked_points' => $stake,
+            'config'        => $cfg,
+        ];
+    }
+
+    /** The run the caller's tab owns, or nothing. */
+    private function runForToken(Request $request): ChallengeRun
+    {
+        $run = ChallengeRun::where('user_id', $request->user()->id)
+            ->where('session_token', (string) $request->input('token'))
+            ->latest('id')->first();
+        if (!$run) {
+            throw new MarvelException('চ্যালেঞ্জটি খুঁজে পাওয়া যায়নি।');
+        }
+        return $run;
+    }
+
+    /**
+     * Customer: a book went into the cart during the minute.
+     *
+     * The count is kept here rather than read off the cart at checkout, because the cart
+     * lives in the browser — anything it claims is unverifiable.
+     */
+    public function challengeAdd(Request $request)
+    {
+        $request->validate([
+            'product_id' => 'required|integer',
+            'token'      => 'required|string',
+            'source'     => 'required|string',
+            'page_key'   => 'nullable|string',
+        ]);
+        $cfg = $this->challengeConfig();
+        $run = $this->expireRun($this->runForToken($request));
+
+        if (!$run->isLive()) {
+            throw new MarvelException('সময় শেষ — এই বইটি আর গোনা হবে না।');
+        }
+
+        // The hunt is the game: books must be found on their own page, not picked off a
+        // wishlist, a bundle strip, or a listing grid.
+        if ($request->input('source') !== 'product') {
+            throw new MarvelException('চ্যালেঞ্জে বইয়ের নিজস্ব পেজ থেকে যোগ করতে হবে — উইশলিস্ট, বান্ডল বা লিস্ট থেকে নয়।');
+        }
+        if (!Product::where('id', $request->product_id)->exists()) {
+            throw new MarvelException('বইটি পাওয়া যায়নি।');
+        }
+
+        // Distinct titles only: the same book five times is still one book.
+        $ids = $run->product_ids ?? [];
+        if (in_array((int) $request->product_id, $ids, true)) {
+            return [
+                'books'        => $run->books_count,
+                'discount_pct' => $this->challengeDiscount($run->books_count, $cfg),
+                'seconds_left' => max(0, now()->diffInSeconds($run->expires_at, false)),
+                'already'      => true,
+            ];
+        }
+
+        $pageKey = (string) ($request->input('page_key') ?: $request->input('product_id'));
+        $hits = $run->page_hits ?? [];
+        if ((int) ($hits[$pageKey] ?? 0) >= ChallengeRun::MAX_PER_PAGE) {
+            throw new MarvelException('একটি পেজ থেকে সর্বোচ্চ ' . ChallengeRun::MAX_PER_PAGE . 'টি বই নেওয়া যাবে — অন্য বই খুঁজুন।');
+        }
+        $hits[$pageKey] = (int) ($hits[$pageKey] ?? 0) + 1;
+
+        $ids[] = (int) $request->product_id;
+        $run->product_ids = $ids;
+        $run->page_hits = $hits;
+        $run->books_count = count($ids);
+        $run->save();
+
+        return [
+            'books'        => $run->books_count,
+            'discount_pct' => $this->challengeDiscount($run->books_count, $cfg),
+            'seconds_left' => max(0, now()->diffInSeconds($run->expires_at, false)),
+        ];
+    }
+
+    /**
+     * Customer: the minute is up — turn the books into a coupon.
+     *
+     * The discount rides the normal coupon flow (bound to this customer, short-lived), so
+     * checkout needs no special case and the code is useless to anyone else.
+     */
+    public function challengeFinish(Request $request)
+    {
+        $request->validate(['token' => 'required|string']);
+        $cfg = $this->challengeConfig();
+        $run = $this->runForToken($request);
+
+        if ($run->status === ChallengeRun::CHECKOUT && $run->coupon_id) {
+            $coupon = \Marvel\Database\Models\Coupon::find($run->coupon_id);
+            if ($coupon) {
+                return [
+                    'status'       => 'success',
+                    'code'         => $coupon->code,
+                    'discount_pct' => (float) $coupon->amount,
+                    'books'        => $run->books_count,
+                    'expires_at'   => $coupon->expire_at,
+                ];
+            }
+        }
+        if ($run->status !== ChallengeRun::RUNNING) {
+            throw new MarvelException('চ্যালেঞ্জটি আর চালু নেই।');
+        }
+
+        $books = $run->books_count;
+        $pct = $this->challengeDiscount($books, $cfg);
+
+        if ($pct <= 0) {
+            $run->status = ChallengeRun::FORFEITED;
+            $run->save();
+            return [
+                'status'       => 'empty',
+                'books'        => 0,
+                'discount_pct' => 0,
+                'message'      => 'কোনো বই যোগ করা হয়নি — এবার কোনো ছাড় নেই।',
+            ];
+        }
+
+        $expires = now()->addMinutes($cfg['coupon_minutes']);
+        $coupon = \Marvel\Database\Models\Coupon::create([
+            'code'                => 'CHLG' . strtoupper(Str::random(6)),
+            'language'            => DEFAULT_LANGUAGE ?? 'en',
+            'description'         => "১ মিনিট চ্যালেঞ্জ — {$books} বই, {$pct}% ছাড়",
+            'type'                => 'percentage',
+            'amount'              => $pct,
+            'minimum_cart_amount' => 0,
+            'active_from'         => now(),
+            'expire_at'           => $expires,
+            'user_id'             => $run->user_id,   // bound to the player
+            'target'              => true,
+            'is_approve'          => true,
+        ]);
+
+        $run->status = ChallengeRun::CHECKOUT;
+        $run->discount_pct = $pct;
+        $run->coupon_id = $coupon->id;
+        $run->save();
+
+        return [
+            'status'         => 'success',
+            'code'           => $coupon->code,
+            'discount_pct'   => $pct,
+            'books'          => $books,
+            'expires_at'     => $expires->toIso8601String(),
+            'staked_points'  => $run->points_staked,
+        ];
+    }
+
+    // ============================================================ ADMIN MANUAL PRE-ORDER
+    /** Defaults for the manual pre-order desk. */
+    private function preorderConfig(): array
+    {
+        $o = $this->options();
+        $c = is_array($o['preorder_desk'] ?? null) ? $o['preorder_desk'] : [];
+        return [
+            // amazon.in lists in INR, amazon.com in USD — pick the rate off the link's domain.
+            'in_rate'         => (float) ($c['in_rate'] ?? 1.7),
+            'com_rate'        => (float) ($c['com_rate'] ?? 130),
+            'weight_per_kg'   => (float) ($c['weight_per_kg'] ?? 350),
+            'delivery_fee'    => (float) ($c['delivery_fee'] ?? 60),
+            'advance_pct'     => (int) ($c['advance_pct'] ?? 50),
+            'eta_min_days'    => (int) ($c['eta_min_days'] ?? 28),
+            'eta_max_days'    => (int) ($c['eta_max_days'] ?? 40),
+            // Amazon re-prices constantly, so the quote we gave has a short shelf life.
+            'pay_hours'       => (int) ($c['pay_hours'] ?? 8),
+            'msg_template'    => (string) ($c['msg_template'] ?? self::PREORDER_MSG),
+        ];
+    }
+
+    /** What the admin sends the customer along with the pay link. */
+    private const PREORDER_MSG = "আসসালামু আলাইকুম {name},\n\n"
+        . "আপনার প্রি-অর্ডারটি প্রস্তুত ✅\n"
+        . "📚 {items}\n"
+        . "💵 মোট: ৳{total}\n"
+        . "💳 এখন দিতে হবে (অগ্রিম): ৳{advance}\n"
+        . "📦 বাকি ৳{due} ডেলিভারির সময়\n"
+        . "🚚 {eta}\n\n"
+        . "নিচের লিংকে পেমেন্ট করলেই অর্ডার কনফার্ম হয়ে যাবে:\n{link}\n\n"
+        . "⏳ লিংকটি {hours} ঘণ্টা কাজ করবে।\n"
+        . "⚠️ Amazon-এ দাম দ্রুত বদলায় — দেরি হলে বইয়ের দাম বেড়ে যেতে পারে, তাই দ্রুত পেমেন্ট করে নিন।\n\n"
+        . "ধন্যবাদ — IndoBangla";
+
+    /** Admin: read/write the pre-order desk defaults (super-admin). */
+    public function preorderSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate([
+                'in_rate'       => 'nullable|numeric|min:0',
+                'com_rate'      => 'nullable|numeric|min:0',
+                'weight_per_kg' => 'nullable|numeric|min:0',
+                'delivery_fee'  => 'nullable|numeric|min:0',
+                'advance_pct'   => 'nullable|integer|min:1|max:100',
+                'eta_min_days'  => 'nullable|integer|min:0',
+                'eta_max_days'  => 'nullable|integer|min:0',
+                'pay_hours'     => 'nullable|integer|min:1|max:720',
+                'msg_template'  => 'nullable|string|max:2000',
+            ]);
+            $settings = Settings::first();
+            $options = $settings->options;
+            $options['preorder_desk'] = array_merge($this->preorderConfig(), array_filter(
+                $data,
+                fn ($v) => $v !== null
+            ));
+            $settings->options = $options;
+            $settings->save();
+        }
+        return $this->preorderConfig();
+    }
+
+    /** Which rate applies to a source link — .in is INR, .com is USD. */
+    private function rateForUrl(?string $url, array $cfg): array
+    {
+        $host = strtolower((string) parse_url((string) $url, PHP_URL_HOST));
+        $isCom = $host !== '' && !str_contains($host, 'amazon.in') && str_contains($host, 'amazon.');
+        return $isCom
+            ? ['rate' => $cfg['com_rate'], 'currency' => 'USD']
+            : ['rate' => $cfg['in_rate'], 'currency' => 'INR'];
+    }
+
+    /**
+     * Admin: what would this book sell for?
+     * selling price = source price × rate + weight × per-kg charge, then shop rounding.
+     */
+    public function preorderQuote(Request $request)
+    {
+        $data = $request->validate([
+            'source_price' => 'required|numeric|min:0',
+            'weight_kg'    => 'nullable|numeric|min:0',
+            'source_url'   => 'nullable|string',
+        ]);
+        $cfg = $this->preorderConfig();
+        $r = $this->rateForUrl($data['source_url'] ?? null, $cfg);
+
+        $weight = (float) ($data['weight_kg'] ?? 0);
+        $base = (float) $data['source_price'] * $r['rate'];
+        $ship = $weight * $cfg['weight_per_kg'];
+
+        return [
+            'price'        => $this->roundPrice($base + $ship),
+            'rate'         => $r['rate'],
+            'currency'     => $r['currency'],
+            'base_bdt'     => round($base),
+            'weight_bdt'   => round($ship),
+            'weight_kg'    => $weight,
+            'weight_per_kg' => $cfg['weight_per_kg'],
+        ];
+    }
+
+    /**
+     * Admin: create a manual pre-order in one shot — customer, books, order, pay link.
+     *
+     * Mirrors what the ReplyGenie agent does, but the admin drives every field, and unlike
+     * the agent's orders this one is linked to a real customer_id + address.
+     */
+    public function preorderCreate(Request $request)
+    {
+        $data = $request->validate([
+            'customer_id'      => 'nullable|integer',
+            'customer_name'    => 'required_without:customer_id|nullable|string',
+            'customer_contact' => 'required|string',
+            'customer_email'   => 'nullable|email',
+            'address'          => 'nullable|array',
+
+            'items'                 => 'required|array|min:1',
+            'items.*.product_id'    => 'nullable|integer',
+            'items.*.title'         => 'required_without:items.*.product_id|nullable|string',
+            'items.*.price'         => 'required|numeric|min:1',
+            'items.*.quantity'      => 'nullable|integer|min:1',
+            'items.*.source_url'    => 'nullable|string',
+            'items.*.image_url'     => 'nullable|string',
+            'items.*.author'        => 'nullable|string',
+            'items.*.weight_kg'     => 'nullable|numeric|min:0',
+
+            'delivery_fee'     => 'nullable|numeric|min:0',
+            'discount'         => 'nullable|numeric|min:0',
+            'advance_percent'  => 'nullable|numeric|min:0|max:100',
+            'advance_bdt'      => 'nullable|numeric|min:0',
+            'pay_hours'        => 'nullable|integer|min:1|max:720',
+            'eta_text'         => 'nullable|string',
+            'note'             => 'nullable|string',
+        ]);
+        $cfg = $this->preorderConfig();
+
+        // ---- customer: reuse the selected one, otherwise stand up a new account.
+        $customer = !empty($data['customer_id']) ? User::find($data['customer_id']) : null;
+        if (!$customer) {
+            $email = $data['customer_email']
+                ?: 'po_' . preg_replace('/\D/', '', $data['customer_contact']) . '@indobangla.tech';
+            $customer = User::where('email', $email)->first();
+            if (!$customer) {
+                $customer = User::create([
+                    'name'     => $data['customer_name'] ?: 'Pre-order customer',
+                    'email'    => $email,
+                    'password' => Hash::make(Str::random(16)),
+                ]);
+                $customer->givePermissionTo(Permission::CUSTOMER);
+            }
+        }
+
+        $addr = $data['address'] ?? [];
+        if (!empty($addr['street_address'])) {
+            Address::updateOrCreate(
+                ['customer_id' => $customer->id, 'type' => 'billing'],
+                ['title' => 'Pre-order', 'default' => true, 'address' => $addr]
+            );
+        }
+
+        // ---- books: existing ones by id, new ones created as real pre-order products.
+        $orderProducts = [];
+        $amount = 0;
+        foreach ($data['items'] as $item) {
+            $qty = max(1, (int) ($item['quantity'] ?? 1));
+            $price = (float) $item['price'];
+
+            $product = !empty($item['product_id']) ? Product::find($item['product_id']) : null;
+            if (!$product) {
+                $product = $this->createPreorderProduct($item, $price, $cfg);
+            }
+
+            $orderProducts[$product->id] = [
+                'order_quantity' => $qty,
+                'unit_price'     => $price,
+                'subtotal'       => $price * $qty,
+            ];
+            $amount += $price * $qty;
+        }
+
+        $deliveryFee = (float) ($data['delivery_fee'] ?? $cfg['delivery_fee']);
+        $discount = (float) ($data['discount'] ?? 0);
+        $total = max(0, $amount + $deliveryFee - $discount);
+
+        $advance = isset($data['advance_bdt']) && $data['advance_bdt'] !== null
+            ? (float) $data['advance_bdt']
+            : round($total * ((float) ($data['advance_percent'] ?? $cfg['advance_pct']) / 100));
+        $advance = min($advance, $total);
+
+        $eta = $data['eta_text']
+            ?: "পেমেন্ট কনফার্মের পর {$cfg['eta_min_days']}–{$cfg['eta_max_days']} দিন";
+
+        $order = Order::create([
+            'customer_id'      => $customer->id,
+            'customer_name'    => $customer->name,
+            'customer_contact' => $data['customer_contact'],
+            'amount'           => $amount,
+            'delivery_fee'     => $deliveryFee,
+            'discount'         => $discount,
+            'sales_tax'        => 0,
+            'paid_total'       => 0,
+            'total'            => $total,
+            'delivery_time'    => $eta,
+            'note'             => $data['note'] ?? null,
+            'order_status'     => 'order-pending',
+            'payment_status'   => 'payment-pending',
+            'payment_gateway'  => 'CASH_ON_DELIVERY',
+            'shop_id'          => $this->mainShopId(),
+            'language'         => 'en',
+            'billing_address'  => $addr ?: null,
+            'shipping_address' => $addr ?: null,
+        ]);
+        $order->products()->attach($orderProducts);
+        Order::commitStock($order);
+
+        // Pay link — the advance is what we charge now; the rest is due on delivery.
+        $token = 'pl_' . Str::random(24);
+        $ops = $order->ops_meta ?? [];
+        $ops['created_by'] = 'Admin';
+        $ops['source'] = 'admin-preorder';
+        $ops['advance'] = [
+            'is_preorder' => true,
+            'percent'     => $total > 0 ? round($advance / $total * 100) : 0,
+            'advance_bdt' => round($advance),
+            'due_bdt'     => round($total - $advance),
+            'status'      => 'pending_advance',
+        ];
+        $ops['preorder'] = ['eta' => $eta];
+        $payHours = (int) ($data['pay_hours'] ?? $cfg['pay_hours']);
+        $expiresAt = now()->addHours($payHours);
+
+        $ops['pay_token'] = $token;
+        $ops['pay_expires_at'] = $expiresAt->toIso8601String();
+        $ops['pay_amount'] = round($advance);
+        $ops['pay_purpose'] = 'advance';
+        $order->ops_meta = $ops;
+        $order->save();
+
+        $base = rtrim(config('shop.shop_url') ?: 'https://indobangla.tech', '/');
+        $link = $base . '/pay/' . $token;
+
+        // Fill the template here so the admin gets a ready-to-send message, not a form.
+        $titles = collect($data['items'])->map(fn ($i) => $i['title'] ?? '')->filter()->implode(', ');
+        $message = strtr($cfg['msg_template'], [
+            '{name}'    => $customer->name,
+            '{items}'   => $titles,
+            '{total}'   => round($total),
+            '{advance}' => round($advance),
+            '{due}'     => round($total - $advance),
+            '{eta}'     => $eta,
+            '{link}'    => $link,
+            '{hours}'   => $payHours,
+        ]);
+
+        return [
+            'status'          => 'success',
+            'order_id'        => $order->id,
+            'tracking_number' => $order->tracking_number,
+            'customer_id'     => $customer->id,
+            'customer_name'   => $customer->name,
+            'contact'         => $data['customer_contact'],
+            'amount'          => round($amount),
+            'delivery_fee'    => round($deliveryFee),
+            'discount'        => round($discount),
+            'total'           => round($total),
+            'advance_bdt'     => round($advance),
+            'due_bdt'         => round($total - $advance),
+            'eta'             => $eta,
+            'pay_link'        => $link,
+            'pay_hours'       => $payHours,
+            'expires_at'      => $expiresAt->toIso8601String(),
+            'message'         => $message,
+        ];
+    }
+
+    /** A book the admin typed in (or pulled off Amazon) becomes a real pre-order product. */
+    private function createPreorderProduct(array $item, float $price, array $cfg): Product
+    {
+        // Same book, same link → same product. Keeps repeat pre-orders from cloning the catalogue.
+        if (!empty($item['source_url'])) {
+            $existing = Product::where('external_product_url', $item['source_url'])->first();
+            if ($existing) {
+                return $existing;
+            }
+        }
+
+        $name = trim((string) $item['title']);
+        $slug = Str::slug($name) ?: 'preorder-' . Str::random(6);
+        if (Product::where('slug', $slug)->exists()) {
+            $slug .= '-' . Str::random(4);
+        }
+
+        $product = new Product();
+        $product->name = $name;
+        $product->slug = $slug;
+        $product->type_id = 8;
+        $product->shop_id = $this->mainShopId();
+        $product->price = $price;
+        $product->min_price = $price;
+        $product->max_price = $price;
+        $product->quantity = 100;
+        $product->status = 'publish';
+        $product->product_type = 'simple';
+        $product->external_product_url = $item['source_url'] ?? null;
+        $product->is_preorder = true;
+        $product->preorder_advance_pct = $cfg['advance_pct'];
+        $product->description = '🔖 প্রি-অর্ডার — বইটি আনতে '
+            . $cfg['eta_min_days'] . '–' . $cfg['eta_max_days'] . ' দিন সময় লাগবে।';
+        if (!empty($item['image_url'])) {
+            $product->image = ['original' => $item['image_url'], 'thumbnail' => $item['image_url']];
+        }
+        if (!empty($item['weight_kg'])) {
+            $product->book_meta = array_merge(
+                is_array($product->book_meta) ? $product->book_meta : [],
+                ['item_weight' => $item['weight_kg']]
+            );
+        }
+        if (!empty($item['author'])) {
+            $author = Author::firstOrCreate(
+                ['name' => $item['author']],
+                ['slug' => Str::slug($item['author']), 'language' => 'en', 'is_approved' => true]
+            );
+            $product->author_id = $author->id;
+        }
+        $product->save();
+        Cache::increment('catalog:version');
+
+        return $product;
+    }
+
+    /** Admin: how many books already have an MRP (so the panel can show what's ready). */
+    public function conversionStatus(Request $request)
+    {
+        $total = Product::where('type_id', 8)->where('status', 'publish')->count();
+        $withMrp = Product::where('type_id', 8)->whereNotNull('mrp')->where('mrp', '>', 0)->count();
+        return ['total' => $total, 'with_mrp' => $withMrp, 'without_mrp' => max(0, $total - $withMrp)];
+    }
+
+    /**
+     * Shop rounding: drop the fraction, then land on a 5 or a 0 by last digit —
+     * 0–1 → down to the 0, 2–6 → that block's 5, 7–9 → up to the next 0.
+     * e.g. 71.75 → 70, 72–74 → 75, 76 → 75, 77–79 → 80.
+     */
+    private function roundPrice($n): int
+    {
+        $n = (int) floor((float) $n);
+        if ($n <= 0) {
+            return 0;
+        }
+        $d = $n % 10;
+        $base = $n - $d;
+        $r = $d <= 1 ? $base : ($d <= 6 ? $base + 5 : $base + 10);
+        return $r > 0 ? $r : 5;   // never round a real price down to zero
+    }
+
+    /** Admin: compute the price a single MRP/origin would map to (for the product form preview). */
+    public function conversionPreview(Request $request)
+    {
+        $cfg = $this->conversionConfig();
+        $mrp = (float) $request->input('mrp', 0);
+        $origin = $request->input('origin', 'indian') === 'bd' ? 'bd' : 'indian';
+        $rate = $origin === 'bd' ? $cfg['bd_rate'] : $cfg['rate'];
+        return [
+            'rate'       => $rate,
+            'price'      => $mrp > 0 ? $this->roundPrice($mrp * $rate) : 0,
+            'sale_price' => $mrp > 0 && $cfg['sale_rate'] > 0 ? $this->roundPrice($mrp * $cfg['sale_rate']) : 0,
+            'sale_rate'  => $cfg['sale_rate'],
+        ];
+    }
+
+    private function options(): array
+    {
+        $s = Settings::first();
+        return $s ? ($s->options ?? []) : [];
+    }
+}
