@@ -7,15 +7,27 @@ import GoogleProvider from 'next-auth/providers/google';
 // https://next-auth.js.org/configuration/options
 export default NextAuth({
   // https://next-auth.js.org/configuration/providers
+  // Only wire up a social provider when it is actually configured. getEnv() throws on a
+  // missing variable, and this module is imported at request time — so with no Google
+  // credentials the whole /api/auth route 500s, next-auth's client gets HTML instead of
+  // JSON, SessionProvider blows up, and the home page stops rendering half way down.
   providers: [
-    // FacebookProvider({
-    //   clientId: getEnv('FACEBOOK_CLIENT_ID'),
-    //   clientSecret: getEnv('FACEBOOK_CLIENT_SECRET'),
-    // }),
-    GoogleProvider({
-      clientId: getEnv('GOOGLE_CLIENT_ID'),
-      clientSecret: getEnv('GOOGLE_CLIENT_SECRET'),
-    }),
+    ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      ? [
+          GoogleProvider({
+            clientId: getEnv('GOOGLE_CLIENT_ID'),
+            clientSecret: getEnv('GOOGLE_CLIENT_SECRET'),
+          }),
+        ]
+      : []),
+    ...(process.env.FACEBOOK_CLIENT_ID && process.env.FACEBOOK_CLIENT_SECRET
+      ? [
+          FacebookProvider({
+            clientId: getEnv('FACEBOOK_CLIENT_ID'),
+            clientSecret: getEnv('FACEBOOK_CLIENT_SECRET'),
+          }),
+        ]
+      : []),
   ],
 
   // The secret should be set to a reasonably long random string.
