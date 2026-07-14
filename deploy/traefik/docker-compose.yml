@@ -1,0 +1,40 @@
+# Edge proxy for this box. Only IndoBangla runs here, so this Traefik is ours alone —
+# unlike the old shared VPS, where it also fronted monthon / replygenie / n8n.
+#
+# Certificates are issued on demand, per hostname, once DNS points at this box. Until then
+# the site is still reachable over plain HTTP with a Host header, which is how we test
+# before the domain is switched:
+#
+#   curl -H 'Host: indobangla.tech' http://<this-box>/
+name: traefik
+
+services:
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=sazzadsakir77@gmail.com
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --log.level=INFO
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+    networks: [edge]
+
+networks:
+  # Created by the app stack (deploy/docker-compose.yml), so bring that up first.
+  edge:
+    external: true
+    name: indobangla_net
+
+volumes:
+  letsencrypt:

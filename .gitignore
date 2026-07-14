@@ -89,5 +89,6 @@ deploy/*.sh
 !deploy/stage.sh
 !deploy/promote.sh
 !deploy/rollback.sh
+!deploy/check-neighbours.sh
 deploy/*.bak
 deploy/*.presecret

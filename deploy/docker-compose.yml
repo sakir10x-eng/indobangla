@@ -1,9 +1,15 @@
+# This box also hosts lcghs.edu.bd (host nginx + php-fpm + mysql). Without limits a
+# Next.js build can eat the RAM and the kernel OOM-killer picks a victim — which has
+# no reason to be one of ours. Every service is capped so we cannot starve the
+# neighbours. Budget is ~4 GB of the box's 7.9 GB.
 name: indobangla
 
 services:
   db:
     image: mysql:8.0
     restart: unless-stopped
+    mem_limit: 1200m
+    oom_score_adj: 600
     environment:
       MYSQL_DATABASE: ${DB_DATABASE}
       MYSQL_USER: ${DB_USERNAME}
@@ -21,6 +27,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 256m
+    oom_score_adj: 600
     networks: [ib]
 
   api:
@@ -29,6 +37,8 @@ services:
       dockerfile: deploy/Dockerfile.api
     image: indobangla-api
     restart: unless-stopped
+    mem_limit: 640m
+    oom_score_adj: 600
     env_file: [ .env.api ]
     depends_on:
       db:
@@ -46,6 +56,8 @@ services:
         SECRET: ${NEXTAUTH_SECRET}
     image: indobangla-shop
     restart: unless-stopped
+    mem_limit: 900m
+    oom_score_adj: 600
     networks: [ib]
 
   admin:
@@ -54,13 +66,21 @@ services:
       dockerfile: deploy/Dockerfile.admin
     image: indobangla-admin
     restart: unless-stopped
+    mem_limit: 900m
+    oom_score_adj: 600
     networks: [ib]
 
   web:
     image: nginx:alpine
     restart: unless-stopped
+    mem_limit: 64m
+    oom_score_adj: 600
     volumes:
       - ./edge.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # Loopback only. The host's nginx is the real edge here — this box already serves
+    # lcghs.edu.bd, so nothing of ours may take :80/:443.
+    ports:
+      - "127.0.0.1:8080:80"
     networks: [ib]
     labels:
       - "traefik.enable=true"

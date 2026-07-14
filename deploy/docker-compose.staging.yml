@@ -22,6 +22,8 @@ services:
   db:
     image: mysql:8.0
     restart: unless-stopped
+    mem_limit: 1200m
+    oom_score_adj: 600
     environment:
       MYSQL_DATABASE: ${DB_DATABASE}
       MYSQL_USER: ${DB_USERNAME}
@@ -40,6 +42,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 256m
+    oom_score_adj: 600
     networks: [stg]
 
   sapi:
@@ -48,6 +52,8 @@ services:
       dockerfile: deploy/Dockerfile.api
     image: indobangla-api:staging
     restart: unless-stopped
+    mem_limit: 640m
+    oom_score_adj: 600
     env_file: [ .env.api.staging ]
     depends_on:
       db:
@@ -66,6 +72,8 @@ services:
         SECRET: ${NEXTAUTH_SECRET}
     image: indobangla-shop:staging
     restart: unless-stopped
+    mem_limit: 900m
+    oom_score_adj: 600
     networks: [stg]
 
   sadmin:
@@ -76,13 +84,19 @@ services:
         SITE_URL: https://staging.indobangla.tech
     image: indobangla-admin:staging
     restart: unless-stopped
+    mem_limit: 900m
+    oom_score_adj: 600
     networks: [stg]
 
   web:
     image: nginx:alpine
     restart: unless-stopped
+    mem_limit: 64m
+    oom_score_adj: 600
     volumes:
       - ./staging.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8081:80"
     networks:
       # On `stg` it resolves sapi/sshop/sadmin — staging's own containers, and nothing else
       # on this box answers to those names. `edge` is only so Traefik can reach it.
