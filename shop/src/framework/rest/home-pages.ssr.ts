@@ -96,7 +96,7 @@ export const getStaticProps: GetStaticProps<
   };
 
   // Only prefetch popular products for `book` demo
-  if (pageType === 'book') {
+  if (pageType === 'book' || pageType === 'books') {
     await queryClient.prefetchQuery(
       [API_ENDPOINTS.PRODUCTS_POPULAR, popularProductVariables],
       ({ queryKey }) =>
