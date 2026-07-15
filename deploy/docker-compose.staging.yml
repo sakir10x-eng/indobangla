@@ -66,6 +66,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.shop
+      extra_hosts:
+        - "staging.indobangla.tech:187.127.122.242"
       args:
         # Baked into the Next bundle at build time — staging must point at itself.
         SITE_URL: https://staging.indobangla.tech
@@ -80,6 +82,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.admin
+      extra_hosts:
+        - "staging.indobangla.tech:187.127.122.242"
       args:
         SITE_URL: https://staging.indobangla.tech
     image: indobangla-admin:staging
@@ -97,26 +101,11 @@ services:
       - ./staging.nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "127.0.0.1:8081:80"
-    networks:
-      # On `stg` it resolves sapi/sshop/sadmin — staging's own containers, and nothing else
-      # on this box answers to those names. `edge` is only so Traefik can reach it.
-      stg:
-      edge:
-        aliases: [staging-web]
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=indobangla_net"
-      - "traefik.http.routers.ibstaging.entrypoints=websecure"
-      - "traefik.http.routers.ibstaging.rule=Host(`staging.indobangla.tech`)"
-      - "traefik.http.routers.ibstaging.tls.certresolver=letsencrypt"
-      - "traefik.http.services.ibstaging.loadbalancer.server.port=80"
+    networks: [stg]
 
 networks:
   stg:
     name: indobangla_staging_net
-  edge:
-    external: true
-    name: indobangla_net
 
 volumes:
   staging_db:
