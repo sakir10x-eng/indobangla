@@ -17,6 +17,8 @@ import {
   useAiUpdateProductMutation,
 } from '@/data/ai';
 import { useShopsQuery } from '@/data/shop';
+import { useCategoriesQuery } from '@/data/category';
+import { useFetchImageMutation } from '@/data/ai';
 import type {
   DuplicateMatch,
   DuplicateResult,
@@ -38,6 +40,8 @@ type Row = {
   probable?: boolean;
   matches?: DuplicateMatch[];
   updated?: string[];
+  /** Slug of the created product, so a published row can link to its live view. */
+  publishedSlug?: string;
 };
 
 const REASON_LABEL: Record<DuplicateMatch['reason'], string> = {
@@ -75,6 +79,8 @@ export default function AiBatchPage() {
   const [previewRow, setPreviewRow] = useState<number | null>(null);
   /** Batch-level shop. Rows inherit it, and each row can still be pointed elsewhere. */
   const [shopId, setShopId] = useState<number | ''>('');
+  /** Printed country picked before fetch — India ⇒ Indian Books + MRP×2/×1.75 markup. */
+  const [country, setCountry] = useState<string>('India');
 
   const { shops } = useShopsQuery({ limit: 200 });
   const shopName = (id?: number) =>
@@ -162,7 +168,9 @@ export default function AiBatchPage() {
         ? { image_url: line }
         : { product_url: line }
     );
-    batch(items, {
+    batch(
+      { items, printed_country: country || undefined },
+      {
       onSuccess: (res: any) => {
         if (res?.results) {
           // Seed every row with the batch-level shop; the row select can still move it.
@@ -179,7 +187,8 @@ export default function AiBatchPage() {
         }
       },
       onError: (err: any) => toast.error(errMsg(err, err?.response?.data)),
-    });
+      },
+    );
   }
 
   async function publishRow(i: number) {
@@ -194,7 +203,15 @@ export default function AiBatchPage() {
       });
       setRows((r) =>
         r.map((x, idx) =>
-          idx === i ? { ...x, publishing: false, published: true, publishError: undefined } : x
+          idx === i
+            ? {
+                ...x,
+                publishing: false,
+                published: true,
+                publishError: undefined,
+                publishedSlug: res?.slug,
+              }
+            : x
         )
       );
       return res;
@@ -334,6 +351,26 @@ export default function AiBatchPage() {
           <p className="mt-2 text-xs text-body">
             You can change this any time, and set a different shop per book in the
             review table below.
+          </p>
+
+          {/* Printed country drives the pricing: India ⇒ the book is marked up from its
+              MRP (price = MRP×2, sale = MRP×1.75) and gets the "Indian Books" category.
+              Pick it before extracting so every book prices correctly. */}
+          <label className="mt-4 mb-2 block text-sm font-semibold text-body-dark">
+            Printed country (of these books)
+          </label>
+          <select
+            value={country}
+            onChange={(e) => setCountry(e.target.value)}
+            className="h-12 w-full max-w-md rounded border border-border-base bg-white px-4 text-sm focus:border-accent focus:outline-none"
+          >
+            <option value="India">India — mark up from MRP (×2 / ×1.75) + Indian Books</option>
+            <option value="Bangladesh">Bangladesh — sell at MRP, no markup</option>
+            <option value="">Auto-detect (from the source page)</option>
+          </select>
+          <p className="mt-2 text-xs text-body">
+            For Indian books the source MRP is converted automatically into the price
+            and sale price. Choose “Auto-detect” to let the source decide.
           </p>
         </div>
 
@@ -527,9 +564,22 @@ function BatchRow({
           {r.status !== 'success' ? (
             <span className="text-red-500">{r.message || 'extract error'}</span>
           ) : r.published ? (
-            <span className="font-semibold text-accent">
-              {r.updated ? `updated ✓ (${r.updated.join(', ')})` : 'published ✓'}
-            </span>
+            <div className="flex flex-col items-start gap-1">
+              <span className="font-semibold text-accent">
+                {r.updated ? `updated ✓ (${r.updated.join(', ')})` : 'published ✓'}
+              </span>
+              {/* Let the admin jump to the real storefront page of what they just created. */}
+              {r.publishedSlug && (
+                <a
+                  href={`https://indobangla.bd/products/${r.publishedSlug}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-semibold text-blue-600 hover:underline"
+                >
+                  View live ↗
+                </a>
+              )}
+            </div>
           ) : r.publishError ? (
             <span className="text-red-500">{r.publishError}</span>
           ) : r.dupe ? (
@@ -595,9 +645,10 @@ function BatchRow({
 }
 
 /**
- * Everything the AI pulled for one book, laid out for a last look before publish.
- * Read-only on purpose — this is a verification surface, not an editor; anything
- * wrong here is a signal to skip the row and add the book by hand.
+ * Full view of one extracted book before publish. The fields worth correcting at
+ * import time — name, writer, categories, pages, stock, description, draft/live —
+ * are editable here (patched onto the row); the rest stay read-only and are fixed
+ * on the product page afterwards. Once published it's frozen to a plain view.
  */
 function PreviewPanel({
   product: p,
@@ -608,6 +659,21 @@ function PreviewPanel({
   editable: boolean;
   onProductPatch: (patch: Record<string, any>) => void;
 }) {
+  const [catInput, setCatInput] = useState('');
+  const [catFocus, setCatFocus] = useState(false);
+  // Existing book categories — so a typed name matches a real category (with its id)
+  // instead of find-or-creating a near-duplicate on publish.
+  const { categories: allCats } = useCategoriesQuery({
+    limit: 999,
+    type: 'books',
+    language: 'en',
+  });
+  // Source covers often won't hotlink in the browser (referer block / http mixed
+  // content). If the <img> fails, pull it through our server once and swap in our copy.
+  const { mutate: fetchImage } = useFetchImageMutation();
+  const [resolvedCover, setResolvedCover] = useState<string | undefined>();
+  const [coverTried, setCoverTried] = useState(false);
+  const [coverFailed, setCoverFailed] = useState(false);
   if (!p) return <p className="text-xs text-body">Nothing extracted for this row.</p>;
 
   const cover: string | undefined =
@@ -616,23 +682,62 @@ function PreviewPanel({
     p.image?.thumbnail ||
     (typeof p.image === 'string' ? p.image : undefined);
 
-  const authors = p.author?.name
+  const writer = p.author?.name
     ? p.author.name
     : Array.isArray(p.authors)
-    ? p.authors.join(', ')
-    : '—';
-  const categories = Array.isArray(p.categories)
-    ? p.categories.map((c: any) => (typeof c === 'string' ? c : c?.name)).filter(Boolean).join(', ')
-    : '—';
+    ? p.authors[0] ?? ''
+    : '';
 
-  // The core fields plus whatever book_meta the extractor filled — only rows with
-  // a value, so a sparse extraction doesn't render a wall of dashes.
+  const catList: any[] = Array.isArray(p.categories) ? p.categories : [];
+  const catName = (c: any) => (typeof c === 'string' ? c : c?.name ?? '');
+
+  // add a category object; already-added names are ignored
+  const pushCategory = (cat: { id?: any; name: string }) => {
+    const name = (cat.name || '').trim();
+    if (!name) return;
+    if (catList.some((c) => catName(c).toLowerCase() === name.toLowerCase())) {
+      setCatInput('');
+      return;
+    }
+    // Keep the id when it matched an existing category so publish ATTACHES it
+    // (backend attaches by id, find-or-creates only for a bare name).
+    onProductPatch({
+      categories: [...catList, cat.id ? { id: cat.id, name } : { name }],
+    });
+    setCatInput('');
+  };
+  const addCategory = () => {
+    const name = catInput.trim();
+    if (!name) return;
+    // Prefer an exact existing category (case-insensitive) so we reuse its id.
+    const exact = (allCats as any[]).find(
+      (c) => (c?.name ?? '').toLowerCase() === name.toLowerCase(),
+    );
+    pushCategory(exact ? { id: exact.id, name: exact.name } : { name });
+  };
+  const removeCategory = (idx: number) =>
+    onProductPatch({ categories: catList.filter((_, i) => i !== idx) });
+
+  // Live suggestions from existing categories as the admin types.
+  const catQuery = catInput.trim().toLowerCase();
+  const catSuggestions =
+    catQuery.length >= 1
+      ? (allCats as any[])
+          .filter(
+            (c) =>
+              (c?.name ?? '').toLowerCase().includes(catQuery) &&
+              !catList.some((x) => catName(x).toLowerCase() === (c?.name ?? '').toLowerCase()),
+          )
+          .slice(0, 8)
+      : [];
+
+  // Read-only spec grid — the source MRP is here so the admin sees the price the
+  // book was marked up from (before the ×2 / ×1.75 rule).
   const rows: Array<[string, any]> = [
     ['Slug', p.slug],
-    ['Regular price', p.price],
-    ['Sale price', p.sale_price],
-    ['MRP (source)', p.mrp ?? p.source_price],
-    ['Source currency', p.source_currency],
+    ['Regular price (×2)', p.price],
+    ['Sale price (×1.75)', p.sale_price],
+    ['Source MRP', `${p.mrp ?? p.source_price ?? '—'}${p.source_currency ? ' ' + p.source_currency : ''}`],
     ['Unit', p.unit],
     ['SKU', p.sku],
     ['Publisher', p.manufacturer?.name ?? p.publisher],
@@ -644,57 +749,211 @@ function PreviewPanel({
     ['Print type', p.print_type],
     ['Printed country', p.printed_country],
     ['Edition', p.edition],
-    ['Pages', p.page_number],
     ['Weight', p.item_weight],
     ['Reading level', p.reading_level],
     ['Condition', p.condition],
   ];
-  const shown = rows.filter(([, v]) => v !== undefined && v !== null && v !== '');
+  const shown = rows.filter(
+    ([label, v]) =>
+      v !== undefined &&
+      v !== null &&
+      v !== '' &&
+      !(label === 'Source MRP' && (p.mrp ?? p.source_price) == null),
+  );
+
+  const input =
+    'h-8 w-full rounded border border-border-base bg-white px-2 text-xs text-heading focus:border-accent focus:outline-none';
 
   return (
     <div className="flex flex-col gap-4 md:flex-row">
       <div className="shrink-0">
-        {cover ? (
+        {cover && !coverFailed ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={cover}
+            src={resolvedCover ?? cover}
             alt={p.name}
             className="h-40 w-28 rounded border border-border-200 object-cover"
+            onError={() => {
+              // first failure: fetch it server-side and retry with our stored copy
+              if (!coverTried && cover) {
+                setCoverTried(true);
+                fetchImage(cover, {
+                  onSuccess: (d: any) => {
+                    const u = d?.image?.original || d?.image?.thumbnail;
+                    if (u) setResolvedCover(u);
+                    else setCoverFailed(true);
+                  },
+                  onError: () => setCoverFailed(true),
+                });
+              } else {
+                setCoverFailed(true);
+              }
+            }}
           />
         ) : (
-          <div className="flex h-40 w-28 items-center justify-center rounded border border-dashed border-border-300 text-[11px] text-body">
-            no cover
+          <div className="flex h-40 w-28 items-center justify-center rounded border border-dashed border-border-300 text-center text-[11px] text-body">
+            {cover ? 'cover unavailable' : 'no cover'}
           </div>
         )}
       </div>
 
       <div className="min-w-0 flex-1">
-        <p className="mb-1 font-semibold text-heading">{p.name || '—'}</p>
-        <p className="mb-3 text-xs text-body">
-          {authors} · {categories}
-        </p>
+        {/* Editable core fields */}
+        {editable ? (
+          <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Book name</label>
+              <input
+                className={input}
+                value={p.name ?? ''}
+                onChange={(e) => onProductPatch({ name: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Writer</label>
+              <input
+                className={input}
+                value={writer}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  // Clear the resolved id so the API re-resolves the edited name.
+                  onProductPatch({ author: { name }, authors: name ? [name] : [] });
+                }}
+              />
+            </div>
+            <div>
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Page number</label>
+              <input
+                type="number"
+                min={0}
+                className={input}
+                value={p.page_number ?? ''}
+                onChange={(e) =>
+                  onProductPatch({ page_number: e.target.value === '' ? undefined : e.target.value })
+                }
+              />
+            </div>
+            <div>
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Stock quantity</label>
+              <input
+                type="number"
+                min={0}
+                className={input}
+                value={p.quantity ?? ''}
+                onChange={(e) =>
+                  onProductPatch({
+                    quantity: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)),
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Publish as</label>
+              <select
+                className={input}
+                value={p.status === 'draft' ? 'draft' : 'publish'}
+                onChange={(e) => onProductPatch({ status: e.target.value })}
+              >
+                <option value="publish">Live (published)</option>
+                <option value="draft">Draft</option>
+              </select>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="mb-1 font-semibold text-heading">{p.name || '—'}</p>
+            <p className="mb-3 text-xs text-body">
+              {writer || '—'} · Stock {p.quantity ?? '—'} ·{' '}
+              {p.status === 'draft' ? 'Draft' : 'Live'}
+            </p>
+          </>
+        )}
 
-        {/* Stock is the one field worth setting here — the AI defaults it to 1, and the
-            owner usually knows the real quantity at import time. Everything else is
-            read-only; correct those on the product page after publish. */}
-        <div className="mb-3 flex items-center gap-3">
-          <label className="text-xs font-semibold text-body-dark">Stock quantity</label>
-          {editable ? (
-            <input
-              type="number"
-              min={0}
-              value={p.quantity ?? ''}
-              onChange={(e) => {
-                const v = e.target.value;
-                onProductPatch({ quantity: v === '' ? undefined : Math.max(0, Number(v)) });
-              }}
-              className="h-8 w-24 rounded border border-border-base bg-white px-2 text-xs text-heading focus:border-accent focus:outline-none"
-            />
-          ) : (
-            <span className="text-xs font-medium text-heading">{p.quantity ?? '—'}</span>
+        {/* Categories — chips, removable, add by name */}
+        <div className="mb-3">
+          <label className="mb-1 block text-[11px] font-semibold text-body-dark">Categories</label>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {catList.map((c, idx) => (
+              <span
+                key={idx}
+                className="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-0.5 text-[11px] text-heading"
+              >
+                {catName(c) || '—'}
+                {editable && (
+                  <button
+                    type="button"
+                    onClick={() => removeCategory(idx)}
+                    className="text-body hover:text-red-500"
+                    aria-label="remove"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+            {catList.length === 0 && <span className="text-[11px] text-body">none</span>}
+          </div>
+          {editable && (
+            <div className="mt-1.5 flex gap-1.5">
+              <div className="relative max-w-xs flex-1">
+                <input
+                  className={input}
+                  value={catInput}
+                  onChange={(e) => {
+                    setCatInput(e.target.value);
+                    setCatFocus(true);
+                  }}
+                  onFocus={() => setCatFocus(true)}
+                  onBlur={() => setTimeout(() => setCatFocus(false), 150)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      // Enter picks the top suggestion if there is one, else adds as typed.
+                      if (catSuggestions.length) {
+                        pushCategory({
+                          id: catSuggestions[0].id,
+                          name: catSuggestions[0].name,
+                        });
+                      } else {
+                        addCategory();
+                      }
+                    } else if (e.key === 'Escape') {
+                      setCatFocus(false);
+                    }
+                  }}
+                  placeholder="Type to match an existing category…"
+                />
+                {catFocus && catSuggestions.length > 0 && (
+                  <ul className="absolute z-20 mt-1 max-h-52 w-full overflow-auto rounded-md border border-border-base bg-white py-1 shadow-lg">
+                    {catSuggestions.map((c) => (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => pushCategory({ id: c.id, name: c.name })}
+                          className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs text-heading hover:bg-accent/10"
+                        >
+                          <span>{c.name}</span>
+                          <span className="text-[10px] text-body">existing</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={addCategory}
+                className="rounded border border-border-base px-3 text-xs font-semibold text-body hover:bg-white"
+              >
+                Add
+              </button>
+            </div>
           )}
           {editable && (
-            <span className="text-[11px] text-body">set before publishing</span>
+            <p className="mt-1 text-[10px] text-body">
+              Pick a suggestion to reuse an existing category; a new name is created on publish.
+            </p>
           )}
         </div>
 
@@ -707,16 +966,24 @@ function PreviewPanel({
           ))}
         </div>
 
-        {p.description ? (
-          <div className="mt-3">
-            <p className="mb-1 text-xs font-semibold text-body-dark">Description</p>
+        <div className="mt-3">
+          <label className="mb-1 block text-xs font-semibold text-body-dark">Description</label>
+          {editable ? (
+            <textarea
+              rows={5}
+              value={p.description ?? ''}
+              onChange={(e) => onProductPatch({ description: e.target.value })}
+              placeholder="No description extracted — you can write one here."
+              className="w-full whitespace-pre-wrap rounded border border-border-base bg-white p-2 text-xs text-heading focus:border-accent focus:outline-none"
+            />
+          ) : p.description ? (
             <div className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded border border-border-200 bg-white p-2 text-xs text-heading">
               {p.description}
             </div>
-          </div>
-        ) : (
-          <p className="mt-3 text-xs text-amber-700">No description extracted.</p>
-        )}
+          ) : (
+            <p className="text-xs text-amber-700">No description.</p>
+          )}
+        </div>
       </div>
     </div>
   );
