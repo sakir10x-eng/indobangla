@@ -1,5 +1,6 @@
 import SelectInput from '@/components/ui/select-input';
 import Label from '@/components/ui/label';
+import AddOptionLink from '@/components/product/add-option-link';
 import { Control, useFormState, useWatch } from 'react-hook-form';
 import { useEffect } from 'react';
 import { useTranslation } from 'next-i18next';
@@ -35,7 +36,10 @@ const ProductCategoryInput = ({ control, setValue }: Props) => {
 
   return (
     <div className="mb-5">
-      <Label>{t('form:input-label-categories')}</Label>
+      <div className="flex items-center justify-between">
+        <Label>{t('form:input-label-categories')}</Label>
+        <AddOptionLink href="/categories/create" />
+      </div>
       <SelectInput
         name="categories"
         isMulti

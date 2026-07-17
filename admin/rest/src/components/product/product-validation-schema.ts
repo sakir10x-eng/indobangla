@@ -42,10 +42,20 @@ export const productValidationSchema = (rules: FieldRules = {}) =>
   }),
   sale_price: yup
     .number()
-    .transform((value) => (isNaN(value) ? undefined : value))
-    .lessThan(yup.ref('price'), 'Sale Price should be less than ${less}')
+    // Blank / null / non-numeric input = "no sale price" → skip the bounds checks below,
+    // otherwise an empty field coerces to NaN and fails lessThan, blocking the update.
+    .transform((value, originalValue) =>
+      originalValue === '' ||
+      originalValue === null ||
+      originalValue === undefined ||
+      (typeof originalValue === 'string' && originalValue.trim() === '')
+        ? undefined
+        : value,
+    )
+    .nullable()
+    .notRequired()
     .positive('form:error-sale-price-must-positive')
-    .nullable(),
+    .lessThan(yup.ref('price'), 'Sale Price should be less than ${less}'),
   quantity: yup.mixed().when('product_type', {
     is: (productType: {
       name: string;
@@ -75,10 +85,18 @@ export const productValidationSchema = (rules: FieldRules = {}) =>
         .required('form:error-price-required'),
       sale_price: yup
         .number()
-        .transform((value) => (isNaN(value) ? undefined : value))
-        .lessThan(yup.ref('price'), 'Sale Price should be less than ${less}')
+        .transform((value, originalValue) =>
+          originalValue === '' ||
+          originalValue === null ||
+          originalValue === undefined ||
+          (typeof originalValue === 'string' && originalValue.trim() === '')
+            ? undefined
+            : value,
+        )
+        .nullable()
+        .notRequired()
         .positive('form:error-sale-price-must-positive')
-        .nullable(),
+        .lessThan(yup.ref('price'), 'Sale Price should be less than ${less}'),
       quantity: yup
         .number()
         .typeError('form:error-quantity-must-number')

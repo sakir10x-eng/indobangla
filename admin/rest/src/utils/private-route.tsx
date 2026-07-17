@@ -1,9 +1,10 @@
 import React from 'react';
 import { useRouter } from 'next/router';
-import { getAuthCredentials, hasAccess } from './auth-utils';
+import { getAuthCredentials, getManagedSections, hasAccess } from './auth-utils';
 import Loader from '@/components/ui/loader/loader';
 import AccessDeniedPage from '@/components/common/access-denied';
 import { Routes } from '@/config/routes';
+import { isPathAllowed } from '@/config/admin-sections';
 
 const PrivateRoute: React.FC<{
   authProps: any;
@@ -16,12 +17,17 @@ const PrivateRoute: React.FC<{
     Array.isArray(permissions) &&
     !!permissions.length &&
     hasAccess(authProps.permissions, permissions);
+  // custom sub-admin roles: restricted admins may only reach their sections
+  const sectionAllowed = isPathAllowed(router.pathname, getManagedSections());
   React.useEffect(() => {
     if (!isUser) router.replace(Routes.login); // If not authenticated, force log in
   }, [isUser]);
 
-  if (isUser && hasPermission) {
+  if (isUser && hasPermission && sectionAllowed) {
     return <>{children}</>;
+  }
+  if (isUser && hasPermission && !sectionAllowed) {
+    return <AccessDeniedPage />;
   }
   if (isUser && !hasPermission) {
     return <AccessDeniedPage />;

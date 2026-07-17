@@ -2,6 +2,7 @@ import Card from '@/components/common/card';
 import Description from '@/components/ui/description';
 import Button from '@/components/ui/button';
 import Input from '@/components/ui/input';
+import FileInput from '@/components/ui/file-input';
 import { useState } from 'react';
 import { useFormContext } from 'react-hook-form';
 import { toast } from 'react-toastify';
@@ -18,7 +19,7 @@ function pickError(err: any, body: any): string {
 }
 
 export default function AiAutofill() {
-  const { setValue } = useFormContext();
+  const { setValue, control } = useFormContext();
   const { mutate: extract, isLoading } = useExtractProductMutation();
   const { mutate: fetchImage, isLoading: fetchingImage } =
     useFetchImageMutation();
@@ -129,6 +130,16 @@ export default function AiAutofill() {
           placeholder="https://…/book-cover.jpg"
           className="mb-4"
         />
+
+        {/* Manual cover upload — drop/choose a file from the computer.
+            Binds to the same `image` field as the Featured-image section below. */}
+        <div className="mb-4">
+          <label className="block text-body-dark font-semibold text-sm leading-none mb-3">
+            Or upload a cover image from your computer
+          </label>
+          <FileInput name="image" control={control} multiple={false} />
+        </div>
+
         <Input
           label="Product page URL"
           value={productUrl}

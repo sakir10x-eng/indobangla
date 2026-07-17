@@ -5,6 +5,7 @@ import Pagination from '@/components/ui/pagination';
 import { Table } from '@/components/ui/table';
 import TitleWithSort from '@/components/ui/title-with-sort';
 import { UserActionCell } from '@/components/user/actions-cell';
+import AdminRoleCell from '@/components/user/admin-role-cell';
 import { MappedPaginatorInfo, SortOrder, User } from '@/types';
 import { useIsRTL } from '@/utils/locals';
 import { useTranslation } from 'next-i18next';
@@ -127,6 +128,16 @@ const AdminsList = ({
           </div>
         );
       },
+    },
+    {
+      title: 'Role',
+      dataIndex: 'admin_role_id',
+      key: 'admin_role',
+      align: alignLeft as AlignType,
+      width: 210,
+      render: (admin_role_id: string | null, record: any) => (
+        <AdminRoleCell id={record?.id} admin_role_id={admin_role_id} />
+      ),
     },
     {
       title: t('table:table-item-available_wallet_points'),

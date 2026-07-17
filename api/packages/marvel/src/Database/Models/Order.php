@@ -161,7 +161,11 @@ class Order extends Model
         }
     }
 
-    protected $with = ['customer', 'products.variation_options'];
+    // `wallet_point` rides along because `total` does NOT have the wallet contribution taken
+    // off it — anything printing or collecting money needs both numbers to know what is
+    // actually owed in cash. The order list only eager-loads `children`, so without this the
+    // printed slip would silently ask for the full amount.
+    protected $with = ['customer', 'products.variation_options', 'wallet_point'];
 
     /**
      * @return belongsToMany

@@ -23,6 +23,7 @@ import { useImageSizes } from '@/lib/use-image-sizes';
 import { useFeaturedBooks } from '@/lib/use-featured-books';
 import { recordView } from '@/lib/browsing-history';
 import { useCart } from '@/store/quick-cart/cart.context';
+import GiftPicker from '@/components/products/details/gift-picker';
 import { generateCartItem } from '@/store/quick-cart/generate-cart-item';
 import { useChallengeGate } from '@/lib/use-challenge-gate';
 import { toast } from 'react-toastify';
@@ -666,7 +667,8 @@ const BookDetails: React.FC<Props> = ({ product, isModal = false }) => {
                     {String((product as any).preorder_until).slice(0, 10)} পর্যন্ত
                   </span>
                 )}
-                {(product as any)?.preorder_limit ? (
+                {(product as any)?.preorder_limit &&
+                (product as any)?.preorder_show_count !== false ? (
                   <span className="text-[12px] font-semibold text-[#8a4048]">
                     · আর {Math.max(0, Number((product as any).preorder_limit) - Number((product as any).preorder_count || 0))} কপি বাকি
                   </span>
@@ -681,6 +683,16 @@ const BookDetails: React.FC<Props> = ({ product, isModal = false }) => {
               <p className="mt-1 text-[11px] text-[#b06068]">প্রি-অর্ডারে ক্যাশ-অন-ডেলিভারি নেই।</p>
             </div>
           )}
+
+          {(product as any)?.gift_max > 0 &&
+            (product as any)?.gift_products?.length > 0 && (
+              <GiftPicker
+                gifts={(product as any).gift_products}
+                perUnit={(product as any).gift_max}
+                perCopy={(product as any).gift_per_copy !== false}
+                productId={(product as any).id}
+              />
+            )}
 
           {/* secure / guarantee */}
           <div className="mt-4 space-y-1 text-xs text-body">
@@ -991,11 +1003,14 @@ const BookDetails: React.FC<Props> = ({ product, isModal = false }) => {
           <div className="min-w-[70px] text-base font-bold text-accent">{price}</div>
           <div className="flex-1">
             {!is_external ? (
+              // On mobile this bar is the whole buying surface — once the book is in the cart,
+              // offer Checkout here rather than sending the buyer up to the cart icon.
               <AddToCartAlt
                 data={product}
                 variant="bordered"
                 variation={selectedVariation}
                 disabled={selectedVariation?.is_disable || (hasVariations && !isSelected)}
+                withCheckout
               />
             ) : (
               <a

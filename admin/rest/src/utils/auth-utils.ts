@@ -17,8 +17,24 @@ export const adminOnly = [SUPER_ADMIN];
 export const ownerOnly = [STORE_OWNER];
 export const ownerAndStaffOnly = [STORE_OWNER, STAFF];
 
-export function setAuthCredentials(token: string, permissions: any, role: any) {
-  Cookie.set(AUTH_CRED, JSON.stringify({ token, permissions, role }));
+export function setAuthCredentials(
+  token: string,
+  permissions: any,
+  role: any,
+  managed_sections?: string[] | null,
+  admin_role_id?: string | null,
+) {
+  Cookie.set(
+    AUTH_CRED,
+    JSON.stringify({
+      token,
+      permissions,
+      role,
+      // null/undefined => full super-admin (no restriction)
+      managed_sections: managed_sections ?? null,
+      admin_role_id: admin_role_id ?? null,
+    }),
+  );
 }
 export function setEmailVerified(emailVerified: boolean) {
   Cookie.set(EMAIL_VERIFIED, JSON.stringify({ emailVerified }));
@@ -34,6 +50,8 @@ export function getAuthCredentials(context?: any): {
   token: string | null;
   permissions: string[] | null;
   role: string | null;
+  managed_sections?: string[] | null;
+  admin_role_id?: string | null;
 } {
   let authCred;
   if (context) {
@@ -45,6 +63,22 @@ export function getAuthCredentials(context?: any): {
     return JSON.parse(authCred);
   }
   return { token: null, permissions: null, role: null };
+}
+
+/**
+ * Section keys the current admin may access.
+ *   null  => full super-admin (everything). This is also the default for
+ *            existing sessions whose cookie predates this feature.
+ *   array => only these sections.
+ */
+export function getManagedSections(context?: any): string[] | null {
+  const { managed_sections } = getAuthCredentials(context);
+  return Array.isArray(managed_sections) ? managed_sections : null;
+}
+
+/** True when the account is an unrestricted super-admin. */
+export function isFullAdmin(context?: any): boolean {
+  return getManagedSections(context) === null;
 }
 
 export function parseSSRCookie(context: any) {

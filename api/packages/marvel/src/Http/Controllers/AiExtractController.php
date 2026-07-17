@@ -150,6 +150,177 @@ class AiExtractController extends CoreController
         return ['status' => 'success', 'results' => $results];
     }
 
+    /**
+     * Admin: prove the saved AI credentials actually work. POST ai/test
+     *
+     * Makes a real (tiny) call rather than validating the key's shape — a key can
+     * be well-formed and still be revoked, out of credit, or wrong for the model.
+     * Failures come back as status:error with the provider's own message, not as
+     * an exception: for a test button the failure IS the result the admin needs.
+     */
+    public function testConnection(Request $request)
+    {
+        $ai = $this->getAiSettings();
+        $provider = $ai['provider'] ?? 'openrouter';
+        $model    = $ai['model'] ?? '';
+
+        if (empty($ai['api_key'])) {
+            return ['status' => 'error', 'provider' => $provider, 'model' => $model,
+                    'message' => 'No API key saved yet. Enter one above and press Save first.'];
+        }
+
+        $t0 = microtime(true);
+        try {
+            $reply = $this->callLLM(
+                $ai,
+                'You are a connection test. Reply with exactly: OK',
+                'Reply with exactly: OK',
+                null
+            );
+        } catch (\Throwable $e) {
+            return [
+                'status'   => 'error',
+                'provider' => $provider,
+                'model'    => $model,
+                'ms'       => (int) round((microtime(true) - $t0) * 1000),
+                'message'  => $e->getMessage(),
+            ];
+        }
+
+        $reply = trim((string) $reply);
+        if ($reply === '') {
+            // A 200 with no text means the model answered but returned nothing usable —
+            // usually the wrong model id for the provider. Don't call that a success.
+            return ['status' => 'error', 'provider' => $provider, 'model' => $model,
+                    'ms' => (int) round((microtime(true) - $t0) * 1000),
+                    'message' => 'The provider replied but returned no text. Check the model name.'];
+        }
+
+        return [
+            'status'   => 'success',
+            'provider' => $provider,
+            'model'    => $model ?: '(provider default)',
+            'ms'       => (int) round((microtime(true) - $t0) * 1000),
+            'reply'    => \Illuminate\Support\Str::limit($reply, 80),
+            'enabled'  => (bool) ($ai['enabled'] ?? false),
+        ];
+    }
+
+    /**
+     * Admin: model suggestions for the settings form. GET ai/models?provider=
+     *
+     * OpenRouter publishes its catalogue — ids, live prices and modalities — at a
+     * public endpoint, so that list is fetched rather than hardcoded: prices move
+     * and a hardcoded table would quietly rot. Anthropic's list is curated because
+     * OpenRouter spells their ids differently ("claude-sonnet-4.6" vs the real
+     * "claude-sonnet-4-6"), so deriving them would hand the admin a 404.
+     */
+    public function listModels(Request $request)
+    {
+        $provider = (string) $request->query('provider', '') ?: ($this->getAiSettings()['provider'] ?? 'openrouter');
+
+        if ($provider === 'anthropic') {
+            return ['status' => 'success', 'provider' => $provider, 'source' => 'curated',
+                    'models' => $this->anthropicModels()];
+        }
+
+        $catalogue = $this->openrouterCatalogue();
+        if (!$catalogue) {
+            return ['status' => 'success', 'provider' => $provider, 'source' => 'unavailable',
+                    'models' => [], 'message' => "Couldn't reach OpenRouter's model list. Type the model name by hand."];
+        }
+
+        if ($provider === 'openai') {
+            // Sourced from OpenRouter's catalogue for the live price, with their
+            // "openai/" prefix removed to get OpenAI's own id.
+            $models = [];
+            foreach ($catalogue as $m) {
+                if (!str_starts_with($m['id'], 'openai/')) {
+                    continue;
+                }
+                // ":free" / ":thinking" are OpenRouter routing suffixes, not part of
+                // OpenAI's id — "gpt-oss-20b:free" would 404 against OpenAI directly.
+                if (str_contains($m['id'], ':')) {
+                    continue;
+                }
+                $m['id'] = substr($m['id'], strlen('openai/'));
+                $models[] = $m;
+            }
+            return ['status' => 'success', 'provider' => $provider, 'source' => 'openrouter-catalogue',
+                    'models' => array_values($models)];
+        }
+
+        return ['status' => 'success', 'provider' => 'openrouter', 'source' => 'live',
+                'models' => $catalogue];
+    }
+
+    /**
+     * OpenRouter's public model list (no key required), normalised and priced per
+     * 1M tokens. Cached 6h — but never when empty: an empty list cached here would
+     * leave the picker dead long after OpenRouter came back.
+     */
+    private function openrouterCatalogue(): array
+    {
+        $cached = \Illuminate\Support\Facades\Cache::get('openrouter:models');
+        if (is_array($cached) && $cached) {
+            return $cached;
+        }
+        try {
+            $res = Http::timeout(20)->get('https://openrouter.ai/api/v1/models');
+            if (!$res->successful()) {
+                return [];
+            }
+            $models = [];
+            foreach ($res->json('data') ?? [] as $m) {
+                $id = (string) ($m['id'] ?? '');
+                if ($id === '') {
+                    continue;
+                }
+                $in  = (float) ($m['pricing']['prompt'] ?? 0) * 1000000;
+                $out = (float) ($m['pricing']['completion'] ?? 0) * 1000000;
+                // OpenRouter prices its router pseudo-models (auto, fusion, …) at a
+                // -1 sentinel meaning "depends where it routes". Sorted by price they
+                // would head the list at -$1,000,000 — drop them rather than show that.
+                if ($in < 0 || $out < 0) {
+                    continue;
+                }
+                $models[] = [
+                    'id'      => $id,
+                    'name'    => (string) ($m['name'] ?? $id),
+                    'in'      => round($in, 3),
+                    'out'     => round($out, 3),
+                    'free'    => $in <= 0 && $out <= 0,
+                    'context' => (int) ($m['context_length'] ?? 0),
+                    // Book covers are extracted from images, so a model that can't
+                    // see is not a candidate however cheap it is.
+                    'vision'  => in_array('image', (array) ($m['architecture']['input_modalities'] ?? []), true),
+                ];
+            }
+            if (!$models) {
+                return [];
+            }
+            usort($models, fn ($a, $b) => [$a['in'], $a['id']] <=> [$b['in'], $b['id']]);
+            \Illuminate\Support\Facades\Cache::put('openrouter:models', $models, 21600);
+            return $models;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Anthropic's own model ids. Curated, not derived: their public list is not
+     * open, and OpenRouter's aliases don't match the real ids. Prices are $ per 1M.
+     */
+    private function anthropicModels(): array
+    {
+        return [
+            ['id' => 'claude-haiku-4-5',  'name' => 'Claude Haiku 4.5 — cheapest, fine for clean pages', 'in' => 1.0,  'out' => 5.0,  'free' => false, 'context' => 200000,  'vision' => true],
+            ['id' => 'claude-sonnet-5',   'name' => 'Claude Sonnet 5 — best value for messy scans',      'in' => 3.0,  'out' => 15.0, 'free' => false, 'context' => 1000000, 'vision' => true],
+            ['id' => 'claude-sonnet-4-6', 'name' => 'Claude Sonnet 4.6',                                 'in' => 3.0,  'out' => 15.0, 'free' => false, 'context' => 1000000, 'vision' => true],
+            ['id' => 'claude-opus-4-8',   'name' => 'Claude Opus 4.8 — most capable',                    'in' => 5.0,  'out' => 25.0, 'free' => false, 'context' => 1000000, 'vision' => true],
+        ];
+    }
+
     // ---------------------------------------------------------------------
 
     private function getAiSettings(): array
@@ -203,6 +374,14 @@ class AiExtractController extends CoreController
         // Always echo back the cover image the user supplied if the model didn't find one.
         if ($imageUrl && empty($data['image_url'])) {
             $data['image_url'] = $imageUrl;
+        }
+
+        // AnandaPub's own API is authoritative — the model reliably romanises the Bangla
+        // title, guesses a dead cover URL, and even invents prices. When we have their
+        // JSON, take name / cover / price / author / description / ISBN straight from it
+        // and let the model keep only the softer fields (categories, tags, slug source).
+        if (!empty($anand)) {
+            $data = $this->applyAnandapub($data, $anand);
         }
 
         return $this->resolveEntities($data, $productUrl);
@@ -270,12 +449,16 @@ class AiExtractController extends CoreController
         $d['slug'] = $slug;
 
         // --- Pricing: Indian books -> MRP*2, sale = round-up-to-5 of MRP*1.75
-        $mrp = is_numeric($d['price'] ?? null) ? (float) $d['price'] : null;
-
-        // Keep what the source page actually listed, before we mark it up. The pre-order desk
-        // prices from the Amazon figure itself (× rate + weight charge), so handing it the
-        // already-converted number would mark the book up twice.
-        $d['source_price'] = $mrp;
+        // The MRP is the HIGHER of the two source prices, whichever field it arrived in —
+        // sources (and the model) inconsistently put the list price in `price` vs
+        // `sale_price`, and keying off `price` alone let a swapped pair invert the boxes.
+        $pIn = is_numeric($d['price'] ?? null) ? (float) $d['price'] : null;
+        $sIn = is_numeric($d['sale_price'] ?? null) ? (float) $d['sale_price'] : null;
+        $mrp = max($pIn ?? 0, $sIn ?? 0) ?: null;
+        // Source's actual (discounted) selling price = the LOWER of the two, for the
+        // pre-order desk which prices up from what the buyer really pays, not the MRP.
+        $amazonSale = ($pIn && $sIn) ? min($pIn, $sIn) : ($sIn ?: $pIn);
+        $d['source_price'] = ($amazonSale && $amazonSale > 0) ? $amazonSale : $mrp;
         $d['source_currency'] = $indian ? 'INR' : 'USD';
         if ($mrp && empty($d['mrp'])) {
             $d['mrp'] = $mrp;
@@ -399,6 +582,83 @@ class AiExtractController extends CoreController
     }
 
     /**
+     * Overlay the authoritative AnandaPub fields onto the model's output.
+     * The model is good at the fuzzy stuff (categories, tags) and bad at the exact
+     * stuff (Bangla title, real cover URL, real price), so the API wins on the latter.
+     */
+    private function applyAnandapub(array $d, string $json): array
+    {
+        $api = json_decode($json, true);
+        $bd  = $api['bookdetails'] ?? null;
+        if (!is_array($bd)) {
+            return $d;
+        }
+
+        // Name: keep the book's own Bangla title when it has one; the romanised
+        // `title` is only a fallback. This is the "Bangla book stays Bangla" rule.
+        $bengali = trim((string) ($bd['bengali_title'] ?? ''));
+        $english = trim((string) ($bd['title'] ?? ''));
+        if ($bengali !== '') {
+            $d['name'] = $bengali;
+            $d['language'] = $d['language'] ?: 'Bengali';
+        } elseif ($english !== '') {
+            $d['name'] = $english;
+        }
+
+        // Cover: the API's own URL, never the model's guessed one (which 404s).
+        if (!empty($bd['image'])) {
+            $d['image_url'] = $bd['image'];
+        }
+
+        // Author: prefer the Bangla author name for a Bangla book.
+        $authors = [];
+        foreach ((array) ($bd['bookauthor'] ?? []) as $au) {
+            $name = ($bengali !== '' && !empty($au['bengali_author_name']))
+                ? $au['bengali_author_name']
+                : ($au['authorname'] ?? null);
+            if ($name) {
+                $authors[] = trim($name);
+            }
+        }
+        if ($authors) {
+            $d['authors'] = $authors;
+        }
+
+        // Price: the printed MRP. list_price / selling_price arrive per edition; take the
+        // first edition that has a real number. resolveEntities turns MRP into ×2 / ×1.75.
+        foreach ((array) ($bd['bookproducts'] ?? []) as $bp) {
+            $list = is_numeric($bp['list_price'] ?? null) ? (float) $bp['list_price'] : null;
+            $sell = is_numeric($bp['selling_price'] ?? null) ? (float) $bp['selling_price'] : null;
+            if ($list || $sell) {
+                $d['price'] = $list ?: $sell;         // MRP base
+                $d['sale_price'] = $sell ?: $list;    // what they actually charge
+                if (!empty($bp['product_type_name'])) {
+                    $d['print_type'] = $d['print_type'] ?: $bp['product_type_name'];
+                }
+                break;
+            }
+        }
+
+        // Description: strip the API's HTML so the product form gets clean text.
+        if (!empty($bd['description'])) {
+            $desc = html_entity_decode(strip_tags((string) $bd['description']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $desc = trim(preg_replace('/\s+/', ' ', $desc));
+            if ($desc !== '') {
+                $d['description'] = $desc;
+            }
+        }
+
+        // ISBN straight from the source.
+        foreach (['isbn', 'isbn13'] as $k) {
+            if (!empty($bd[$k]) && empty($d['isbn13'])) {
+                $d['isbn13'] = (string) $bd[$k];
+            }
+        }
+
+        return $d;
+    }
+
+    /**
      * Fetch readable text from a product page. Uses the Jina AI reader
      * (r.jina.ai) which executes JavaScript, so SPA / JS-rendered pages work;
      * falls back to a plain HTTP GET + strip_tags if the reader is unavailable.
@@ -408,8 +668,10 @@ class AiExtractController extends CoreController
         if (!$url) {
             return null;
         }
-        // 1) JS-aware reader. A Jina key is optional — without it the reader still works but
-        //    is rate-limited, which is what makes Amazon fetches fail intermittently.
+        // 1) JS-aware reader. The keyless free tier is shared-IP rate-limited, so a
+        //    throttled call comes back slow, 429, or too-thin. Retry a couple of times
+        //    before giving up — when it isn't throttled it answers in well under a second,
+        //    so a retry recovers most transient throttles. A Jina key removes the limit.
         try {
             $reader = 'https://r.jina.ai/' . $url;
             $headers = ['Accept' => 'text/plain'];
@@ -417,11 +679,20 @@ class AiExtractController extends CoreController
             if (!empty($jinaKey)) {
                 $headers['Authorization'] = 'Bearer ' . $jinaKey;
             }
-            $resp = Http::withHeaders($headers)->timeout(45)->get($reader);
-            if ($resp->successful()) {
-                $text = trim($resp->body());
-                if (strlen($text) > 200) {
-                    return $text;
+            for ($attempt = 1; $attempt <= 3; $attempt++) {
+                try {
+                    $resp = Http::withHeaders($headers)->timeout(40)->get($reader);
+                    if ($resp->successful()) {
+                        $text = trim($resp->body());
+                        if (strlen($text) > 200) {
+                            return $text;
+                        }
+                    }
+                } catch (\Throwable $inner) {
+                    // this attempt failed — fall through to the backoff below
+                }
+                if ($attempt < 3) {
+                    usleep(900000 * $attempt); // 0.9s, then 1.8s
                 }
             }
         } catch (\Throwable $e) {
@@ -491,7 +762,7 @@ class AiExtractController extends CoreController
         $limit = min((int) ($request->limit ?? 20), 50);
         $text = $this->fetchPageText($request->list_url) ?? '';
 
-        $urls = [];
+        $urls = []; // readerFailed-aware crawl
         if (preg_match_all('#https?://[^\s)"\'\]]*book-?details/\d+#i', $text, $m)) {
             $urls = $m[0];
         }
@@ -514,6 +785,23 @@ class AiExtractController extends CoreController
         $urls = array_values(array_unique(array_map(fn ($u) => rtrim($u, '/.,'), $urls)));
         $urls = array_slice($urls, 0, $limit);
 
+        // A list page that renders its books with JavaScript reads as ~nothing without the
+        // JS-aware reader. When the reader is throttled we get the bare shell and find zero
+        // links — say so plainly and point at the fix, instead of a silent empty success
+        // that looks like the page simply had no books.
+        if (empty($urls)) {
+            $thin = strlen(trim($text)) < 400;
+            $hasKey = !empty($this->getAiSettings()['jina_key'] ?? null);
+            $msg = $thin
+                ? ('Could not read that page — the page reader was rate-limited or the page '
+                    . 'needs JavaScript. ' . ($hasKey
+                        ? 'Try again in a moment.'
+                        : 'Add a free Jina API key in Settings \u{2192} AI to fix this, or paste the book URLs directly below.'))
+                : 'Read the page, but found no book links on it. Check the URL, or paste the book URLs directly below.';
+            $msg = str_replace('\u{2192}', '->', $msg);
+            return ['status' => 'success', 'count' => 0, 'urls' => [], 'message' => $msg];
+        }
+
         return ['status' => 'success', 'count' => count($urls), 'urls' => $urls];
     }
 
@@ -527,9 +815,19 @@ class AiExtractController extends CoreController
         if (empty($p['name'])) {
             throw new MarvelException('Product name is missing.');
         }
-        // Same resolver the rest of the app uses — settings first, catalogue-holder as fallback.
-        $shopId = \Marvel\Http\Controllers\IntegrationController::resolveMainShopId();
-        $shop = $shopId ? \Marvel\Database\Models\Shop::find($shopId) : null;
+        // The batch page lets the admin route each book to a vendor shop. Only fall
+        // back to the app-wide resolver when they left the choice alone.
+        $shop = null;
+        if (!empty($p['shop_id'])) {
+            $shop = \Marvel\Database\Models\Shop::find((int) $p['shop_id']);
+            if (!$shop) {
+                throw new MarvelException('The selected shop no longer exists.');
+            }
+        }
+        if (!$shop) {
+            $shopId = \Marvel\Http\Controllers\IntegrationController::resolveMainShopId();
+            $shop = $shopId ? \Marvel\Database\Models\Shop::find($shopId) : null;
+        }
         if (!$shop) {
             throw new MarvelException('IndoBangla Store shop not found.');
         }
@@ -588,6 +886,350 @@ class AiExtractController extends CoreController
         return ['status' => 'success', 'id' => $product->id, 'slug' => $product->slug, 'name' => $product->name];
     }
 
+    /**
+     * Tell the batch review table which of the extracted books we already sell.
+     *
+     * This exists because nothing else stops a re-import: createProduct() calls
+     * uniqueSlug(), which quietly mints `my-book-2`, so importing the same page
+     * twice *succeeds* twice. Matches, strongest first:
+     *
+     *   isbn — ISBN10/13 out of book_meta, punctuation-insensitive. Definitive.
+     *   slug — the exact slug createProduct would mint, plus its -2/-3 variants.
+     *   name — normalised title, exact or >= 90% similar. Advisory only: the same
+     *          title is very often a different edition, so it is reported as
+     *          "probable" and never as a certainty.
+     *
+     * Soft-deleted products are ignored — a trashed book is not a duplicate the
+     * admin can act on. (uniqueSlug does count them, so a base slug can still be
+     * taken by a trashed row without showing up here.)
+     */
+    public function duplicateCheck(Request $request)
+    {
+        $items = $request->input('products', []);
+        if (!is_array($items) || !$items) {
+            return ['status' => 'success', 'results' => []];
+        }
+        $items = array_slice($items, 0, 25);
+
+        // Both indexes are built once for the whole batch. findOrCreateAuthor's
+        // per-row full-table scan is exactly the cost being avoided here.
+        $catalogue = $this->catalogueIndex();
+        $isbnIndex = $this->isbnIndex();
+
+        $results = [];
+        foreach ($items as $i => $p) {
+            $index = (is_array($p) && isset($p['index'])) ? (int) $p['index'] : (int) $i;
+            if (!is_array($p) || empty($p['name'])) {
+                $results[] = ['index' => $index, 'duplicate' => false, 'probable' => false, 'matches' => []];
+                continue;
+            }
+
+            $found = []; // product id => ['reason','detail','score']
+
+            // --- ISBN: the only identifier that survives a retitle.
+            foreach (['isbn13', 'isbn10'] as $k) {
+                $n = $this->normalizeIsbn($p[$k] ?? null);
+                if (!$n || empty($isbnIndex[$n])) {
+                    continue;
+                }
+                foreach ($isbnIndex[$n] as $pid) {
+                    if (!isset($found[$pid])) {
+                        $found[$pid] = ['reason' => 'isbn', 'detail' => strtoupper($k) . ' ' . $n, 'score' => 100];
+                    }
+                }
+            }
+
+            // --- Slug: what createProduct would land on, and what it landed on before.
+            // The suffix is capped at two digits because that is uniqueSlug's real
+            // range (-2, -3, …). Allowing \d+ would make base "anandamela" swallow
+            // "anandamela-1433" — a different year, not a re-import.
+            $base = Str::slug($p['slug'] ?? $p['name']);
+            if ($base !== '') {
+                $re = '/^' . preg_quote($base, '/') . '(-\d{1,2})?$/';
+                foreach ($catalogue['bySlug'] as $slug => $c) {
+                    if (!isset($found[$c['id']]) && preg_match($re, $slug)) {
+                        $found[$c['id']] = ['reason' => 'slug', 'detail' => $slug, 'score' => 100];
+                    }
+                }
+            }
+
+            // --- Title, exact then fuzzy.
+            $norm     = $this->normalizeTitle((string) $p['name']);
+            $authorId = isset($p['author']['id']) ? (int) $p['author']['id'] : null;
+            if ($norm !== '') {
+                foreach ($catalogue['byNorm'][$norm] ?? [] as $c) {
+                    if (!isset($found[$c['id']])) {
+                        $found[$c['id']] = ['reason' => 'name', 'detail' => 'same title', 'score' => 100];
+                    }
+                }
+                $digits = $this->titleDigits($norm);
+                foreach ($this->fuzzyCandidates($catalogue, $norm, $authorId) as $c) {
+                    if (isset($found[$c['id']])) {
+                        continue;
+                    }
+                    // "আনন্দমেলা পূজাবার্ষিকী ১৪৩৩" vs "… ১৪৩০" scores 99% — the year is a
+                    // few bytes in a long title — but they are different books. Same for
+                    // "সমগ্র ১" vs "সমগ্র ২". When both titles carry numbers and the
+                    // numbers disagree, that is a distinction, not a typo.
+                    $cd = $this->titleDigits($c['norm']);
+                    if ($digits && $cd && $digits !== $cd) {
+                        continue;
+                    }
+                    similar_text($c['norm'], $norm, $pct);
+                    if ($pct >= 90) {
+                        $found[$c['id']] = [
+                            'reason' => 'name',
+                            'detail' => 'title ' . round($pct) . '% similar',
+                            'score'  => (int) round($pct),
+                        ];
+                    }
+                }
+            }
+
+            $rank    = ['isbn' => 0, 'slug' => 1, 'name' => 2];
+            $matches = [];
+            foreach ($found as $pid => $m) {
+                $c = $catalogue['byId'][$pid] ?? null;
+                if (!$c) {
+                    continue;
+                }
+                $matches[] = [
+                    'id'         => $c['id'],
+                    'name'       => $c['name'],
+                    'slug'       => $c['slug'],
+                    'author'     => $c['author'],
+                    'quantity'   => $c['quantity'],
+                    'price'      => $c['price'],
+                    'sale_price' => $c['sale_price'],
+                    'reason'     => $m['reason'],
+                    'detail'     => $m['detail'],
+                    'score'      => $m['score'],
+                ];
+            }
+            usort($matches, fn ($a, $b) => [$rank[$a['reason']], -$a['score']] <=> [$rank[$b['reason']], -$b['score']]);
+            $matches = array_slice($matches, 0, 5);
+
+            $reasons = array_column($matches, 'reason');
+            $results[] = [
+                'index'     => $index,
+                // isbn/slug are facts; a title match alone is only a suspicion.
+                'duplicate' => (bool) array_intersect(['isbn', 'slug'], $reasons),
+                'probable'  => !array_intersect(['isbn', 'slug'], $reasons) && in_array('name', $reasons, true),
+                'matches'   => $matches,
+            ];
+        }
+
+        return ['status' => 'success', 'results' => $results];
+    }
+
+    /**
+     * Refresh an existing book from a batch row instead of creating a second one.
+     *
+     * Deliberately narrow: only the three fields an import can meaningfully
+     * refresh, and only the ones the admin ticked — so re-running an import can
+     * never quietly rewrite a listing someone curated by hand.
+     */
+    public function updateExisting(Request $request)
+    {
+        $id     = (int) $request->input('product_id');
+        $fields = (array) $request->input('fields', []);
+        $p      = (array) $request->input('product', []);
+
+        $product = \Marvel\Database\Models\Product::find($id);
+        if (!$product) {
+            throw new MarvelException('That product no longer exists.');
+        }
+
+        $applied = [];
+        if (in_array('quantity', $fields, true) && is_numeric($p['quantity'] ?? null)) {
+            $qty                = max(0, (int) $p['quantity']);
+            $product->quantity  = $qty;
+            $product->in_stock  = $qty > 0;
+            $applied[]          = 'quantity';
+        }
+        if (in_array('price', $fields, true) && is_numeric($p['price'] ?? null)) {
+            $price               = (float) $p['price'];
+            $product->price      = $price;
+            $product->max_price  = $price;
+            $product->min_price  = $price;
+            // Only touch sale_price when the row actually carries one. Nulling it
+            // because the extractor found none would silently end a live sale.
+            if (is_numeric($p['sale_price'] ?? null)) {
+                $product->sale_price = (float) $p['sale_price'];
+            }
+            $applied[] = 'price';
+        }
+        if (in_array('description', $fields, true) && !empty($p['description'])) {
+            $product->description = $p['description'];
+            $applied[]            = 'description';
+        }
+
+        if (!$applied) {
+            throw new MarvelException('Nothing to update — pick at least one field the row has a value for.');
+        }
+        $product->save();
+
+        return [
+            'status'  => 'success',
+            'id'      => $product->id,
+            'slug'    => $product->slug,
+            'name'    => $product->name,
+            'updated' => $applied,
+        ];
+    }
+
+    /**
+     * Every live product, indexed the three ways duplicateCheck looks things up.
+     * Raw DB on purpose: the Product model appends a `book` attribute that would
+     * fire a getMeta() per row.
+     */
+    private function catalogueIndex(): array
+    {
+        $rows = \Illuminate\Support\Facades\DB::table('products')
+            ->leftJoin('authors', 'authors.id', '=', 'products.author_id')
+            ->whereNull('products.deleted_at')
+            ->select(
+                'products.id',
+                'products.name',
+                'products.slug',
+                'products.quantity',
+                'products.price',
+                'products.sale_price',
+                'products.author_id',
+                'authors.name as author_name'
+            )
+            ->get();
+
+        $bySlug = [];
+        $byNorm = [];
+        $byId   = [];
+        $all    = [];
+        foreach ($rows as $r) {
+            $item = [
+                'id'         => (int) $r->id,
+                'name'       => (string) $r->name,
+                'slug'       => (string) $r->slug,
+                'quantity'   => (int) $r->quantity,
+                'price'      => $r->price,
+                'sale_price' => $r->sale_price,
+                'author_id'  => $r->author_id ? (int) $r->author_id : null,
+                'author'     => $r->author_name,
+                'norm'       => $this->normalizeTitle((string) $r->name),
+            ];
+            $bySlug[$item['slug']]   = $item;
+            $byNorm[$item['norm']][] = $item;
+            $byId[$item['id']]       = $item;
+            $all[]                   = $item;
+        }
+
+        return ['bySlug' => $bySlug, 'byNorm' => $byNorm, 'byId' => $byId, 'all' => $all];
+    }
+
+    /**
+     * normalised ISBN => [product ids]. ISBN lives only in the book_meta blob,
+     * so there is no column to query — this reads the meta rows once per batch.
+     */
+    private function isbnIndex(): array
+    {
+        $rows = \Illuminate\Support\Facades\DB::table('products_meta')
+            ->join('products', 'products.id', '=', 'products_meta.product_id')
+            ->whereNull('products.deleted_at')
+            ->where('products_meta.key', 'book_meta')
+            ->select('products_meta.product_id', 'products_meta.value')
+            ->get();
+
+        $index = [];
+        foreach ($rows as $r) {
+            $meta = $this->decodeMetaValue($r->value);
+            if (!is_array($meta)) {
+                continue;
+            }
+            foreach (['isbn10', 'isbn13'] as $k) {
+                $n = $this->normalizeIsbn($meta[$k] ?? null);
+                if ($n) {
+                    $index[$n][] = (int) $r->product_id;
+                }
+            }
+        }
+        return $index;
+    }
+
+    /**
+     * kodeine/laravel-meta chooses its own encoding per value type, so read the
+     * stored blob back tolerantly rather than betting on one format.
+     */
+    private function decodeMetaValue($value): ?array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+        if (!is_string($value) || $value === '') {
+            return null;
+        }
+        $json = json_decode($value, true);
+        if (is_array($json)) {
+            return $json;
+        }
+        $un = @unserialize($value);
+        return is_array($un) ? $un : null;
+    }
+
+    /**
+     * Title normaliser for duplicate matching.
+     *
+     * NOT normalizeName(): that keeps only \p{L}\p{N}, and a Bengali vowel sign
+     * is a Mark (\p{M}), not a Letter — so it turns "কাকা" and "কেকে" both into
+     * "ক ক". On a mostly-Bengali catalogue that collapses unrelated titles onto
+     * one key and reports them as duplicates of each other. Keep the marks.
+     */
+    private function normalizeTitle(string $s): string
+    {
+        $s = mb_strtolower(trim($s));
+        $s = preg_replace('/[^\p{L}\p{N}\p{M}]+/u', ' ', $s);
+        return trim(preg_replace('/\s+/', ' ', $s));
+    }
+
+    /**
+     * The numbers in a title, in order — Bengali digits included (\p{N} covers
+     * ১২৩). Volume and year numbers are what separates otherwise-identical
+     * titles, so they are compared exactly rather than fuzzily.
+     */
+    private function titleDigits(string $norm): string
+    {
+        preg_match_all('/\p{N}+/u', $norm, $m);
+        return implode(',', $m[0] ?? []);
+    }
+
+    /**
+     * ISBNs are written by hand and by three different extractors, so compare
+     * digits only: "978-93-5040-502-4" and "9789350405024" are one book.
+     */
+    private function normalizeIsbn($v): ?string
+    {
+        if (!is_scalar($v)) {
+            return null;
+        }
+        $s = strtoupper(preg_replace('/[^0-9Xx]/', '', (string) $v));
+        return (strlen($s) === 10 || strlen($s) === 13) ? $s : null;
+    }
+
+    /**
+     * Keep similar_text() off the whole catalogue: compare against the author's
+     * own shelf when we resolved one, otherwise only against titles that already
+     * start the same way.
+     */
+    private function fuzzyCandidates(array $catalogue, string $norm, ?int $authorId): array
+    {
+        if ($authorId) {
+            return array_values(array_filter($catalogue['all'], fn ($c) => $c['author_id'] === $authorId));
+        }
+        $prefix = mb_substr($norm, 0, 3);
+        if (mb_strlen($prefix) < 3) {
+            return [];
+        }
+        return array_values(array_filter($catalogue['all'], fn ($c) => mb_substr($c['norm'], 0, 3) === $prefix));
+    }
+
     private function systemPrompt(): string
     {
         return <<<'PROMPT'
@@ -596,10 +1238,10 @@ From the provided image, page text and/or notes, extract the book's details.
 Respond with ONLY a single minified JSON object (no markdown, no commentary) using EXACTLY these keys
 (use null or [] when unknown, never invent ISBNs or prices):
 {
-  "name": string,
+  "name": string,                 // the book's title in ITS OWN script — if the book is in Bangla, the name MUST stay in Bangla (do NOT romanize or translate it). Romanize only in `slug`.
   "slug": string,                 // English/romanized url slug of the title (transliterate Bangla to Latin), lowercase words separated by hyphens
   "is_indian": boolean,           // true if this is an Indian book / Indian publisher / printed in India
-  "description": string,          // 2-4 sentence summary
+  "description": string,          // REQUIRED: a 2-4 sentence summary of the book. Never leave this empty — if the page has a synopsis use it, otherwise write a short factual summary from the title, author and category.
   "price": number|null,           // regular price in BDT
   "sale_price": number|null,      // discounted price in BDT if any
   "quantity": number|null,

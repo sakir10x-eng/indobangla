@@ -39,10 +39,10 @@ trait PaymentTrait
      *
      * @param  mixed  $request
      * @param  mixed  $settings
-     * @return object
+     * @return object|null
      * @throws Exception
      */
-    public function processPaymentIntent($request, Settings $settings): object
+    public function processPaymentIntent($request, Settings $settings): ?object
     {
         try {
             $chosen_payment_gateway = '';
@@ -58,7 +58,10 @@ trait PaymentTrait
             } else {
                 if (isset($settings->options['paymentGateway'])) {
                     foreach ($settings->options['paymentGateway'] as $key => $available_gateway) {
-                        if (strtoupper($available_gateway['name']) === $requested_payment_gateway) {
+                        // Match gateway names case-insensitively; the shop may post
+                        // "bkash" while settings store "Bkash"/"BKASH". A mismatch left
+                        // $chosen_payment_gateway empty → null intent → order 500.
+                        if (strtoupper($available_gateway['name']) === strtoupper((string) $requested_payment_gateway)) {
                             $chosen_payment_gateway = ucfirst($available_gateway['name']);
                         }
                     }
@@ -211,7 +214,14 @@ trait PaymentTrait
     public function fetchOrderByTrackingNumber(string $tracking_number): object
     {
         try {
-            return Order::where('id', "=", $tracking_number)->orWhere('tracking_number', $tracking_number)->first();
+            $order = Order::where('id', "=", $tracking_number)->orWhere('tracking_number', $tracking_number)->first();
+            if (!$order) {
+                // No matching order → a clean 404 instead of a TypeError 500 on the `: object` return.
+                throw new HttpException(404, NOT_FOUND);
+            }
+            return $order;
+        } catch (HttpException $e) {
+            throw $e;
         } catch (\Exception $e) {
             throw new HttpException(404, NOT_FOUND);
         }

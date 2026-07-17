@@ -123,6 +123,8 @@ export function getProductDefaultValues(
       variation_options: [],
       book: {},
       status: 'publish',
+      preorder_show_count: true,
+      gift_per_copy: true,
     };
   }
   const {
@@ -134,6 +136,13 @@ export function getProductDefaultValues(
   } = product;
   return cloneDeep({
     ...product,
+    // Gift pool: SelectInput needs product objects; API returns resolved gift_products.
+    gift_product_ids: (product as any)?.gift_products ?? [],
+    // <input type="date"> needs YYYY-MM-DD; the API returns a datetime, so trim it
+    // (otherwise the saved pre-order date shows blank when re-editing the product).
+    preorder_until: (product as any)?.preorder_until
+      ? String((product as any).preorder_until).slice(0, 10)
+      : '',
     product_type: productTypeOptions.find(
       (option) => product_type === option.value,
     ),
@@ -265,6 +274,10 @@ export function getProductInputValues(
     product_type: product_type?.value,
     categories: categories.map((category) => category?.id),
     tags: tags.map((tag) => tag?.id),
+    // Gift pool: SelectInput holds product objects → store only ids.
+    gift_product_ids: ((values as any).gift_product_ids ?? []).map(
+      (g: any) => g?.id ?? g,
+    ),
     image: omitTypename<any>(image),
     gallery: values.gallery?.map((gi: any) => omitTypename(gi)),
 

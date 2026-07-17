@@ -43,13 +43,14 @@ use Marvel\Mail\ContactAdmin;
 use Marvel\Otp\Gateways\OtpGateway;
 use Marvel\Traits\UsersTrait;
 use Marvel\Traits\WalletsTrait;
+use Marvel\Traits\AdminRolesTrait;
 use Spatie\MediaLibrary\MediaCollections\Models\Media;
 use Spatie\Newsletter\Facades\Newsletter;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class UserController extends CoreController
 {
-    use WalletsTrait, UsersTrait;
+    use WalletsTrait, UsersTrait, AdminRolesTrait;
 
     public $repository;
     private bool $applicationIsValid;
@@ -242,10 +243,13 @@ class UserController extends CoreController
         try {
             $user = $request->user();
             if (isset($user)) {
-                return $this->repository
+                $me = $this->repository
                     ->with(['profile', 'wallet', 'address', 'shops.balance', 'managed_shop.balance'])
                     ->find($user->id)
                     ->loadLastOrder();
+                // custom sub-admin roles: expose which admin sections this user may reach
+                $me->setAttribute('managed_sections', $this->resolveManagedSections($me));
+                return $me;
             }
             throw new AuthorizationException(NOT_AUTHORIZED);
         } catch (MarvelException $e) {
@@ -271,7 +275,9 @@ class UserController extends CoreController
             "token" => $user->createToken('auth_token')->plainTextToken,
             "permissions" => $user->getPermissionNames(),
             "email_verified" => $email_verified,
-            "role" => $user->getRoleNames()->first()
+            "role" => $user->getRoleNames()->first(),
+            "admin_role_id" => $user->admin_role_id,
+            "managed_sections" => $this->resolveManagedSections($user),
         ];
     }
 
@@ -706,7 +712,8 @@ class UserController extends CoreController
     public function makeOrRevokeAdmin(Request $request)
     {
         $user = $request->user();
-        if ($this->repository->hasPermission($user)) {
+        // only a full (unrestricted) super-admin may promote/revoke admins
+        if ($this->repository->hasPermission($user) && $this->isFullSuperAdmin($user)) {
             $user_id = $request->user_id;
             try {
                 $newUser = $this->repository->findOrFail($user_id);

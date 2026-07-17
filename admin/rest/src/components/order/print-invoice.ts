@@ -14,12 +14,27 @@ function esc(s: any): string {
     .replace(/>/g, '&gt;');
 }
 
-export function printInvoice(o: any) {
+/**
+ * The promo line printed under the QR block. Comes from
+ * settings.options.invoiceCoupon so every admin's slips agree. Undefined (an older
+ * settings row that predates the key) means don't print it.
+ */
+export type InvoiceCoupon = {
+  enabled?: boolean;
+  code?: string;
+  amount?: number;
+};
+
+export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   const items: any[] = o.items || [];
   const subTotal = items.reduce((s, it) => s + (Number(it.price) || 0), 0);
   const delivery = Number(o.delivery) || 0;
   const discount = Number(o.discount) || 0;
   const total = Number(o.total) || Math.max(0, subTotal + delivery - discount);
+  // Wallet points are settled at checkout and are NOT deducted from `total`, so the slip has
+  // to take them off itself — otherwise the courier collects money the customer already paid.
+  const walletPaid = Number(o.walletPoints) || 0;
+  const payable = Math.max(0, total - walletPaid);
   const qtyTotal = items.reduce((s, it) => s + (Number(it.qty) || 0), 0);
   const paid = !!o.paid;
   const placed = o.createdAt
@@ -27,6 +42,12 @@ export function printInvoice(o: any) {
     : '';
   const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
   const courier = o.courier || 'Courier';
+
+  // Promo line is opt-in: it prints only when switched on and actually filled in, so a
+  // half-configured setting can never put "🎁 Next order:  — ৳ OFF" on a customer's slip.
+  const couponCode = String(coupon?.code ?? '').trim();
+  const couponAmount = Number(coupon?.amount) || 0;
+  const showCoupon = !!coupon?.enabled && couponCode !== '' && couponAmount > 0;
 
   const rows = items
     .map(
@@ -140,14 +161,15 @@ export function printInvoice(o: any) {
     <div class="row">Sub Total <b>${bdt(subTotal)}</b></div>
     ${discount ? `<div class="row">Discount <b>- ${bdt(discount)}</b></div>` : ''}
     <div class="row">Delivery Fee <b>${bdt(delivery)}</b></div>
-    <div class="row grand"><span>Total Payable</span><span>${bdt(total)}</span></div>
+    ${walletPaid ? `<div class="row">Wallet Points Used <b>- ${bdt(walletPaid)}</b></div>` : ''}
+    <div class="row grand"><span>Total Payable</span><span>${bdt(payable)}</span></div>
   </div>
   <div style="margin-top:2mm;display:flex;gap:5mm;align-items:center;">
     <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=https%3A%2F%2Findobangla.tech%2Forders" alt="QR" style="width:20mm;height:20mm;flex-shrink:0;" />
     <div style="flex:1;">
       <div style="font-size:9px;font-weight:800;color:var(--ink);">📱 Track &amp; Reorder</div>
       <div style="font-size:8.5px;color:var(--ink-soft);margin-top:1mm;">Scan the QR to track this order or reorder your favourite titles in one tap.</div>
-      <div style="margin-top:2mm;display:inline-block;border:1px dashed var(--red);border-radius:4px;padding:1.5mm 3mm;font-size:9px;color:var(--red);font-weight:800;">🎁 Next order: <span style="font-family:monospace;">WELCOME50</span> — ৳50 OFF</div>
+      ${showCoupon ? `<div style="margin-top:2mm;display:inline-block;border:1px dashed var(--red);border-radius:4px;padding:1.5mm 3mm;font-size:9px;color:var(--red);font-weight:800;">🎁 Next order: <span style="font-family:monospace;">${esc(couponCode)}</span> — ৳${esc(couponAmount)} OFF</div>` : ''}
     </div>
   </div>
 

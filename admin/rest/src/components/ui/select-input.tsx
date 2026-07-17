@@ -56,10 +56,10 @@ const SelectInput = ({
         control={control}
         name={name}
         rules={rules}
-        {...rest}
         render={({ field }) => (
           <Select
             {...field}
+            {...rest}
             getOptionLabel={getOptionLabel}
             getOptionValue={getOptionValue}
             placeholder={placeholder}

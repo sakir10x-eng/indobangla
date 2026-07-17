@@ -33,15 +33,18 @@ export const CheckAvailabilityAction: React.FC<{
     useVerifyCheckoutMutation();
 
   function handleVerifyCheckout() {
-    if (billing_address && shipping_address) {
+    // Billing address is optional — only shipping is required. When billing is
+    // missing we fall back to the shipping address so the backend still gets one.
+    if (shipping_address) {
+      const effective_billing = billing_address ?? shipping_address;
       verifyCheckout(
         {
           amount: total,
           customer_id: customer?.value,
           products: items?.map((item) => formatOrderedProduct(item)),
           billing_address: {
-            ...(billing_address?.address &&
-              omit(billing_address.address, ['__typename'])),
+            ...(effective_billing?.address &&
+              omit(effective_billing.address, ['__typename'])),
           } as Address,
           shipping_address: {
             ...(shipping_address?.address &&
@@ -65,7 +68,7 @@ export const CheckAvailabilityAction: React.FC<{
         },
       );
     } else {
-      setError('error-add-both-address');
+      setError('error-add-shipping-address');
     }
   }
 

@@ -8,12 +8,16 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Carbon;
 use Marvel\Database\Models\Coupon;
 use Marvel\Enums\CouponType;
+use Marvel\Enums\OrderStatus;
 use Marvel\Enums\Permission;
 use Marvel\Support\FeatureRegistry;
+use Marvel\Support\FeatureChecks;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Marvel\Database\Models\Order;
 use Marvel\Database\Models\Product;
+use Karim007\LaravelBkashTokenize\Facade\BkashPaymentTokenize;
+use Marvel\Database\Models\Attachment;
 use Marvel\Database\Models\Settings;
 use Marvel\Database\Models\Shop;
 use Marvel\Database\Models\User;
@@ -24,6 +28,11 @@ use Marvel\Database\Models\Wallet;
 use Marvel\Database\Models\ChallengeRun;
 use Marvel\Exceptions\MarvelException;
 use Marvel\Traits\WalletsTrait;
+use Marvel\Traits\AdminRolesTrait;
+use Illuminate\Auth\Access\AuthorizationException;
+use Marvel\Database\Models\Profile;
+use Spatie\Permission\Models\Role as SpatieRole;
+use Marvel\Enums\Role;
 
 /**
  * IndoBangla third-party integrations:
@@ -34,7 +43,7 @@ use Marvel\Traits\WalletsTrait;
  */
 class IntegrationController extends CoreController
 {
-    use WalletsTrait;
+    use WalletsTrait, AdminRolesTrait;
 
     // ---------------------------------------------------------------- search
     /** Public product search for bots (name / ISBN / sku). */
@@ -53,7 +62,7 @@ class IntegrationController extends CoreController
                     ->orWhere('slug', 'like', "%{$q}%");
             })
             ->limit($limit)
-            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'quantity', 'image']);
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'quantity', 'image', 'shop_id']);
 
         $data = $products->map(function ($p) {
             return [
@@ -122,7 +131,8 @@ class IntegrationController extends CoreController
         }
 
         $p = $q->paginate($limit, ['*'], 'page', $page);
-        $data = collect($p->items())->map(function ($x) {
+        $landingMap = $this->landingMap();
+        $data = collect($p->items())->map(function ($x) use ($landingMap) {
             $sold  = (int) $x->total_sold;
             $stock = (int) $x->quantity;
             $st    = $sold + $stock;
@@ -136,6 +146,7 @@ class IntegrationController extends CoreController
                 'title'       => $x->name,
                 'author'      => optional($x->author)->name,
                 'slug'        => $x->slug,
+                'shop_id'     => (int) $x->shop_id,
                 'type'        => $x->product_type ?: 'simple',
                 'status'      => $x->status,
                 'price'       => $sale > 0 ? $sale : $mrp,
@@ -151,6 +162,10 @@ class IntegrationController extends CoreController
                 'units7'      => (int) $x->units_7d,
                 'demand'      => $score >= 60 ? 'high' : ($score >= 20 ? 'medium' : 'low'),
                 'bestseller'  => (int) $x->units_30d >= 10,
+                'has_landing' => (bool) (($landingMap[(string) $x->id]['enabled'] ?? false)),
+                // 'default' when the generic template is used, or the bespoke template id
+                // (e.g. 'anandamela') so the admin list can flag single-product designs.
+                'landing_template' => (string) (($landingMap[(string) $x->id]['template'] ?? 'default')),
             ];
         });
         return [
@@ -162,21 +177,91 @@ class IntegrationController extends CoreController
     }
 
     // -------------------------------------------------------- readers' club
+    /**
+     * Reader's Club config — a set of membership tiers plus the rules & regulations text.
+     * Each tier: {id, name, main_fee, discount_fee, discount_pct, card_color, validity_years}.
+     * Legacy flat fields (fee/discount_pct/coupon_code) are kept, derived from the first tier,
+     * so the older single-coupon paid-join flow (clubStart/clubJoin/payConfirm) keeps working.
+     */
     protected function clubConfig(): array
     {
-        $c = $this->options()['readers_club'] ?? [];
+        $c = (array) ($this->options()['readers_club'] ?? []);
+        $tiers = $this->normalizeClubTiers($c['tiers'] ?? null, $c);
+        $first = $tiers[0] ?? null;
         return [
             'enabled'      => (bool) ($c['enabled'] ?? true),
-            'fee'          => (float) ($c['fee'] ?? 300),
-            'discount_pct' => (int) ($c['discount_pct'] ?? 15),
+            'rules'        => (string) ($c['rules'] ?? $this->defaultClubRules()),
+            'tiers'        => $tiers,
+            // legacy (single-coupon) fields — derived from the first tier when present
+            'fee'          => $first ? $first['discount_fee'] : (float) ($c['fee'] ?? 300),
+            'discount_pct' => $first ? $first['discount_pct'] : (int) ($c['discount_pct'] ?? 15),
             'coupon_code'  => $c['coupon_code'] ?? 'READCLUB',
         ];
     }
 
-    /** Sync the member coupon to the configured discount %. */
+    /** Clean + shape a raw tiers array coming from settings or the admin form. */
+    protected function normalizeClubTiers($raw, array $legacy = []): array
+    {
+        $out = [];
+        foreach ((array) $raw as $t) {
+            if (!is_array($t)) {
+                continue;
+            }
+            $name = trim((string) ($t['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            $id = trim((string) ($t['id'] ?? ''));
+            if ($id === '') {
+                $id = Str::slug($name) ?: 'tier';
+            }
+            $main = max(0, (float) ($t['main_fee'] ?? 0));
+            $disc = max(0, (float) ($t['discount_fee'] ?? $main));
+            $out[] = [
+                'id'             => $id,
+                'name'           => $name,
+                'main_fee'       => $main,
+                'discount_fee'   => $disc,
+                'discount_pct'   => max(0, min(100, (int) round((float) ($t['discount_pct'] ?? 0)))),
+                'card_color'     => $this->safeColor($t['card_color'] ?? '#d4af37'),
+                'validity_years' => max(1, (int) ($t['validity_years'] ?? 1)),
+            ];
+        }
+        // Back-compat: no tiers configured yet but an old flat fee exists → synthesize one.
+        if (!$out && ($legacy['fee'] ?? null) !== null) {
+            $out[] = [
+                'id'             => 'member',
+                'name'           => 'Member',
+                'main_fee'       => (float) $legacy['fee'],
+                'discount_fee'   => (float) $legacy['fee'],
+                'discount_pct'   => (int) ($legacy['discount_pct'] ?? 15),
+                'card_color'     => '#d4af37',
+                'validity_years' => 1,
+            ];
+        }
+        // de-dupe ids
+        $seen = [];
+        foreach ($out as &$t) {
+            $base = $t['id'];
+            $i = 2;
+            while (isset($seen[$t['id']])) {
+                $t['id'] = $base . '-' . $i++;
+            }
+            $seen[$t['id']] = true;
+        }
+        return array_values($out);
+    }
+
+    private function safeColor($v): string
+    {
+        $v = trim((string) $v);
+        return preg_match('/^#[0-9a-fA-F]{6}$/', $v) ? $v : '#d4af37';
+    }
+
+    /** Legacy: sync the shared READCLUB coupon (used by the pay-to-join flow / clubJoin). */
     protected function syncClubCoupon(array $c): void
     {
-        \Marvel\Database\Models\Coupon::updateOrCreate(
+        Coupon::updateOrCreate(
             ['code' => $c['coupon_code']],
             [
                 'language'            => DEFAULT_LANGUAGE ?? 'en',
@@ -186,36 +271,101 @@ class IntegrationController extends CoreController
                 'minimum_cart_amount' => 0,
                 'active_from'         => now(),
                 'expire_at'           => now()->addYear(),
+                'is_approve'          => true,
             ],
         );
     }
 
-    /** Public: club benefits, fee, discount %. */
+    /** Find a configured tier by id. */
+    private function clubTier(?string $id): ?array
+    {
+        if (!$id) {
+            return null;
+        }
+        foreach ($this->clubConfig()['tiers'] as $t) {
+            if ($t['id'] === $id) {
+                return $t;
+            }
+        }
+        return null;
+    }
+
+    /** Default rules & regulations (Bengali) — admin can edit these on the settings page. */
+    private function defaultClubRules(): string
+    {
+        return implode("\n", [
+            '১. রিডার্স ক্লাব কার্ড শুধুমাত্র যে অ্যাকাউন্টের নামে ইস্যু করা হয়েছে সেই সদস্য ব্যবহার করতে পারবেন। কার্ডের ৮ ডিজিটের নম্বর নিজের লগ-ইন করা অ্যাকাউন্ট থেকে ব্যবহার করলেই ছাড় পাওয়া যাবে; অন্য কারো অ্যাকাউন্টে এই কার্ড কাজ করবে না।',
+            '২. কার্ড নম্বর হস্তান্তরযোগ্য নয়। এটি অন্য কাউকে শেয়ার করা, বিক্রি করা বা ধার দেওয়া নিষিদ্ধ।',
+            '৩. মেম্বারশিপ ফি একবার পরিশোধযোগ্য এবং অফেরতযোগ্য। কার্ডের মেয়াদ ইস্যু করার তারিখ থেকে নির্ধারিত বছর পর্যন্ত কার্যকর থাকবে; মেয়াদ শেষ হলে ছাড় বন্ধ হয়ে যাবে এবং নবায়ন করতে হবে।',
+            '৪. এক অর্ডারে একটি কার্ড/কুপনই প্রযোজ্য। ছাড় শুধু নিয়মিত মূল্যের উপর প্রযোজ্য, ইতিমধ্যে ডিসকাউন্ট বা বিশেষ অফারে থাকা পণ্যের সাথে একত্রে নাও চলতে পারে।',
+            '৫. কোনো প্রকার জালিয়াতি, অপব্যবহার, ভুয়া অর্ডার, কার্ড শেয়ারিং বা অবৈধ কার্যকলাপ ধরা পড়লে কর্তৃপক্ষ কোনো নোটিশ ছাড়াই কার্ডটি ব্যান বা বাতিল করার অধিকার রাখে; এক্ষেত্রে ফি ফেরত দেওয়া হবে না।',
+            '৬. কর্তৃপক্ষ যেকোনো সময়, যেকোনো কারণে, একটি নির্দিষ্ট কার্ড বা সম্পূর্ণ ক্লাব সার্ভিস বাতিল বা স্থগিত করার এবং ছাড়ের হার, ফি বা শর্তাবলী পরিবর্তন করার অধিকার সংরক্ষণ করে।',
+            '৭. ক্লাবে যোগ দেওয়ার মাধ্যমে সদস্য এই সমস্ত নিয়ম ও শর্তাবলী মেনে নিতে সম্মত হচ্ছেন বলে গণ্য হবে।',
+        ]);
+    }
+
+    /** Public: club tiers, benefits, rules. */
     public function clubInfo(Request $request)
     {
         $c = $this->clubConfig();
         return ['status' => 'success', 'club' => $c + [
             'benefits' => [
-                "সব বইয়ে সবসময় {$c['discount_pct']}% ছাড়",
+                "সব বইয়ে সদস্যদের জন্য বিশেষ ছাড়",
                 'নতুন বই ও প্রি-অর্ডারে আগে অ্যাক্সেস',
                 'প্রতি মাসে বাছাই করা বইয়ের সাজেশন',
             ],
         ]];
     }
 
-    /** Public: start a paid membership — creates an order and returns its pay link. */
+    /** Public: start a paid membership for a chosen tier — creates an order + pay link. */
+    /**
+     * Admin quick-add a customer from the create-order screen when the buyer isn't in the
+     * system yet. Name + contact required; email auto-derived from the phone. Idempotent on
+     * email so re-adding the same number reuses the existing customer.
+     */
+    public function adminCreateCustomer(Request $request)
+    {
+        $name    = trim((string) $request->input('name'));
+        $contact = trim((string) $request->input('contact'));
+        if ($name === '' || $contact === '') {
+            return response()->json(['message' => 'Name and contact are required'], 422);
+        }
+        $digits = preg_replace('/\D/', '', $contact);
+        $email  = $request->input('email') ?: ($digits . '@customer.indobangla.bd');
+        $user = User::firstOrCreate(['email' => $email], [
+            'name'     => $name,
+            'password' => Hash::make(Str::random(14)),
+        ]);
+        if ($user->name !== $name) {
+            $user->name = $name;
+            $user->save();
+        }
+        $user->givePermissionTo(Permission::CUSTOMER);
+        \Spatie\Permission\Models\Role::findOrCreate(\Marvel\Enums\Role::CUSTOMER, 'api');
+        $user->assignRole(\Marvel\Enums\Role::CUSTOMER);
+        $user->profile()->updateOrCreate(['customer_id' => $user->id], ['contact' => $contact]);
+        return [
+            'id'      => $user->id,
+            'name'    => $user->name,
+            'email'   => $user->email,
+            'profile' => ['contact' => $contact],
+        ];
+    }
+
     public function clubStart(Request $request)
     {
         $c = $this->clubConfig();
         if (!$c['enabled']) {
             throw new MarvelException("Reader's Club is currently closed.");
         }
+        $tier = $this->clubTier($request->input('tier')) ?? ($c['tiers'][0] ?? null);
+        $fee  = $tier ? $tier['discount_fee'] : $c['fee'];
         $shop = $this->mainShop();
         $order = Order::create([
             'customer_name'    => $request->input('name', 'Club Member'),
             'customer_contact' => $request->input('contact', ''),
-            'amount'           => $c['fee'],
-            'total'            => $c['fee'],
+            'amount'           => $fee,
+            'total'            => $fee,
             'paid_total'       => 0,
             'sales_tax'        => 0,
             'delivery_fee'     => 0,
@@ -228,6 +378,7 @@ class IntegrationController extends CoreController
         ]);
         $ops = [
             'club_membership' => true,
+            'club_tier'       => $tier['id'] ?? null,
             'club_email'      => $request->input('email'),
             'pay_token'       => 'pl_' . Str::random(24),
         ];
@@ -236,17 +387,22 @@ class IntegrationController extends CoreController
         $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
         return [
             'status'   => 'success',
-            'fee'      => $c['fee'],
+            'fee'      => $fee,
+            'tier'     => $tier['id'] ?? null,
             'pay_link' => $base . '/pay/' . $ops['pay_token'],
         ];
     }
 
-    /** Admin: read/update club fee + discount %. */
+    /** Admin: read/update club tiers, rules & open/closed state. Re-syncs every member card. */
     public function clubSettings(Request $request)
     {
+        $synced = 0;
         if ($request->isMethod('put')) {
             $data = $request->validate([
                 'enabled'      => 'nullable|boolean',
+                'rules'        => 'nullable|string',
+                'tiers'        => 'nullable|array',
+                // legacy single-coupon fields (still accepted if an old client sends them)
                 'fee'          => 'nullable|numeric',
                 'discount_pct' => 'nullable|integer',
                 'coupon_code'  => 'nullable|string',
@@ -254,25 +410,50 @@ class IntegrationController extends CoreController
             $settings = Settings::first();
             $options  = $settings->options ?? [];
             $cur = $this->clubConfig();
-            $options['readers_club'] = [
-                'enabled'      => array_key_exists('enabled', $data) ? (bool) $data['enabled'] : $cur['enabled'],
-                'fee'          => $data['fee'] ?? $cur['fee'],
-                'discount_pct' => $data['discount_pct'] ?? $cur['discount_pct'],
-                'coupon_code'  => $data['coupon_code'] ?? $cur['coupon_code'],
-            ];
+            $rc  = (array) ($options['readers_club'] ?? []);
+
+            $rc['enabled'] = array_key_exists('enabled', $data) ? (bool) $data['enabled'] : $cur['enabled'];
+            if (array_key_exists('rules', $data)) {
+                $rc['rules'] = (string) $data['rules'];
+            }
+            if (array_key_exists('tiers', $data)) {
+                $rc['tiers'] = $this->normalizeClubTiers($data['tiers']);
+            }
+            if (array_key_exists('fee', $data)) {
+                $rc['fee'] = $data['fee'];
+            }
+            if (array_key_exists('discount_pct', $data)) {
+                $rc['discount_pct'] = $data['discount_pct'];
+            }
+            if (array_key_exists('coupon_code', $data)) {
+                $rc['coupon_code'] = $data['coupon_code'];
+            }
+            $options['readers_club'] = $rc;
             $settings->update(['options' => $options]);
-            $this->syncClubCoupon($options['readers_club']);
+
+            // A changed tier %/validity takes effect immediately for every existing member.
+            User::whereNotNull('membership_tier')->chunkById(300, function ($users) use (&$synced) {
+                foreach ($users as $u) {
+                    $this->syncMemberCoupon($u);
+                    $synced++;
+                }
+            });
         }
-        return ['status' => 'success', 'club' => $this->clubConfig()];
+        return ['status' => 'success', 'club' => $this->clubConfig(), 'synced' => $synced];
     }
 
     // -------------------------------------------------- order-amount discount tiers
     protected function discountTiers(): array
     {
         $t = $this->options()['order_discount_tiers'] ?? null;
-        if (!is_array($t) || empty($t)) {
-            // sensible defaults
+        if ($t === null) {
+            // First-run defaults — ONLY before the admin has ever saved tiers. Once the admin
+            // saves (even an empty list to switch the feature off, or a single tier to drop the
+            // others), that choice is respected instead of these defaults reappearing.
             $t = [['min' => 1990, 'pct' => 5], ['min' => 6000, 'pct' => 7]];
+        }
+        if (!is_array($t)) {
+            $t = [];
         }
         // normalise + sort ascending by min
         $t = array_values(array_filter(array_map(fn ($x) => [
@@ -297,6 +478,7 @@ class IntegrationController extends CoreController
                     'minimum_cart_amount' => $tier['min'],
                     'active_from'         => now(),
                     'expire_at'           => now()->addYear(),
+                    'is_approve'          => true,
                 ],
             );
         }
@@ -323,6 +505,166 @@ class IntegrationController extends CoreController
             $this->syncTierCoupons($this->discountTiers());
         }
         return ['status' => 'success', 'tiers' => $this->discountTiers()];
+    }
+
+    // -------------------------------------------------- next-day dispatch cutoff
+    /**
+     * The product page counts down to a daily dispatch cutoff ("Order within X hr Y min for
+     * next-day dispatch"). The hour was hardcoded to 18:00 in the storefront with no way to
+     * change it; it now lives in settings so the admin owns it.
+     */
+    protected function dispatchCutoffHour(): int
+    {
+        $h = $this->options()['dispatchCutoffHour'] ?? null;
+        return $h === null ? 18 : max(0, min(23, (int) $h));
+    }
+
+    /** Admin: read/update the dispatch cutoff hour (super-admin). */
+    public function dispatchSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            $data = $request->validate(['cutoff_hour' => 'required|integer|min:0|max:23']);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['dispatchCutoffHour'] = (int) $data['cutoff_hour'];
+            $settings->update(['options' => $options]);
+        }
+        return ['status' => 'success', 'cutoff_hour' => $this->dispatchCutoffHour()];
+    }
+
+    // ------------------------------------------------------- product info reports
+    /** Reasons the shop offers; anything else is rejected rather than stored blindly. */
+    protected const REPORT_REASONS = ['price', 'cover', 'author', 'description', 'other'];
+
+    /** Customer: report incorrect information on a book. */
+    public function productReport(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('রিপোর্ট করতে লগইন করুন।');
+        }
+        $data = $request->validate([
+            'product_id' => 'required|integer',
+            'reason'     => 'required|string|in:' . implode(',', self::REPORT_REASONS),
+            'details'    => 'nullable|string|max:1000',
+        ]);
+        $product = Product::findOrFail((int) $data['product_id']);
+
+        // One open report per customer per book, so a frustrated shopper cannot flood the queue.
+        $existing = DB::table('product_reports')
+            ->where('customer_id', $user->id)
+            ->where('product_id', $product->id)
+            ->where('status', 'open')
+            ->exists();
+        if ($existing) {
+            throw new MarvelException('এই বইয়ের জন্য আপনার একটি রিপোর্ট এখনো দেখা হচ্ছে।');
+        }
+
+        DB::table('product_reports')->insert([
+            'customer_id' => $user->id,
+            'product_id'  => $product->id,
+            'reason'      => $data['reason'],
+            'details'     => $data['details'] ?? null,
+            'status'      => 'open',
+            'created_at'  => now(),
+            'updated_at'  => now(),
+        ]);
+
+        return ['status' => 'success', 'message' => 'ধন্যবাদ! আপনার রিপোর্ট আমরা দেখে ঠিক করে নেব।'];
+    }
+
+    /** Admin: list product reports, newest first. */
+    public function productReports(Request $request)
+    {
+        $rows = DB::table('product_reports as r')
+            ->leftJoin('products as p', 'p.id', '=', 'r.product_id')
+            ->leftJoin('users as u', 'u.id', '=', 'r.customer_id')
+            ->when($request->input('status'), fn ($q, $v) => $q->where('r.status', $v))
+            ->orderByDesc('r.created_at')
+            ->limit(200)
+            ->get([
+                'r.id', 'r.reason', 'r.details', 'r.status', 'r.admin_note', 'r.created_at',
+                'p.name as product_name', 'p.slug as product_slug',
+                'u.name as customer_name',
+            ]);
+        return ['status' => 'success', 'reports' => $rows];
+    }
+
+    /** Admin: resolve or dismiss a report. */
+    public function productReportUpdate(Request $request, $id)
+    {
+        $data = $request->validate([
+            'status'     => 'required|string|in:open,resolved,dismissed',
+            'admin_note' => 'nullable|string|max:1000',
+        ]);
+        DB::table('product_reports')->where('id', (int) $id)->update([
+            'status'      => $data['status'],
+            'admin_note'  => $data['admin_note'] ?? null,
+            'resolved_at' => $data['status'] === 'open' ? null : now(),
+            'updated_at'  => now(),
+        ]);
+        return ['status' => 'success'];
+    }
+
+    // ------------------------------------------------- invoice replacement note
+    /**
+     * The printed invoice carries a "Damaged or wrong book? Free replacement within 3 days"
+     * guarantee. It is a promise to the customer, so the admin needs to be able to withdraw
+     * it. Defaults to true, which is the behaviour before this setting existed.
+     */
+    protected function invoiceReplacementNote(): bool
+    {
+        $v = $this->options()['invoiceShowReplacementNote'] ?? null;
+        return $v === null ? true : (bool) $v;
+    }
+
+    /** Admin: read/update the invoice replacement note toggle (super-admin). */
+    public function invoiceSettings(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            // `sometimes`, not `required`: the order board saves only the coupon, the settings
+            // page saves only the note. A partial PUT must not wipe the other one.
+            $data = $request->validate([
+                'show_replacement_note' => 'sometimes|boolean',
+                'coupon'                => 'sometimes|array',
+                'coupon.enabled'        => 'sometimes|boolean',
+                'coupon.code'           => 'sometimes|nullable|string|max:40',
+                'coupon.amount'         => 'sometimes|nullable|numeric|min:0',
+            ]);
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            if (array_key_exists('show_replacement_note', $data)) {
+                $options['invoiceShowReplacementNote'] = (bool) $data['show_replacement_note'];
+            }
+            if (array_key_exists('coupon', $data)) {
+                $current = (array) ($options['invoiceCoupon'] ?? self::DEFAULT_INVOICE_COUPON);
+                $options['invoiceCoupon'] = array_merge(
+                    $current,
+                    array_intersect_key($data['coupon'], array_flip(['enabled', 'code', 'amount']))
+                );
+            }
+            $settings->update(['options' => $options]);
+        }
+        return [
+            'status'                => 'success',
+            'show_replacement_note' => $this->invoiceReplacementNote(),
+            'coupon'                => $this->invoiceCoupon(),
+        ];
+    }
+
+    /**
+     * The printed slip's "🎁 Next order" promo line. Defaults ON — it has always printed, and
+     * the live settings row has no key, so defaulting off would silently drop it from real
+     * invoices. The switch exists to turn it off, not to remove it.
+     */
+    private function invoiceCoupon(): array
+    {
+        $c = (array) ($this->options()['invoiceCoupon'] ?? self::DEFAULT_INVOICE_COUPON);
+        return [
+            'enabled' => (bool) ($c['enabled'] ?? true),
+            'code'    => (string) ($c['code'] ?? ''),
+            'amount'  => (float) ($c['amount'] ?? 0),
+        ];
     }
 
     // ------------------------------------------------------------ featured books
@@ -362,7 +704,7 @@ class IntegrationController extends CoreController
         // `image` is a JSON attribute on Product (not a relation) — select it directly.
         $books = Product::whereIn('id', $ids)
             ->where('status', 'publish')
-            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'image'])
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'image', 'quantity', 'shop_id'])
             ->keyBy('id');
         // preserve the admin-chosen order
         return collect($ids)->map(fn ($id) => $books->get($id))->filter()->values();
@@ -477,6 +819,27 @@ class IntegrationController extends CoreController
 
 
     /** How long a payment link stays valid (hours). Admin-configurable, 6h by default. */
+    /**
+     * Bank-transfer details used when settings.options.bankTransfer is absent — which is the
+     * case on the live row, so these values are what customers actually see today. Editing
+     * the setting overrides them.
+     */
+    private const DEFAULT_BANK_TRANSFER = [
+        'enabled'      => true,
+        'bank_name'    => 'United Commercial Bank PLC',
+        'branch'       => 'Mirpur Road',
+        'account_name' => 'INDO BANGLA BOOK',
+        'account_no'   => '1202112000004134',
+        'routing_no'   => '245263073',
+    ];
+
+    /** The printed slip's promo line, when the settings row predates the key. */
+    private const DEFAULT_INVOICE_COUPON = [
+        'enabled' => true,
+        'code'    => 'WELCOME50',
+        'amount'  => 50,
+    ];
+
     private function payLinkHours(): int
     {
         $h = (int) ($this->options()['payLinkHours'] ?? 6);
@@ -525,10 +888,18 @@ class IntegrationController extends CoreController
             }
             $ops['pay_amount']  = round($amount);
             $ops['pay_purpose'] = $purpose === 'advance' ? 'advance' : 'full';
-        } else {
+        } elseif ($purpose === 'full') {
+            // Caller explicitly asked for the whole due.
             unset($ops['pay_amount']);
             $ops['pay_purpose'] = 'full';
+        } elseif (!isset($ops['pay_amount'])) {
+            $ops['pay_purpose'] = 'full';
         }
+        // No amount and no explicit 'full' → leave the link exactly as stamped. The admin's
+        // "Copy pay link" button posts only {order_id}, and this branch used to wipe
+        // pay_amount and force pay_purpose='full' — which silently turned a 50% pre-order
+        // advance into a full-price bKash bill, because bkashCreate falls back to
+        // $order->total when pay_amount is gone.
         $order->ops_meta = $ops;
         $order->saveQuietly();
 
@@ -565,7 +936,23 @@ class IntegrationController extends CoreController
         }
         $paid = $order->payment_status === 'payment-success'
             || (float) $order->paid_total >= (float) $order->total;
-        $methods = ['bkash', 'nagad', 'card'];
+        // Only offer what the shop can actually collect money through. The live settings row
+        // predates both keys, so the fallbacks — not the seeder — decide what happens today:
+        // Nagad off until its credentials land, bank transfer on with the details above.
+        $opts = (array) (Settings::getData()->options ?? []);
+        $bank = (array) ($opts['bankTransfer'] ?? self::DEFAULT_BANK_TRANSFER);
+        $bankOn = !empty($bank['enabled']) && !empty($bank['account_no']);
+        $nagadOn = !empty($opts['nagadEnabled']);
+
+        $methods = ['bkash'];
+        if ($nagadOn) {
+            $methods[] = 'nagad';
+        }
+        if ($bankOn) {
+            $methods[] = 'bank';
+        }
+        // No 'card': there is no card gateway on this flow — payConfirm rejects it outright,
+        // so offering the tile only walks the buyer into an error.
         // #5 — an advance pay-link charges only pay_amount of the full total.
         $payAmount = isset($ops['pay_amount']) ? (float) $ops['pay_amount'] : null;
         $isAdvance = ($ops['pay_purpose'] ?? 'full') === 'advance' && $payAmount !== null;
@@ -586,6 +973,22 @@ class IntegrationController extends CoreController
                 'placed_at'       => optional($order->created_at)->format('j M Y'),
                 'paid'            => $paid,
                 'pay_method'      => $ops['pay_method'] ?? null,
+                // The 50% option itself, reported separately from pay_purpose — the screen must
+                // keep offering it even after the buyer has flipped the link to 'full'.
+                'advance_option'  => isset($ops['advance']['advance_bdt'])
+                    ? round((float) $ops['advance']['advance_bdt'])
+                    : null,
+                // Set once the buyer has uploaded a transfer slip. payBankProof writes this and
+                // orderOps reads it, but it was never *reported* — so /pay/{token} could not tell
+                // the buyer their slip had been received, and the upload looked like it did
+                // nothing. Never expose the file URL here: this endpoint is public.
+                'bank_proof'      => isset($ops['bank_proof'])
+                    ? [
+                        'status'       => $ops['bank_proof']['status'] ?? 'pending_review',
+                        'submitted_at' => $ops['bank_proof']['submitted_at'] ?? null,
+                        'note'         => $ops['bank_proof']['review_note'] ?? null,
+                    ]
+                    : null,
                 'is_club'         => !empty($ops['club_membership']),
                 'club_coupon'     => $ops['club_coupon'] ?? null,
                 'club_discount'   => $ops['club_discount'] ?? null,
@@ -599,45 +1002,89 @@ class IntegrationController extends CoreController
                 ]),
             ],
             'methods' => $methods,
+            // Only the account details — never the `enabled` flag or anything else from the
+            // settings row. This endpoint is public.
+            'bank'    => $bankOn ? [
+                'bank_name'    => $bank['bank_name'] ?? '',
+                'branch'       => $bank['branch'] ?? '',
+                'account_name' => $bank['account_name'] ?? '',
+                'account_no'   => $bank['account_no'] ?? '',
+                'routing_no'   => $bank['routing_no'] ?? '',
+            ] : null,
         ];
     }
 
-    /** Public: confirm a payment against the link. */
-    public function payConfirm(Request $request)
+    /**
+     * Public: the buyer transferred money at a bank counter and is uploading the receipt.
+     *
+     * This does NOT mark the order paid — nobody has verified anything yet. It parks the
+     * screenshot on the order for an admin to check; `orderOps` (admin-authed) is what
+     * actually credits the payment. Guarded by the pay token, same as payInfo/payConfirm.
+     */
+    public function payBankProof(Request $request)
     {
         $order = $this->findOrderByPayToken((string) $request->input('token', ''));
         if (!$order) {
             throw new MarvelException('Invalid or expired payment link.');
         }
-        // Expiry is checked before any gateway is touched — an expired link must not be
-        // able to open a bKash checkout either.
-        $meta = (array) ($order->ops_meta ?? []);
-        if (!empty($meta['pay_expires_at']) && now()->gt(Carbon::parse($meta['pay_expires_at']))
+        $ops = (array) ($order->ops_meta ?? []);
+        if (!empty($ops['pay_expires_at']) && now()->gt(Carbon::parse($ops['pay_expires_at']))
             && (float) $order->paid_total < (float) $order->total) {
             throw new MarvelException('এই পেমেন্ট লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন লিংক নিন।');
         }
-        $method = (string) $request->input('method', 'card');
-
-        // Real bKash: hand back the hosted-checkout URL (money captured by bKash).
-        if ($method === 'bkash') {
-            $cfg = ($this->options()['payments'] ?? [])['bkash'] ?? [];
-            if (!empty($cfg['enabled']) && !empty($cfg['app_key'])) {
-                $request->merge(['order_id' => $order->id]);
-                $res = $this->bkashCreate($request);
-                $url = $res['bkash']['bkashURL'] ?? null;
-                if ($url) {
-                    return ['status' => 'redirect', 'url' => $url];
-                }
-            }
+        // One pending receipt at a time — re-uploading after a rejection is fine, but the
+        // link must not become a way to spam files at the server.
+        if (($ops['bank_proof']['status'] ?? null) === 'pending_review') {
+            throw new MarvelException('আপনার স্লিপটি ইতিমধ্যে জমা আছে — আমরা যাচাই করছি।');
         }
+        $request->validate([
+            'screenshot' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+        ]);
 
-        // Mark the order paid. #5 — advance payments credit paid_total and approve
-        // the order without marking it fully paid.
-        $ops = (array) ($order->ops_meta ?? []);
-        $ops['pay_method'] = $method;
-        $ops['paid_at'] = now()->toIso8601String();
-        $isAdvance = ($ops['pay_purpose'] ?? 'full') === 'advance';
+        $attachment = new Attachment();
+        $attachment->save();
+        $attachment->addMedia($request->file('screenshot'))->toMediaCollection();
+        $media = $attachment->getMedia()->first();
+
         $payAmount = isset($ops['pay_amount']) ? (float) $ops['pay_amount'] : (float) $order->total;
+        $ops['pay_method'] = 'bank';
+        $ops['bank_proof'] = [
+            'status'        => 'pending_review',
+            'url'           => $media ? $media->getUrl() : null,
+            'thumbnail'     => $media ? $media->getUrl('thumbnail') : null,
+            'attachment_id' => $attachment->id,
+            'amount_bdt'    => round($payAmount),
+            'submitted_at'  => now()->toIso8601String(),
+        ];
+        $ops['events'][] = [
+            'type'        => 'bank_proof_submitted',
+            'description' => 'Bank transfer slip uploaded by customer — awaiting review',
+            'actor'       => $order->customer_name ?: 'Customer',
+            'at'          => now()->toIso8601String(),
+        ];
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+
+        return ['status' => 'success', 'message' => 'স্লিপ জমা হয়েছে — যাচাইয়ের পর নিশ্চিত করা হবে।'];
+    }
+
+    /**
+     * Credit a payment that has ALREADY been verified, and settle everything that hangs off
+     * it (advance split, pre-order clock, Reader's Club activation, reseller charges).
+     *
+     * The one place money is recognised. Every caller must have proof first — bKash's execute
+     * response, or an admin eyeballing a bank slip. Never call this straight from a
+     * customer-facing request: that was the old payConfirm bug that gave away free orders.
+     */
+    private function settlePayment($order, string $method, ?float $amount = null): void
+    {
+        $ops = (array) ($order->ops_meta ?? []);
+        $isAdvance = ($ops['pay_purpose'] ?? 'full') === 'advance';
+        $payAmount = $amount ?? (isset($ops['pay_amount']) ? (float) $ops['pay_amount'] : (float) $order->total);
+        $now = now()->toIso8601String();
+
+        $ops['pay_method'] = $method;
+        $ops['paid_at'] = $now;
 
         if ($isAdvance) {
             $order->paid_total = round((float) $order->paid_total + $payAmount);
@@ -651,7 +1098,7 @@ class IntegrationController extends CoreController
                 $ops['advance']['due_bdt']  = round((float) $order->total - (float) $order->paid_total);
                 // The pre-order clock starts the moment the advance clears — not when the
                 // order was placed — and stops when it's delivered.
-                $ops['preorder']['started_at'] = now()->toIso8601String();
+                $ops['preorder']['started_at'] = $now;
             }
             $this->notifyReplygeniePayment($order, round($payAmount), 'advance');
         } else {
@@ -682,12 +1129,116 @@ class IntegrationController extends CoreController
             $ops['club_discount'] = $cc['discount_pct'];
         }
 
+        // Reseller charges. `reseller_applied` makes this idempotent — bKash can deliver the
+        // same callback twice, and a top-up must never be credited twice.
+        if (!empty($ops['reseller_user_id']) && empty($ops['reseller_applied'])) {
+            $reseller = User::find($ops['reseller_user_id']);
+            if ($reseller) {
+                $rmeta = $this->resellerMeta($reseller);
+                if (!empty($ops['reseller_fee']) && !$rmeta['is_reseller']) {
+                    // The account opens here, and nowhere else — the fee has now actually been
+                    // collected, so the ledger records it as paid rather than owed.
+                    $rmeta['is_reseller'] = true;
+                    $rmeta['opened_at'] = now()->toDateTimeString();
+                    $rmeta['ledger'][] = [
+                        'type'   => 'open_fee',
+                        'amount' => -round($payAmount, 2),
+                        'at'     => now()->toDateTimeString(),
+                        'note'   => 'Reseller account opening fee (paid via ' . $method . ')',
+                    ];
+                    $this->saveResellerMeta($reseller, $rmeta);
+                    $ops['reseller_applied'] = true;
+                } elseif (!empty($ops['reseller_topup'])) {
+                    $rmeta['available'] = round((float) $rmeta['available'] + $payAmount, 2);
+                    $rmeta['ledger'][] = [
+                        'type'   => 'topup',
+                        'amount' => round($payAmount, 2),
+                        'at'     => now()->toDateTimeString(),
+                        'note'   => 'Balance load via ' . $method,
+                    ];
+                    $this->saveResellerMeta($reseller, $rmeta);
+                    $ops['reseller_applied'] = true;
+                }
+            }
+        }
+
         $order->ops_meta = $ops;
         $order->save();
         \Marvel\Helpers\AdminNotifier::send(
-            "💰 <b>পেমেন্ট সম্পন্ন</b> #{$order->tracking_number} — " . strtoupper($method) . " · ৳" . number_format((float) $order->total, 0)
+            "💰 <b>পেমেন্ট সম্পন্ন</b> #{$order->tracking_number} — " . strtoupper($method) . " · ৳" . number_format((float) $payAmount, 0)
         );
-        return ['status' => 'success', 'paid' => true];
+    }
+
+    /**
+     * Public: start a payment against the link.
+     *
+     * This endpoint can only *initiate* — it never marks anything paid. It used to fall
+     * through to a "mark the order paid" branch for any method that wasn't live bKash, which
+     * meant a customer could pick Nagad or Card on the public link and settle their own order
+     * without sending a taka. Money is now only recognised in settlePayment(), reached from
+     * the bKash callback (after execute) or an admin approving a bank slip.
+     */
+    public function payConfirm(Request $request)
+    {
+        $order = $this->findOrderByPayToken((string) $request->input('token', ''));
+        if (!$order) {
+            throw new MarvelException('Invalid or expired payment link.');
+        }
+        // Expiry is checked before any gateway is touched — an expired link must not be
+        // able to open a bKash checkout either.
+        $meta = (array) ($order->ops_meta ?? []);
+        if (!empty($meta['pay_expires_at']) && now()->gt(Carbon::parse($meta['pay_expires_at']))
+            && (float) $order->paid_total < (float) $order->total) {
+            throw new MarvelException('এই পেমেন্ট লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন লিংক নিন।');
+        }
+        if ($order->payment_status === 'payment-success') {
+            return ['status' => 'success', 'paid' => true];
+        }
+        $method = (string) $request->input('method', '');
+
+        // #5c — the buyer chooses full-vs-advance per attempt, and this re-stamps the meta so
+        // bkashCreate (which reads pay_amount) charges the right figure.
+        //
+        // It must be REVERSIBLE. It used to only ever write 'full': a buyer who picked 100%,
+        // bounced to bKash and came back without paying was stuck — the link was permanently
+        // 'full', the 50% choice vanished from the screen, and every later bKash bill was for
+        // the whole order. Switching back to 'advance' now restores the stamped advance.
+        $wanted = (string) $request->input('purpose', '');
+        $advanceBdt = isset($meta['advance']['advance_bdt']) ? round((float) $meta['advance']['advance_bdt']) : null;
+        if ($wanted === 'full') {
+            $meta['pay_purpose'] = 'full';
+            $meta['pay_amount'] = round((float) $order->total - (float) $order->paid_total);
+            $order->ops_meta = $meta;
+            $order->saveQuietly();
+        } elseif ($wanted === 'advance' && $advanceBdt !== null) {
+            $meta['pay_purpose'] = 'advance';
+            $meta['pay_amount'] = $advanceBdt;
+            $order->ops_meta = $meta;
+            $order->saveQuietly();
+        }
+
+        // Bank transfers are verified by a human against the statement, so they go through
+        // pay-bank-proof and an admin verdict — never through here.
+        if ($method === 'bank') {
+            throw new MarvelException('ব্যাংক ট্রান্সফারের ক্ষেত্রে স্লিপ আপলোড করুন — যাচাইয়ের পর নিশ্চিত করা হবে।');
+        }
+
+        if ($method !== 'bkash') {
+            // Nagad/card have no working gateway here. Rather than pretend, say so.
+            throw new MarvelException('এই পেমেন্ট মেথডটি এখন চালু নেই। বিকাশ বা ব্যাংক ট্রান্সফার ব্যবহার করুন।');
+        }
+
+        if (!$this->bkashConfig()) {
+            throw new MarvelException('বিকাশ পেমেন্ট এই মুহূর্তে চালু নেই। ব্যাংক ট্রান্সফার ব্যবহার করুন।');
+        }
+
+        $request->merge(['order_id' => $order->id]);
+        $res = $this->bkashCreate($request);
+        $url = $res['bkash']['bkashURL'] ?? null;
+        if (!$url) {
+            throw new MarvelException('বিকাশ পেমেন্ট শুরু করা যায়নি। একটু পরে আবার চেষ্টা করুন।');
+        }
+        return ['status' => 'redirect', 'url' => $url];
     }
 
     /** Current prices for a set of product ids — powers the cart price-change alert. */
@@ -1182,11 +1733,19 @@ class IntegrationController extends CoreController
         if ($request->has('note')) {
             $order->note = $request->note;
         }
+        // Extra weight charge for heavy books — persisted so it survives later adjustments.
+        $ops = (array) ($order->ops_meta ?? []);
+        if ($request->filled('weight_charge')) {
+            $ops['weight_charge'] = round((float) $request->weight_charge);
+            $order->ops_meta = $ops;
+        }
+        $weightCharge = (float) ($ops['weight_charge'] ?? 0);
         $adjustment = (float) ($request->adjustment ?? 0);
         $order->total = max(0, (float) ($order->amount ?? 0)
             + (float) ($order->sales_tax ?? 0)
             + (float) ($order->delivery_fee ?? 0)
             - (float) ($order->discount ?? 0)
+            + $weightCharge
             + $adjustment);
         if ($request->boolean('mark_paid')) {
             $order->paid_total = $order->total;
@@ -1197,6 +1756,7 @@ class IntegrationController extends CoreController
             'order'  => [
                 'id' => $order->id, 'total' => $order->total, 'paid_total' => $order->paid_total,
                 'discount' => $order->discount, 'delivery_fee' => $order->delivery_fee, 'note' => $order->note,
+                'weight_charge' => $weightCharge,
             ],
         ];
     }
@@ -1207,6 +1767,7 @@ class IntegrationController extends CoreController
      */
     public function orderOps(Request $request)
     {
+        $this->assertOrderDeskAccess($request);
         $request->validate(['order_id' => 'required']);
         $order = Order::findOrFail($request->order_id);
         $ops = (array) ($order->ops_meta ?? []);
@@ -1268,6 +1829,35 @@ class IntegrationController extends CoreController
             }
         }
 
+        // Admin verdict on an uploaded bank slip. This is the only place a bank transfer turns
+        // into money — the customer's upload never touches payment_status. Guarded on
+        // pending_review so a double-click can't credit the same slip twice.
+        $verdict = $p['bank_proof'] ?? null;
+        if (in_array($verdict, ['confirm', 'reject'], true)
+            && ($ops['bank_proof']['status'] ?? null) === 'pending_review') {
+            if ($verdict === 'confirm') {
+                $paid = (float) ($ops['bank_proof']['amount_bdt'] ?? 0);
+                $ops['bank_proof']['status'] = 'confirmed';
+                $ops['bank_proof']['reviewed_by'] = $actor;
+                $ops['bank_proof']['reviewed_at'] = $now;
+                $log('bank_proof_confirmed', 'Bank transfer verified — ৳' . round($paid) . ' credited');
+
+                // Hand off to the one place money is recognised, so a bank transfer settles the
+                // advance split, pre-order clock and club activation exactly as bKash does. It
+                // persists ops itself, so write our edits down first.
+                $order->ops_meta = $ops;
+                $this->settlePayment($order, 'bank', $paid);
+                return ['status' => 'success', 'ops' => $order->ops_meta];
+            }
+            $ops['bank_proof']['status'] = 'rejected';
+            $ops['bank_proof']['reviewed_by'] = $actor;
+            $ops['bank_proof']['reviewed_at'] = $now;
+            if (!empty($p['bank_proof_note'])) {
+                $ops['bank_proof']['review_note'] = (string) $p['bank_proof_note'];
+            }
+            $log('bank_proof_rejected', 'Bank slip rejected — customer may re-upload');
+        }
+
         $order->ops_meta = $ops;
         $order->save();
         return ['status' => 'success', 'ops' => $ops];
@@ -1309,6 +1899,9 @@ class IntegrationController extends CoreController
         $rows = \Illuminate\Support\Facades\DB::table('orders')
             ->whereIn('customer_id', $ids)
             ->whereNull('deleted_at')
+            // Void orders are test/mistake rows the desk wrote off — counting them would drag a
+            // real customer's tier down over orders they never actually placed.
+            ->where('order_status', '!=', \Marvel\Enums\OrderStatus::VOID)
             ->select(
                 'customer_id',
                 \Illuminate\Support\Facades\DB::raw('COUNT(*) AS total'),
@@ -1610,7 +2203,10 @@ class IntegrationController extends CoreController
         $order = Order::findOrFail($request->order_id);
         $addr = is_array($order->shipping_address) ? $order->shipping_address : [];
         $address = trim(($addr['street_address'] ?? '') . ' ' . ($addr['city'] ?? '') . ' ' . ($addr['state'] ?? ''));
-        $shipArea = $addr['city'] ?? $addr['state'] ?? null;
+        // The area the customer actually picked lives in `state` — `city` is the
+        // division dropdown and is always set (defaults to 'Dhaka'), so reading it
+        // first meant the picked area was never used.
+        $shipArea = $addr['state'] ?? $addr['city'] ?? null;
 
         try {
             switch ($provider) {
@@ -1628,10 +2224,10 @@ class IntegrationController extends CoreController
                     ]);
                     break;
                 case 'redx':
-                    $base = rtrim($cfg['base_url'] ?? '', '/') ?: 'https://openapi.redx.com.bd/v1.0.0-beta';
+                    $base = $this->redxBase($cfg);
                     $headers = ['API-ACCESS-TOKEN' => 'Bearer ' . ($cfg['token'] ?? '')];
                     // RedX requires a delivery_area_id — resolve it from /areas by city/state name.
-                    $cityName = $addr['city'] ?? $addr['state'] ?? 'Dhaka';
+                    $cityName = $addr['state'] ?? $addr['city'] ?? 'Dhaka';
                     [$areaId, $areaName] = $this->redxResolveArea($base, $headers, $cityName);
                     $shipArea = $areaName ?: $cityName;
                     $payload = [
@@ -1701,11 +2297,21 @@ class IntegrationController extends CoreController
     protected function redxResolveArea(string $base, array $headers, string $cityName): array
     {
         try {
-            $res = Http::withHeaders($headers)->timeout(20)->get($base . '/areas');
-            if (!$res->successful()) {
-                return [null, null];
+            // Our own synced list, so booking a parcel does not depend on RedX's
+            // /areas being up. area_id order mirrors RedX's response order, which
+            // the last-resort branch below relies on.
+            $areas = \Marvel\Database\Models\CourierArea::where('provider', 'redx')
+                ->orderBy('area_id')->get(['area_id', 'name'])
+                ->map(fn ($a) => ['id' => (int) $a->area_id, 'name' => (string) $a->name])
+                ->all();
+            if (!$areas) {
+                // Never synced — fall back to the live call rather than fail the parcel.
+                $res = Http::withHeaders($headers)->timeout(20)->get($base . '/areas');
+                if (!$res->successful()) {
+                    return [null, null];
+                }
+                $areas = $res->json('areas') ?? $res->json('data') ?? $res->json() ?? [];
             }
-            $areas = $res->json('areas') ?? $res->json('data') ?? $res->json() ?? [];
             $needle = mb_strtolower(trim($cityName));
             $best = null;
             foreach ($areas as $a) {
@@ -1771,46 +2377,213 @@ class IntegrationController extends CoreController
     // --------------------------------------------------------- payment: bKash
     /**
      * Start a bKash tokenized payment for an order and return the bKash URL.
-     * Requires bKash creds saved in Settings → Couriers & Payments.
+     *
+     * Goes through the installed karim007/laravel-bkash-tokenize package rather than talking to
+     * bKash by hand, so it authenticates with the **live merchant credentials already set in the
+     * environment** (BKASH_APP_KEY / BKASH_SANDBOX / …) and token handling stays the package's
+     * job. The package's own BkashTokenizePaymentController is only its demo (it hardcodes
+     * `amount = 10`) — this is the real, order-aware entry point.
      */
     public function bkashCreate(Request $request)
     {
-        $cfg = ($this->options()['payments'] ?? [])['bkash'] ?? [];
-        if (empty($cfg['enabled']) || empty($cfg['app_key'])) {
-            throw new MarvelException('bKash is not configured. Add credentials in Settings → Couriers & Payments.');
+        // Single source of truth for "is bKash usable" — it also refuses sandbox credentials on
+        // a production box, so this entry point can't be used to route real buyers at fake money.
+        if (!$this->bkashConfig()) {
+            throw new MarvelException('bKash is not configured for live payments. Add live credentials in Settings → Couriers & Payments.');
         }
         $order = Order::findOrFail($request->order_id);
-        $base = ($cfg['mode'] ?? 'sandbox') === 'live'
-            ? 'https://tokenized.pay.bka.sh/v1.2.0-beta'
-            : 'https://tokenized.sandbox.bka.sh/v1.2.0-beta';
+        // A pay link may only be collecting a pre-order advance, so bKash must be told to take
+        // what *this link* is for — not the whole order. `pay_amount` is the very figure
+        // /pay/{token} shows the customer (payConfirm re-stamps it when they opt to pay in
+        // full), so the screen and the charge can never disagree.
+        $ops = (array) ($order->ops_meta ?? []);
+        $payAmount = isset($ops['pay_amount']) ? (float) $ops['pay_amount'] : (float) $order->total;
+
         try {
-            $grant = Http::withHeaders([
-                'username' => $cfg['username'] ?? '', 'password' => $cfg['password'] ?? '',
-                'Content-Type' => 'application/json',
-            ])->timeout(30)->post($base . '/tokenized/checkout/token/grant', [
-                'app_key' => $cfg['app_key'], 'app_secret' => $cfg['app_secret'] ?? '',
-            ]);
-            $token = $grant->json('id_token');
-            if (!$token) {
-                throw new MarvelException('bKash token error: ' . Str::limit($grant->body(), 200));
-            }
-            $create = Http::withHeaders([
-                'Authorization' => $token, 'X-APP-Key' => $cfg['app_key'], 'Content-Type' => 'application/json',
-            ])->timeout(30)->post($base . '/tokenized/checkout/create', [
-                'mode' => '0011',
-                'payerReference' => (string) $order->customer_contact,
-                'callbackURL' => 'https://indobangla.tech/backend/bkash-callback',
-                'amount' => (string) $order->total,
-                'currency' => 'BDT',
-                'intent' => 'sale',
-                'merchantInvoiceNumber' => $order->tracking_number,
-            ]);
-            return ['status' => 'success', 'bkash' => $create->json()];
-        } catch (MarvelException $e) {
-            throw $e;
+            $payload = [
+                'mode'                  => '0011', // 0011 = tokenized checkout
+                'intent'                => 'sale',
+                'currency'              => 'BDT',
+                'amount'                => (string) $payAmount,
+                'payerReference'        => (string) ($order->customer_contact ?: $order->tracking_number),
+                'merchantInvoiceNumber' => (string) $order->tracking_number,
+                // Same origin the owner already configured for bKash, but our own path.
+                // config('bkash.callbackURL') points at the package's demo controller, which
+                // knows nothing about orders and would leave the payment captured but the order
+                // unsettled — while APP_URL is still the old .tech host. So: take their host,
+                // swap the path.
+                'callbackURL'           => $this->bkashCallbackUrl(),
+            ];
+            $body = (array) BkashPaymentTokenize::cPayment(json_encode($payload));
         } catch (\Throwable $e) {
             throw new MarvelException('bKash create failed: ' . $e->getMessage());
         }
+
+        $url = $body['bkashURL'] ?? null;
+        if (!$url) {
+            throw new MarvelException('bKash create failed: ' . Str::limit(json_encode($body), 200));
+        }
+
+        // Remember the paymentID: bKash hands it back on the callback with no order reference,
+        // so this is the only way to find our way home. Also pin the amount we asked for, to
+        // compare against what bKash says it actually captured.
+        if (!empty($body['paymentID'])) {
+            $ops['bkash'] = [
+                'payment_id' => $body['paymentID'],
+                'amount_bdt' => $payAmount,
+                'created_at' => now()->toIso8601String(),
+            ];
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+        }
+        return ['status' => 'success', 'bkash' => $body];
+    }
+
+    /**
+     * Where bKash should send the buyer back after they authorise.
+     *
+     * Built from the host the owner already configured (`BKASH_CALLBACK_URL`, currently the
+     * live .bd domain) with our own path swapped in — `APP_URL` is still the old .tech host,
+     * and the configured path lands on the package's order-blind demo controller.
+     * `BKASH_ORDER_CALLBACK_URL` overrides the whole thing if it's ever needed.
+     */
+    private function bkashCallbackUrl(): string
+    {
+        $override = (string) (env('BKASH_ORDER_CALLBACK_URL') ?: '');
+        if ($override !== '') {
+            return rtrim($override, '/');
+        }
+        $configured = (string) (config('bkash.callbackURL') ?: '');
+        $origin = $configured !== ''
+            ? preg_replace('#/bkash/callback/?$#', '', $configured)
+            : rtrim((string) config('app.url'), '/');
+        return rtrim($origin, '/') . '/bkash-callback';
+    }
+
+    /**
+     * Is bKash usable, and in which environment?
+     *
+     * The live merchant account is configured through the **environment** (config/bkash.php →
+     * BKASH_APP_KEY / BKASH_SANDBOX / …), which is what the installed
+     * karim007/laravel-bkash-tokenize package authenticates with. The admin Settings panel has
+     * its own older sandbox copy of these fields — reading that instead is how a production box
+     * ended up pointed at the sandbox. The env wins; Settings is only a fallback for boxes that
+     * never had the env set.
+     *
+     * @return array{live: bool}|null  null = don't offer bKash at all
+     */
+    private function bkashConfig(): ?array
+    {
+        $envKey = (string) (config('bkash.bkash_app_key') ?: '');
+        if ($envKey !== '') {
+            $live = !filter_var(config('bkash.sandbox'), FILTER_VALIDATE_BOOLEAN);
+        } else {
+            $cfg = ($this->options()['payments'] ?? [])['bkash'] ?? [];
+            if (empty($cfg['enabled']) || empty($cfg['app_key'])) {
+                return null;
+            }
+            $live = ($cfg['mode'] ?? 'sandbox') === 'live';
+        }
+
+        // Sandbox money is not money. On a production box a sandbox checkout would let a real
+        // customer "pay" with fake credentials, and the callback would settle the order — free
+        // books. Refuse it: bKash reads as unavailable and the buyer is sent to bank transfer.
+        if (!$live && app()->environment('production')) {
+            return null;
+        }
+        return ['live' => $live];
+    }
+
+    /**
+     * Public: where bKash sends the customer back after they authorise the payment.
+     *
+     * Create alone captures nothing — tokenized checkout only moves money once /execute is
+     * called with the paymentID. That step did not exist, so bKash could never actually be
+     * turned on. This closes the loop: execute, verify what came back, then settle.
+     *
+     * A plain GET because bKash drives the browser here; it carries no auth, so the paymentID
+     * is the only credential and every claim is re-checked against bKash itself.
+     */
+    public function bkashCallback(Request $request)
+    {
+        $shop = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
+        $paymentId = (string) $request->query('paymentID', '');
+        $status    = strtolower((string) $request->query('status', ''));
+
+        $order = $paymentId
+            ? Order::whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.bkash.payment_id')) = ?", [$paymentId])->first()
+            : null;
+        if (!$order) {
+            return redirect()->away($shop . '/?pay=unknown');
+        }
+        $ops = (array) ($order->ops_meta ?? []);
+        $back = $shop . '/pay/' . ($ops['pay_token'] ?? '');
+
+        // The customer backed out at bKash's screen — leave the order untouched.
+        if ($status && $status !== 'success') {
+            $ops['bkash']['last_status'] = $status;
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+            return redirect()->away($back . '?pay=' . urlencode($status));
+        }
+
+        // Already settled (customer refreshed the callback, or bKash retried it).
+        if (($ops['bkash']['executed'] ?? false) || $order->payment_status === 'payment-success') {
+            return redirect()->away($back);
+        }
+
+        $cfg = $this->bkashConfig();
+        if (!$cfg) {
+            return redirect()->away($back . '?pay=unavailable');
+        }
+
+        try {
+            // Same package that created the payment, so both ends use the same credentials and
+            // environment. queryPayment is the package's own fallback for when execute comes back
+            // empty (bKash occasionally does that on a retried callback) — without it we'd call a
+            // captured payment "failed".
+            $body = (array) BkashPaymentTokenize::executePayment($paymentId);
+            if (!$body) {
+                $body = (array) BkashPaymentTokenize::queryPayment($paymentId);
+            }
+        } catch (\Throwable $e) {
+            // The customer's money may or may not have moved — never guess, in their favour
+            // or ours. Park it for a human.
+            $ops['bkash']['error'] = Str::limit($e->getMessage(), 200);
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+            \Marvel\Helpers\AdminNotifier::send(
+                "⚠️ <b>bKash execute ব্যর্থ</b> #{$order->tracking_number} — হাতে যাচাই করুন (paymentID: {$paymentId})"
+            );
+            return redirect()->away($back . '?pay=error');
+        }
+
+        // 'Completed' + statusCode 0000 is the only response that means the money is ours —
+        // the same pair the package's own sample callback checks before calling it a success.
+        $ok = ($body['statusCode'] ?? null) === '0000'
+            && ($body['transactionStatus'] ?? null) === 'Completed'
+            && !empty($body['trxID']);
+        $ops['bkash'] = array_merge($ops['bkash'] ?? [], [
+            'executed'    => true,
+            'last_status' => $body['transactionStatus'] ?? 'unknown',
+            'trx_id'      => $body['trxID'] ?? null,
+            'executed_at' => now()->toIso8601String(),
+        ]);
+        if (!$ok) {
+            $ops['bkash']['error'] = Str::limit(json_encode($body), 300);
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+            return redirect()->away($back . '?pay=failed');
+        }
+
+        // Trust bKash's figure, not ours: if they captured a different amount, that is what
+        // the customer actually paid.
+        $paid = isset($body['amount']) ? (float) $body['amount'] : (float) ($ops['bkash']['amount_bdt'] ?? $order->total);
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+
+        $this->settlePayment($order, 'bkash', $paid);
+        return redirect()->away($back);
     }
 
     // ----------------------------------------------------- home real sections
@@ -1843,6 +2616,9 @@ class IntegrationController extends CoreController
                 'id' => $p->id, 'name' => $p->name, 'slug' => $p->slug,
                 'price' => (float) $p->price, 'sale_price' => (float) $p->sale_price,
                 'quantity' => (int) $p->quantity,
+                // The home "Frequently bought together" bundle builds real cart items from
+                // this payload — without a shop_id they'd fail at checkout.
+                'shop_id' => $p->shop_id,
                 'off' => (int) round((1 - $p->sale_price / $p->price) * 100),
                 'image' => is_array($p->image) ? ($p->image['original'] ?? null) : null,
                 'url' => '/products/' . $p->slug,
@@ -1869,6 +2645,9 @@ class IntegrationController extends CoreController
             ->values();
         $data = $items->map(fn ($p) => [
             'id' => $p->id, 'name' => $p->name, 'slug' => $p->slug,
+            // shop_id + quantity: the home bundle builds real cart items from this payload,
+            // and a cart item without a shop_id fails at checkout.
+            'shop_id' => $p->shop_id, 'quantity' => (int) $p->quantity,
             'price' => (float) $p->price,
             'sale_price' => (float) ($p->sale_price ?: $p->price),
             'image' => is_array($p->image) ? ($p->image['original'] ?? null) : null,
@@ -2732,6 +3511,10 @@ class IntegrationController extends CoreController
             'discount_pct'   => (float) ($r['discount_pct'] ?? 5),   // reseller cost = base * (1 - this%)
             'markup_cap_pct' => (float) ($r['markup_cap_pct'] ?? 5), // may raise price up to this% above base
             'hold_days'      => (int) ($r['hold_days'] ?? 7),
+            // Smallest number of copies a reseller must commit to when listing a book. Config,
+            // not a constant, so the desk can change it without a rebuild. Floor of 1 — a zero
+            // would quietly turn the rule off and nobody would notice it had.
+            'min_qty'        => max(1, (int) ($r['min_qty'] ?? 3)),
         ];
     }
 
@@ -2765,7 +3548,13 @@ class IntegrationController extends CoreController
         return ['config' => $this->resellerConfig(), 'meta' => $this->resellerMeta($user)];
     }
 
-    /** Customer: open a reseller account (fee applies). */
+    /**
+     * Customer: open a reseller account — hands back a pay link for the opening fee.
+     *
+     * This used to flip `is_reseller` on and merely log the fee as a debt, so accounts opened
+     * without a taka being collected. The account now opens in settlePayment(), i.e. only once
+     * bKash confirms or an admin approves a bank slip.
+     */
     public function resellerOpen(Request $request)
     {
         $user = $request->user();
@@ -2776,12 +3565,68 @@ class IntegrationController extends CoreController
         if ($meta['is_reseller']) {
             return ['status' => 'already_open', 'meta' => $meta];
         }
-        $cfg = $this->resellerConfig();
-        $meta['is_reseller'] = true;
-        $meta['opened_at'] = now()->toDateTimeString();
-        $meta['ledger'][] = ['type' => 'open_fee', 'amount' => -$cfg['open_fee'], 'at' => now()->toDateTimeString(), 'note' => 'Reseller account opening fee'];
-        $this->saveResellerMeta($user, $meta);
-        return ['status' => 'success', 'meta' => $meta];
+        return $this->resellerPayLink($user, (float) $this->resellerConfig()['open_fee'], 'fee');
+    }
+
+    /** Customer: load money onto the reseller balance — same pay screen as the fee. */
+    public function resellerTopup(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException('Please log in.');
+        }
+        if (!$this->resellerMeta($user)['is_reseller']) {
+            throw new MarvelException('Open a reseller account first.');
+        }
+        $data = $request->validate(['amount' => 'required|numeric|min:1|max:100000']);
+        return $this->resellerPayLink($user, round((float) $data['amount']), 'topup');
+    }
+
+    /**
+     * Build a /pay/{token} link for a reseller charge.
+     *
+     * Mirrors clubStart: a real Order carries the money, so the pay screen, the bKash callback
+     * and the bank-slip review all work on it unchanged — no second payment path to keep in
+     * sync. What the payment *does* on success is decided by the ops_meta marker.
+     */
+    private function resellerPayLink(User $user, float $amount, string $purpose): array
+    {
+        if ($amount <= 0) {
+            throw new MarvelException('Invalid amount.');
+        }
+        $shop = $this->mainShop();
+        $order = Order::create([
+            'customer_id'      => $user->id,
+            'customer_name'    => $user->name,
+            'customer_contact' => $user->contact ?? '',
+            'amount'           => $amount,
+            'total'            => $amount,
+            'paid_total'       => 0,
+            'sales_tax'        => 0,
+            'delivery_fee'     => 0,
+            'discount'         => 0,
+            'shop_id'          => $shop?->id,
+            'language'         => DEFAULT_LANGUAGE ?? 'en',
+            'order_status'     => 'order-pending',
+            'payment_status'   => 'payment-pending',
+            'payment_gateway'  => 'ONLINE',
+        ]);
+        $ops = [
+            'reseller_user_id' => $user->id,
+            'pay_token'        => 'pl_' . Str::random(24),
+            'pay_amount'       => round($amount),
+            'pay_purpose'      => 'full',
+            ($purpose === 'fee' ? 'reseller_fee' : 'reseller_topup') => true,
+        ];
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+        $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
+        return [
+            'status'   => 'pay',
+            'purpose'  => $purpose,
+            'amount'   => $amount,
+            'pay_link' => $base . '/pay/' . $ops['pay_token'],
+        ];
     }
 
     /** Customer: add an IndoBangla product to my reseller shop at my price. */
@@ -2791,7 +3636,11 @@ class IntegrationController extends CoreController
         if (!$user) {
             throw new MarvelException('Please log in.');
         }
-        $data = $request->validate(['product_id' => 'required|integer', 'my_price' => 'required|numeric|min:1']);
+        $data = $request->validate([
+            'product_id' => 'required|integer',
+            'my_price'   => 'required|numeric|min:1',
+            'qty'        => 'nullable|integer|min:1',
+        ]);
         $meta = $this->resellerMeta($user);
         if (!$meta['is_reseller']) {
             throw new MarvelException('Open a reseller account first.');
@@ -2801,6 +3650,20 @@ class IntegrationController extends CoreController
             throw new MarvelException('Product not found.');
         }
         $cfg = $this->resellerConfig();
+
+        // How many copies the reseller is taking on. Enforced here rather than only in the form,
+        // because the form is not the only way to reach this endpoint.
+        $min = (int) $cfg['min_qty'];
+        $qty = (int) ($data['qty'] ?? $min);
+        if ($qty < $min) {
+            throw new MarvelException("যেকোনো বইয়ের অন্তত {$min} কপি নিতে হবে।");
+        }
+        // Promising copies the shop hasn't got is a promise to the customer we can't keep, so
+        // check the shelf before accepting the listing.
+        $inStock = (int) $product->quantity;
+        if ($inStock < $qty) {
+            throw new MarvelException("এই বইয়ের স্টকে আছে {$inStock} কপি — {$qty} কপি নেওয়া যাবে না।");
+        }
         $base = (float) ($product->sale_price ?: $product->price);
         $cost = round($base * (1 - $cfg['discount_pct'] / 100), 2);
         $cap  = round($base * (1 + $cfg['markup_cap_pct'] / 100), 2);
@@ -2819,6 +3682,7 @@ class IntegrationController extends CoreController
             'cost'       => $cost,
             'my_price'   => $my,
             'margin'     => round($my - $cost, 2),
+            'qty'        => $qty,
             'sold_count' => 0,
             'added_at'   => now()->toDateTimeString(),
         ];
@@ -2875,6 +3739,7 @@ class IntegrationController extends CoreController
                 'discount_pct'   => 'nullable|numeric',
                 'markup_cap_pct' => 'nullable|numeric',
                 'hold_days'      => 'nullable|integer',
+                'min_qty'        => 'nullable|integer|min:1',
             ]);
             $settings = Settings::first();
             $options  = $settings->options ?? [];
@@ -2883,6 +3748,7 @@ class IntegrationController extends CoreController
                 'discount_pct'   => (float) ($data['discount_pct'] ?? 5),
                 'markup_cap_pct' => (float) ($data['markup_cap_pct'] ?? 5),
                 'hold_days'      => (int) ($data['hold_days'] ?? 7),
+                'min_qty'        => max(1, (int) ($data['min_qty'] ?? 3)),
             ];
             $settings->update(['options' => $options]);
         }
@@ -3311,16 +4177,29 @@ class IntegrationController extends CoreController
      * flows through the normal checkout coupon box with no separate pricing path.
      * No tier (or a tier rate that isn't a discount) → the card's coupon is removed.
      */
-    private function syncMemberCoupon($user, array $cfg): int
+    private function syncMemberCoupon($user, ?array $cfg = null): int
     {
         $no = (string) ($user->membership_no ?? '');
         if ($no === '') {
             return 0;
         }
-        $percent = $this->memberPercent($user->membership_tier, $cfg);
+
+        // Prefer a Reader's-Club tier (direct discount %); fall back to a legacy
+        // conversion-rate tier (silver/gold/premium) so old members keep working.
+        $tier    = $this->clubTier($user->membership_tier);
+        $percent = $tier ? (int) $tier['discount_pct'] : 0;
+        if (!$tier && $user->membership_tier) {
+            $percent = $this->memberPercent($user->membership_tier, $cfg ?? $this->conversionConfig());
+        }
+
+        // The card only discounts while it is active, not expired, and not cancelled/banned.
+        $status  = $user->membership_status ?: 'active';   // legacy members (null) are active
+        $expired = $user->membership_expires_at && $user->membership_expires_at->isPast();
+        $active  = $user->membership_tier && $status === 'active' && !$expired;
+
         $coupon = Coupon::withTrashed()->where('code', $no)->first();
-        if ($percent <= 0) {
-            $coupon?->forceDelete();
+        if (!$active || $percent <= 0) {
+            $coupon?->forceDelete();   // cancelled/banned/expired card → coupon disabled everywhere
             return 0;
         }
         $coupon = $coupon ?: new Coupon(['code' => $no]);
@@ -3328,13 +4207,13 @@ class IntegrationController extends CoreController
             'code'        => $no,
             'type'        => CouponType::PERCENTAGE_COUPON,
             'amount'      => $percent,
-            'description' => ucfirst((string) $user->membership_tier) . ' membership card',
+            'description' => ($tier['name'] ?? ucfirst((string) $user->membership_tier)) . ' membership card',
             'language'    => 'en',
             'is_approve'  => true,
             'target'      => true,          // logged-in customers only
             'user_id'     => $user->id,     // and only *this* member — enforced on verify + order
-            'active_from' => now(),
-            'expire_at'   => now()->addYears(5),
+            'active_from' => $user->membership_activated_at ?? now(),
+            'expire_at'   => $user->membership_expires_at ?? now()->addYears(5),
         ]);
         $coupon->deleted_at = null;
         $coupon->save();
@@ -3395,33 +4274,98 @@ class IntegrationController extends CoreController
             ->orWhere('mobile_number', 'like', "%{$q}%")
             ->orWhere('membership_no', 'like', "{$q}%"))
             ->limit(8)
-            ->get(['id', 'name', 'email', 'membership_no', 'membership_tier']);
+            ->get(['id', 'name', 'email', 'membership_no', 'membership_tier', 'membership_status', 'membership_expires_at']);
         return ['data' => $users];
     }
 
-    /** Admin: give a customer a tier (or clear it) — their card coupon follows. */
+    /** Admin: give a customer a tier (or clear it) — issues/activates the card coupon. */
     public function membershipAssign(Request $request)
     {
         $data = $request->validate([
             'user_id' => 'required|integer',
-            'tier'    => 'nullable|string|in:silver,gold,premium',
+            'tier'    => 'nullable|string',
         ]);
+        $tierId = $data['tier'] ?: null;
+        $tier   = $this->clubTier($tierId);
+        // Accept a configured club tier id, or a legacy conversion tier (silver/gold/premium).
+        if ($tierId && !$tier && !in_array($tierId, ['silver', 'gold', 'premium'], true)) {
+            throw new MarvelException('Unknown membership tier.');
+        }
+
         $user = User::findOrFail($data['user_id']);
-        $user->membership_tier = $data['tier'] ?: null;
+        $user->membership_tier = $tierId;
+        if ($tierId) {
+            $years = $tier ? (int) $tier['validity_years'] : 1;
+            $user->membership_status        = 'active';
+            $user->membership_activated_at  = now();
+            $user->membership_expires_at    = now()->addYears(max(1, $years));
+        } else {
+            $user->membership_status        = null;
+            $user->membership_activated_at  = null;
+            $user->membership_expires_at    = null;
+        }
         $user->saveQuietly();
 
-        $cfg = $this->conversionConfig();
-        $percent = $this->syncMemberCoupon($user, $cfg);
+        $percent = $this->syncMemberCoupon($user);
+        $tierName = $tier['name'] ?? ucfirst((string) $tierId);
         return [
             'status'        => 'success',
             'user_id'       => $user->id,
             'name'          => $user->name,
             'membership_no' => $user->membership_no,
             'tier'          => $user->membership_tier,
+            'status_flag'   => $user->membership_status,
+            'expires_at'    => optional($user->membership_expires_at)->toDateString(),
             'percent'       => $percent,
-            'message'       => $user->membership_tier
-                ? "{$user->name} এখন " . ucfirst($user->membership_tier) . " — কার্ড {$user->membership_no} দিলে {$percent}% ছাড়।"
+            'message'       => $tierId
+                ? "{$user->name} এখন {$tierName} সদস্য — কার্ড {$user->membership_no} দিলে {$percent}% ছাড় (মেয়াদ " . optional($user->membership_expires_at)->format('d M Y') . ")।"
                 : "{$user->name} এর মেম্বারশিপ সরানো হয়েছে।",
+        ];
+    }
+
+    /**
+     * Admin: cancel / ban / reactivate a member's card. A cancelled or banned card
+     * immediately stops discounting (its bound coupon is removed); reactivating restores it.
+     */
+    public function membershipCardAction(Request $request)
+    {
+        $data = $request->validate([
+            'user_id' => 'required|integer',
+            'action'  => 'required|string|in:cancel,ban,reactivate',
+            'reason'  => 'nullable|string',
+        ]);
+        $user = User::findOrFail($data['user_id']);
+        if (!$user->membership_tier) {
+            throw new MarvelException('এই গ্রাহকের কোনো সক্রিয় মেম্বারশিপ নেই।');
+        }
+
+        switch ($data['action']) {
+            case 'cancel':
+                $user->membership_status = 'cancelled';
+                break;
+            case 'ban':
+                $user->membership_status = 'banned';
+                break;
+            case 'reactivate':
+                $user->membership_status = 'active';
+                // If the validity had lapsed, restart the window from a configured tier.
+                if (empty($user->membership_expires_at) || $user->membership_expires_at->isPast()) {
+                    $tier = $this->clubTier($user->membership_tier);
+                    $user->membership_activated_at = now();
+                    $user->membership_expires_at   = now()->addYears($tier ? max(1, (int) $tier['validity_years']) : 1);
+                }
+                break;
+        }
+        $user->saveQuietly();
+        $percent = $this->syncMemberCoupon($user);
+
+        $labels = ['cancel' => 'বাতিল', 'ban' => 'ব্যান', 'reactivate' => 'পুনরায় চালু'];
+        return [
+            'status'            => 'success',
+            'user_id'           => $user->id,
+            'membership_status' => $user->membership_status,
+            'percent'           => $percent,
+            'message'           => "{$user->name} এর কার্ড {$user->membership_no} {$labels[$data['action']]} করা হয়েছে।",
         ];
     }
 
@@ -3720,6 +4664,9 @@ class IntegrationController extends CoreController
                     continue;
                 }
                 $old = round((float) $p->price);
+                // The old sale price has to be read before we overwrite it below — the list
+                // shows both regular and sale, and reprice moves both.
+                $oldSale = $p->sale_price !== null ? round((float) $p->sale_price) : null;
                 $price = $this->roundPrice($p->mrp * $r['rate']);
                 $sale  = $r['sale_rate'] > 0 ? $this->roundPrice($p->mrp * $r['sale_rate']) : null;
                 if ($sale !== null && $sale >= $price) {
@@ -3741,6 +4688,10 @@ class IntegrationController extends CoreController
                         'publisher'  => $p->manufacturer->name ?? null,
                         'old_price'  => $old,
                         'new_price'  => $price,
+                        // reprice sets sale_price too, but it was never reported — the admin
+                        // could not see what the discounted price actually became.
+                        'old_sale'   => $oldSale,
+                        'new_sale'   => $sale,
                         'mrp'        => (float) $p->mrp,
                     ];
                 }
@@ -3866,43 +4817,109 @@ class IntegrationController extends CoreController
      */
     public function courierAreas(Request $request)
     {
-        $areas = Cache::remember('redx:areas', 86400, function () {
-            $cfg = ($this->options()['couriers'] ?? [])['redx'] ?? [];
-            $token = $cfg['token'] ?? '';
-            if (!$token) {
-                return [];
-            }
-            $base = rtrim($cfg['base_url'] ?? '', '/') ?: 'https://openapi.redx.com.bd/v1.0.0-beta';
-            if (!str_starts_with($base, 'http')) {
-                $base = 'https://' . $base;
-            }
-            try {
-                $res = Http::withHeaders(['API-ACCESS-TOKEN' => 'Bearer ' . $token])
-                    ->timeout(25)->get($base . '/areas');
-                if (!$res->successful()) {
-                    return [];
-                }
-                return collect($res->json('areas') ?? [])->map(fn ($a) => [
-                    'id'       => $a['id'] ?? null,
-                    'name'     => $a['name'] ?? '',
-                    'district' => $a['district_name'] ?? ($a['division_name'] ?? ''),
-                    'zone'     => $a['zone_name'] ?? '',
-                ])->filter(fn ($a) => $a['name'] !== '')->values()->all();
-            } catch (\Throwable $e) {
-                return [];
-            }
-        });
-
-        // Optional server-side filter so the form can query instead of shipping 5k rows.
         $q = trim((string) $request->query('q', ''));
-        if ($q !== '') {
-            $needle = mb_strtolower($q);
-            $areas = collect($areas)->filter(
-                fn ($a) => str_contains(mb_strtolower($a['name'] . ' ' . $a['district'] . ' ' . $a['zone']), $needle)
-            )->take(25)->values()->all();
+
+        // Served from our own table, never from RedX. The list used to come from a
+        // live call behind a 24h cache — so an outage (or an empty response cached
+        // for a day) left customers unable to pick an area at all.
+        if (!\Marvel\Database\Models\CourierArea::where('provider', 'redx')->exists()) {
+            try {
+                // Never synced yet: try once, but a courier problem must not break checkout.
+                $this->syncRedxAreas();
+            } catch (\Throwable $e) {
+                // fall through and return what we have
+            }
         }
 
+        $query = \Marvel\Database\Models\CourierArea::where('provider', 'redx')->orderBy('area_id');
+        if ($q !== '') {
+            $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $q) . '%';
+            $query->where(function ($w) use ($like) {
+                $w->where('name', 'like', $like)
+                    ->orWhere('district', 'like', $like)
+                    ->orWhere('zone', 'like', $like);
+            })->limit(25);
+        }
+
+        $areas = $query->get()->map(fn ($a) => [
+            'id'       => (int) $a->area_id,
+            'name'     => (string) $a->name,
+            'district' => (string) ($a->district ?? ''),
+            'zone'     => (string) ($a->zone ?? ''),
+        ])->values()->all();
+
         return ['data' => $areas, 'total' => count($areas)];
+    }
+
+    /**
+     * Admin: pull the courier's area list into our table. POST courier-areas-sync
+     */
+    public function syncCourierAreas(Request $request)
+    {
+        $n = $this->syncRedxAreas();
+        return [
+            'status' => 'success',
+            'synced' => $n,
+            'total'  => \Marvel\Database\Models\CourierArea::where('provider', 'redx')->count(),
+        ];
+    }
+
+    /** RedX's base URL with the scheme the settings form does not enforce. */
+    protected function redxBase(array $cfg): string
+    {
+        $base = rtrim($cfg['base_url'] ?? '', '/') ?: 'https://openapi.redx.com.bd/v1.0.0-beta';
+        // Without this the access token goes out over plain http.
+        if (!str_starts_with($base, 'http')) {
+            $base = 'https://' . $base;
+        }
+        return $base;
+    }
+
+    /**
+     * Refresh courier_areas from RedX. Upserts and never truncates: a bad or empty
+     * response must leave the previous list standing, because checkout reads it.
+     */
+    protected function syncRedxAreas(): int
+    {
+        $cfg   = ($this->options()['couriers'] ?? [])['redx'] ?? [];
+        $token = $cfg['token'] ?? '';
+        if (!$token) {
+            throw new MarvelException('RedX token is not set in Settings → Couriers & Payments.');
+        }
+        $res = Http::withHeaders(['API-ACCESS-TOKEN' => 'Bearer ' . $token])
+            ->timeout(40)->get($this->redxBase($cfg) . '/areas');
+        if (!$res->successful()) {
+            throw new MarvelException('RedX returned HTTP ' . $res->status() . ' for /areas.');
+        }
+
+        $now  = now();
+        $rows = collect($res->json('areas') ?? $res->json('data') ?? [])
+            ->map(fn ($a) => [
+                'provider'   => 'redx',
+                'area_id'    => (int) ($a['id'] ?? 0),
+                'name'       => trim((string) ($a['name'] ?? '')),
+                'district'   => (string) ($a['district_name'] ?? ($a['division_name'] ?? '')),
+                'zone'       => (string) ($a['zone_name'] ?? ''),
+                'post_code'  => (string) ($a['post_code'] ?? ''),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ])
+            ->filter(fn ($a) => $a['area_id'] > 0 && $a['name'] !== '')
+            ->unique('area_id')
+            ->values();
+
+        if ($rows->isEmpty()) {
+            throw new MarvelException('RedX returned no usable areas — the existing list is kept.');
+        }
+
+        foreach ($rows->chunk(500) as $chunk) {
+            \Marvel\Database\Models\CourierArea::upsert(
+                $chunk->all(),
+                ['provider', 'area_id'],
+                ['name', 'district', 'zone', 'post_code', 'updated_at']
+            );
+        }
+        return $rows->count();
     }
 
     // ============================================================ SUPPORT TICKETS (#10)
@@ -4716,10 +5733,18 @@ class IntegrationController extends CoreController
         ];
     }
 
-    /** All orders that carry a pre-order (they all have an `advance` block in ops_meta). */
+    /**
+     * All orders that carry a pre-order (they all have an `advance` block in ops_meta).
+     *
+     * Parent rows only. When an order is split per shop the child rows inherit ops_meta, advance
+     * block and all, so counting them too would report one pre-order as two — and a cancelled
+     * child would land in its own bucket, away from the parent it belongs to. The parent row is
+     * the customer's actual pre-order, and it's also the only one an admin sees on the board, so
+     * this keeps the summary cards counting exactly what clicking them can show.
+     */
     private function preorderOrders()
     {
-        return Order::whereRaw("JSON_EXTRACT(ops_meta, '$.advance') IS NOT NULL");
+        return Order::whereRaw("JSON_EXTRACT(ops_meta, '$.advance') IS NOT NULL")->whereNull('parent_id');
     }
 
     /** Admin: the pre-order board summary — pending / processing / delivered / overdue. */
@@ -4759,6 +5784,431 @@ class IntegrationController extends CoreController
 
         return ['counts' => $counts, 'overdue' => $overdue, 'window_days' => 28];
     }
+
+    /* ---------------------------------------------------------------------------------------- *
+     *  Order board — the tab badges, the totals and the list all come from here.
+     * ---------------------------------------------------------------------------------------- */
+
+    /**
+     * order_status → board bucket. Mirrors TO_BUCKET in
+     * admin/rest/src/components/order/indo-order-board.tsx — change one, change the other.
+     *
+     * 'pending' is deliberately absent. The board resolves `TO_BUCKET[status] || 'pending'`, so
+     * pending means "every status not named here"; boardTab() mirrors that with a NOT IN, which
+     * also keeps a status nobody has mapped yet visible instead of dropping it from every tab.
+     */
+    private const BOARD_BUCKETS = [
+        'ready'     => ['order-processing', 'order-at-local-facility'],
+        'shipped'   => ['order-out-for-delivery'],
+        'transit'   => [],   // nothing maps here — TO_BUCKET has no transit status either
+        'delivered' => ['order-completed'],
+        'returned'  => ['order-cancelled', 'order-refunded'],
+        'void'      => ['order-void'],
+    ];
+
+    /** The board's isOpen() is the negation of this list. */
+    private const BOARD_CLOSED_STATUSES = ['order-completed', 'order-cancelled', 'order-refunded', 'order-void'];
+
+    /** Tiers the board doesn't ask you to phone — TIERS[*].skipCall in indo-order-board.tsx. */
+    private const BOARD_SKIP_CALL_TIERS = ['regular', 'prime', 'star'];
+
+    /**
+     * 'void' and 'archived' sit outside the bucket partition on purpose.
+     *
+     * Voiding archives the order, and the board's default view hides archived rows — so a 'void'
+     * tab that respected that filter would always read 0 and there would be no way to look at
+     * what you had voided. Both tabs therefore ignore the archived filter; the other tabs still
+     * partition the working list exactly.
+     */
+    private const BOARD_TABS = ['all', 'attention', 'printstuck', 'pending', 'ready', 'shipped', 'transit', 'delivered', 'returned', 'void', 'archived'];
+
+    /** Tabs that deliberately look past the "hide archived" default. */
+    private const BOARD_TABS_INCLUDING_ARCHIVED = ['void', 'archived'];
+
+    /**
+     * The orders this user is allowed to see on the board.
+     *
+     * Mirrors OrderController::fetchOrders(), including its parent_id rule, which is easy to miss:
+     * a super admin sees only *parent* orders, while a store owner or staff member sees the
+     * per-shop *child* rows. A looser query here would quietly show one shop another shop's
+     * orders, so this stays a deliberate copy of the access rules.
+     */
+    private function boardScope(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            throw new MarvelException(NOT_AUTHORIZED);
+        }
+        // getPermissionNames(), not hasPermissionTo(): the latter throws when a permission isn't
+        // registered on this install instead of returning false.
+        $held = $user->getPermissionNames()->all();
+        $q = Order::query();
+
+        if (in_array(Permission::SUPER_ADMIN, $held, true)) {
+            return $request->filled('shop_id')
+                ? $q->where('orders.shop_id', $request->input('shop_id'))->whereNotNull('orders.parent_id')
+                : $q->whereNull('orders.parent_id');
+        }
+        if (in_array(Permission::STORE_OWNER, $held, true)) {
+            return $q->whereNotNull('orders.parent_id')->whereIn('orders.shop_id', $user->shops->pluck('id'));
+        }
+        if (in_array(Permission::STAFF, $held, true)) {
+            return $q->whereNotNull('orders.parent_id')->where('orders.shop_id', $user->shop_id);
+        }
+        throw new MarvelException(NOT_AUTHORIZED);
+    }
+
+    /**
+     * A customer's tier, as SQL. Mirrors computeTier() in indo-order-board.tsx over the numbers
+     * orderCustomerStats() feeds it — and those count a customer's *whole* history (parent and
+     * child rows, no parent_id filter), so this subquery must not filter either, or the tier the
+     * count uses would disagree with the badge drawn on the card. Needs boardWithTier()'s join.
+     */
+    private function boardTierExpr(): string
+    {
+        $tot = 'COALESCE(cs.t, 0)';
+        $ret = 'COALESCE(cs.r, 0)';
+        // computeTier divides only when total is non-zero. NULLIF reproduces that: the rate goes
+        // NULL, and NULL never satisfies < or >, so those branches fall through exactly as the
+        // `total ? ret / total : 0` guard does.
+        $rate = "($ret / NULLIF($tot, 0))";
+        // A JSON null unquotes to the *string* 'null', which would beat the falsy check that
+        // `if (override) return override` does in JS. Treat it as absent.
+        $ovr = "JSON_UNQUOTE(JSON_EXTRACT(orders.ops_meta, '$.tier'))";
+        return "CASE
+            WHEN $ovr IS NOT NULL AND $ovr <> 'null' THEN $ovr
+            WHEN $ret >= 2 AND $rate > 0.2 THEN 'risky'
+            WHEN $tot >= 30 AND $ret = 0 THEN 'star'
+            WHEN $tot >= 15 AND $rate <= 0.1 THEN 'prime'
+            WHEN $tot >= 5  AND $rate <= 0.2 THEN 'regular'
+            ELSE 'new'
+        END";
+    }
+
+    /** Joins each order to its customer's lifetime totals, so boardTierExpr() can read them. */
+    private function boardWithTier($q)
+    {
+        $stats = DB::table('orders')
+            ->selectRaw("customer_id, COUNT(*) AS t, SUM(order_status IN ('order-cancelled','order-refunded')) AS r")
+            ->whereNull('deleted_at')
+            // Must match orderCustomerStats() exactly — that is what draws the tier badge on the
+            // card, and a tier computed from a different set would contradict it on screen.
+            ->where('order_status', '!=', \Marvel\Enums\OrderStatus::VOID)
+            ->groupBy('customer_id');
+        return $q->leftJoinSub($stats, 'cs', 'cs.customer_id', '=', 'orders.customer_id');
+    }
+
+    /** needsAttention() from the board, as SQL. */
+    private function boardAttentionWhere(): string
+    {
+        $tier   = $this->boardTierExpr();
+        $call   = "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(orders.ops_meta, '$.call_status')), 'none')";
+        $print  = "JSON_UNQUOTE(JSON_EXTRACT(orders.ops_meta, '$.print_status'))";
+        $skip   = "'" . implode("','", self::BOARD_SKIP_CALL_TIERS) . "'";
+        $closed = "'" . implode("','", self::BOARD_CLOSED_STATUSES) . "'";
+
+        // ageDays >= 3 in the board is floor((now - created)/86400000) >= 3, i.e. created at
+        // least 3×24h ago — which is what INTERVAL 3 DAY means here.
+        return "orders.order_status NOT IN ($closed) AND (
+            ($tier NOT IN ($skip) AND $call IN ('none','noanswer'))
+            OR orders.created_at <= (NOW() - INTERVAL 3 DAY)
+            OR $tier = 'risky'
+            OR $print = 'sent'
+        )";
+    }
+
+    /**
+     * Narrow a board query to one tab. Every count and the list itself go through this, so a
+     * badge and the list it opens describe the same set by construction rather than by luck.
+     */
+    private function boardTab($q, ?string $tab)
+    {
+        // Archived orders are out of the working list; only the tabs meant to look at them do.
+        if (!in_array($tab, self::BOARD_TABS_INCLUDING_ARCHIVED, true)) {
+            $q->whereNull('orders.archived_at');
+        }
+
+        switch ($tab) {
+            case 'attention':
+                return $this->boardWithTier($q)->whereRaw($this->boardAttentionWhere());
+            case 'printstuck':
+                return $q->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(orders.ops_meta, '$.print_status')) = 'sent'");
+            case 'pending':
+                return $q->whereNotIn('orders.order_status', array_merge(...array_values(self::BOARD_BUCKETS)));
+            case 'archived':
+                return $q->whereNotNull('orders.archived_at');
+            case 'ready':
+            case 'shipped':
+            case 'transit':
+            case 'delivered':
+            case 'returned':
+            case 'void':
+                return $q->whereIn('orders.order_status', self::BOARD_BUCKETS[$tab]);
+            default:
+                return $q;
+        }
+    }
+
+    /**
+     * The pre-order ids in one state, classified by the *same* preorderClock() that
+     * preorderSummary() counts with — so clicking a summary card can never open a list that
+     * disagrees with the number printed on it.
+     */
+    private function boardPreorderIds(string $state): array
+    {
+        $ids = [];
+        $this->preorderOrders()->chunkById(300, function ($orders) use (&$ids, $state) {
+            foreach ($orders as $o) {
+                $clock = $this->preorderClock($o);
+                $paid  = (float) $o->paid_total > 0;
+                $ops   = (array) ($o->ops_meta ?? []);
+                switch ($state) {
+                    case 'pending_advance': $match = !$clock['delivered'] && !$paid; break;
+                    case 'processing':      $match = !$clock['delivered'] && $paid;  break;
+                    case 'delivered':       $match = (bool) $clock['delivered'];     break;
+                    case 'overdue':         $match = (bool) $clock['late'];          break;
+                    case 'admin':           $match = ($ops['source'] ?? null) === 'admin-preorder'; break;
+                    default:                $match = true;
+                }
+                if ($match) {
+                    $ids[] = (int) $o->id;
+                }
+            }
+        });
+        return $ids;
+    }
+
+    /**
+     * Everything the order board draws: tab badges, the four totals, and the page of orders.
+     *
+     * The board used to fetch ten orders and count *those*, so "Pending 3" meant "3 of the 10
+     * you happen to be looking at" rather than 3 of 8,000. Counting and filtering both live here
+     * now, and both are built from boardScope() + boardTab(), so they always describe one set.
+     */
+    public function orderBoard(Request $request)
+    {
+        $this->assertOrderDeskAccess($request);
+
+        $f = $request->validate([
+            'tab'      => 'nullable|string|in:' . implode(',', self::BOARD_TABS),
+            'preorder' => 'nullable|string|in:all,pending_advance,processing,delivered,overdue,admin',
+            'page'     => 'nullable|integer|min:1',
+            'limit'    => 'nullable|integer|min:1|max:100',
+        ]);
+        $tab   = $f['tab'] ?? 'all';
+        $limit = (int) ($f['limit'] ?? 10);
+
+        // Resolved once: the classification loop is the same work preorderSummary() already does.
+        $preorderIds = !empty($f['preorder']) ? $this->boardPreorderIds($f['preorder']) : null;
+
+        // A fresh builder per query — Eloquent builders accumulate, so counts must not share one.
+        $base = function () use ($request, $preorderIds) {
+            $q = $this->boardScope($request);
+            if ($preorderIds !== null) {
+                $q->whereIn('orders.id', $preorderIds);   // an empty list matches nothing, as intended
+            }
+            return $q;
+        };
+
+        $counts = [];
+        foreach (self::BOARD_TABS as $t) {
+            $counts[$t] = (int) $this->boardTab($base(), $t)->count('orders.id');
+        }
+
+        // The board's own totals: items + delivery, and books by quantity. `total` is not usable
+        // here — it has the discount already taken off, which the on-screen figure does not.
+        $items = 'COALESCE((SELECT SUM(op.subtotal) FROM order_product op WHERE op.order_id = orders.id), 0)';
+        $books = 'COALESCE((SELECT SUM(op.order_quantity) FROM order_product op WHERE op.order_id = orders.id), 0)';
+        $row = $this->boardTab($base(), $tab)->selectRaw(
+            "COUNT(*) AS n_orders, COALESCE(SUM($books), 0) AS n_books, COALESCE(SUM($items + orders.delivery_fee), 0) AS n_value"
+        )->first();
+
+        // paid, mirroring the board: settled gateway, or enough money already taken.
+        $unpaid = $this->boardTab($base(), $tab)
+            ->whereNotIn('orders.order_status', self::BOARD_CLOSED_STATUSES)
+            ->whereRaw("NOT (orders.payment_status = 'payment-success' OR (orders.paid_total >= orders.total AND orders.total > 0))")
+            ->count('orders.id');
+
+        $page = $this->boardTab($base(), $tab)
+            ->select('orders.*')
+            ->orderByDesc('orders.created_at')
+            ->paginate($limit, ['*'], 'page', (int) ($f['page'] ?? 1));
+
+        return [
+            'status'    => 'success',
+            'data'      => $page->items(),
+            'paginator' => [
+                'total'       => $page->total(),
+                'currentPage' => $page->currentPage(),
+                'lastPage'    => $page->lastPage(),
+                'perPage'     => $page->perPage(),
+            ],
+            'counts'  => $counts,
+            'summary' => [
+                'orders' => (int) ($row->n_orders ?? 0),
+                'books'  => (int) ($row->n_books ?? 0),
+                'value'  => round((float) ($row->n_value ?? 0)),
+                'unpaid' => (int) $unpaid,
+            ],
+        ];
+    }
+
+    /* ---------------------------------------------------------------------------------------- *
+     *  Order lifecycle — void, archive, unlock
+     * ---------------------------------------------------------------------------------------- */
+
+    /** How long after delivery the desk can still act before an order locks itself. */
+    private const ADMIN_ACTION_DAYS = 7;
+
+    /** How long after delivery the customer can still ask for a return / exchange. */
+    private const CUSTOMER_RETURN_DAYS = 3;
+
+    /**
+     * When an order was delivered.
+     *
+     * ops_meta.delivered_at is stamped by the Order model the moment a status becomes
+     * 'order-completed', but only orders delivered since that hook existed carry it — the older
+     * history has nothing. updated_at is the honest fallback: for a delivered order it is the
+     * last time anyone touched it, which in practice is the delivery itself.
+     */
+    private function deliveredAt(Order $order): ?Carbon
+    {
+        $ops = (array) ($order->ops_meta ?? []);
+        $stamp = $ops['delivered_at'] ?? null;
+        if ($stamp) {
+            return Carbon::parse($stamp);
+        }
+        return $order->updated_at ? Carbon::parse($order->updated_at) : null;
+    }
+
+    /**
+     * The desk's lifecycle actions on one order.
+     *
+     * Void, archive and unarchive are ordinary desk work. Unlock is not: it reopens an order the
+     * system already closed, so it is super-admin only and always leaves a note behind.
+     */
+    public function orderLifecycle(Request $request)
+    {
+        $this->assertOrderDeskAccess($request);
+
+        $data = $request->validate([
+            'order_id' => 'required|integer',
+            'action'   => 'required|string|in:void,unvoid,archive,unarchive,unlock',
+            'reason'   => 'nullable|string|max:500',
+        ]);
+
+        $order = Order::findOrFail($data['order_id']);
+        $user  = $request->user();
+        $isSuperAdmin = $user && $user->getPermissionNames()->contains(Permission::SUPER_ADMIN);
+        $ops = (array) ($order->ops_meta ?? []);
+        $who = $user->name ?? 'Admin';
+
+        switch ($data['action']) {
+            case 'void':
+                if ($order->order_status === OrderStatus::VOID) {
+                    return ['status' => 'success', 'message' => 'Already void.'];
+                }
+                // Remember where it came from: unvoid has to put it back, and there is no other
+                // record of the status once it is overwritten.
+                $ops['void'] = [
+                    'from'   => $order->order_status,
+                    'by'     => $who,
+                    'at'     => now()->toIso8601String(),
+                    'reason' => $data['reason'] ?? null,
+                ];
+                $order->ops_meta = $ops;
+                $order->order_status = OrderStatus::VOID;
+                // Voiding is the desk saying "this was never a real order", so it leaves the
+                // working list at the same moment — that is what auto-archive means here.
+                $order->archived_at = now();
+                $order->save();   // saved, not saveQuietly: the updated hook puts the books back
+                break;
+
+            case 'unvoid':
+                if ($order->order_status !== OrderStatus::VOID) {
+                    throw new MarvelException('This order is not void.');
+                }
+                if (!$isSuperAdmin) {
+                    throw new MarvelException(NOT_AUTHORIZED);
+                }
+                $back = $ops['void']['from'] ?? OrderStatus::PENDING;
+                // The void released this order's books. Bringing it back has to take them again,
+                // or the shelf count stays inflated by an order that is live once more. Clearing
+                // the flags lets commitStock do its normal, idempotent job.
+                if (!empty($ops['stock_released'])) {
+                    unset($ops['stock_released'], $ops['stock_committed']);
+                }
+                unset($ops['void']);
+                $order->ops_meta = $ops;
+                $order->order_status = $back;
+                $order->archived_at = null;
+                $order->save();
+                Order::commitStock($order->fresh());
+                break;
+
+            case 'archive':
+                $order->archived_at = now();
+                $order->save();
+                break;
+
+            case 'unarchive':
+                $order->archived_at = null;
+                $order->save();
+                break;
+
+            case 'unlock':
+                if (!$isSuperAdmin) {
+                    throw new MarvelException(NOT_AUTHORIZED);
+                }
+                if (!$order->locked_at) {
+                    return ['status' => 'success', 'message' => 'Not locked.'];
+                }
+                // Reopening a closed order is worth a trail — it is the one action here that
+                // undoes something the system decided on its own.
+                $ops['unlocks'] = array_slice(array_merge($ops['unlocks'] ?? [], [[
+                    'by'     => $who,
+                    'at'     => now()->toIso8601String(),
+                    'reason' => $data['reason'] ?? null,
+                ]]), -10);
+                $order->ops_meta = $ops;
+                $order->locked_at = null;
+                $order->save();
+                break;
+        }
+
+        $fresh = $order->fresh();
+        return [
+            'status'      => 'success',
+            'order_id'    => (int) $fresh->id,
+            'order_status' => $fresh->order_status,
+            'locked_at'   => $fresh->locked_at,
+            'archived_at' => $fresh->archived_at,
+            'ops_meta'    => $fresh->ops_meta,
+        ];
+    }
+
+    /**
+     * Close out every delivered order whose windows have run out.
+     *
+     * Called by the scheduled sweep. Returns how many it locked so the command can report it.
+     * Uses a plain UPDATE on purpose: this only sets locked_at, so there is no status change to
+     * account for, and going through Eloquent would fire the admin Telegram notifier once per
+     * order — thousands of messages on the first run.
+     */
+    public function lockDeliveredOrders(int $days = self::ADMIN_ACTION_DAYS): int
+    {
+        // COALESCE, matching deliveredAt(): use the stamped delivery time when the order has one
+        // and fall back to updated_at for the history that predates the stamp.
+        $delivered = "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.delivered_at')), updated_at)";
+        return DB::table('orders')
+            ->whereNull('deleted_at')
+            ->whereNull('locked_at')
+            ->where('order_status', OrderStatus::COMPLETED)
+            ->whereRaw("$delivered <= (NOW() - INTERVAL ? DAY)", [$days])
+            ->update(['locked_at' => now()]);
+    }
+
+
 
     /** Admin: which books are open for pre-order, and how they're tracking. */
     public function preorderProducts(Request $request)
@@ -5396,25 +6846,30 @@ class IntegrationController extends CoreController
     public function preorderQuote(Request $request)
     {
         $data = $request->validate([
-            'source_price' => 'required|numeric|min:0',
-            'weight_kg'    => 'nullable|numeric|min:0',
-            'source_url'   => 'nullable|string',
+            'source_price'  => 'required|numeric|min:0',
+            'weight_kg'     => 'nullable|numeric|min:0',
+            'source_url'    => 'nullable|string',
+            'rate'          => 'nullable|numeric|min:0',
+            'weight_per_kg' => 'nullable|numeric|min:0',
         ]);
         $cfg = $this->preorderConfig();
         $r = $this->rateForUrl($data['source_url'] ?? null, $cfg);
+        // Admin can override the conversion rate and the per-kg weight charge per quote.
+        $rate = $request->filled('rate') ? (float) $data['rate'] : $r['rate'];
+        $weightPerKg = $request->filled('weight_per_kg') ? (float) $data['weight_per_kg'] : (float) $cfg['weight_per_kg'];
 
         $weight = (float) ($data['weight_kg'] ?? 0);
-        $base = (float) $data['source_price'] * $r['rate'];
-        $ship = $weight * $cfg['weight_per_kg'];
+        $base = (float) $data['source_price'] * $rate;
+        $ship = $weight * $weightPerKg;
 
         return [
             'price'        => $this->roundPrice($base + $ship),
-            'rate'         => $r['rate'],
+            'rate'         => $rate,
             'currency'     => $r['currency'],
             'base_bdt'     => round($base),
             'weight_bdt'   => round($ship),
             'weight_kg'    => $weight,
-            'weight_per_kg' => $cfg['weight_per_kg'],
+            'weight_per_kg' => $weightPerKg,
         ];
     }
 
@@ -5677,14 +7132,273 @@ class IntegrationController extends CoreController
     {
         $cfg = $this->conversionConfig();
         $mrp = (float) $request->input('mrp', 0);
-        $origin = $request->input('origin', 'indian') === 'bd' ? 'bd' : 'indian';
-        $rate = $origin === 'bd' ? $cfg['bd_rate'] : $cfg['rate'];
+
+        // Printed country drives the conversion. Bangladesh = no conversion (MRP is the
+        // price). Anything else = foreign, so MRP is converted with the foreign rate.
+        // `origin` is still accepted for backward compatibility with older callers.
+        $country = strtolower(trim((string) $request->input('country', '')));
+        if ($country !== '') {
+            $isBd = $country === 'bangladesh';
+        } else {
+            $isBd = $request->input('origin', 'indian') === 'bd';
+        }
+
+        $rate     = $isBd ? $cfg['bd_rate'] : $cfg['rate'];
+        $saleRate = $cfg['sale_rate'];
+        $source   = $isBd ? 'bd' : 'foreign';
+
+        // Category presets (Settings → Conversion Rate → per-category rules). Only meaningful
+        // for foreign books, e.g. a "Magazine" category priced at rupee × 2. Most-specific wins.
+        $rawCats = $request->input('category_ids', []);
+        if (is_string($rawCats)) {
+            $rawCats = explode(',', $rawCats);
+        }
+        $catIds = array_filter(array_map('intval', (array) $rawCats));
+        if ($request->filled('category_id')) {
+            $catIds[] = (int) $request->input('category_id');
+        }
+        if (!$isBd && !empty($catIds)) {
+            foreach ($cfg['overrides'] as $o) {
+                if (($o['type'] ?? '') === 'category'
+                    && in_array((int) ($o['id'] ?? 0), $catIds, true)
+                    && isset($o['rate'])) {
+                    $rate     = (float) $o['rate'];
+                    $saleRate = (float) ($o['sale_rate'] ?? $saleRate);
+                    $source   = 'category:' . ($o['label'] ?: (string) $o['id']);
+                    break;
+                }
+            }
+        }
+
         return [
             'rate'       => $rate,
             'price'      => $mrp > 0 ? $this->roundPrice($mrp * $rate) : 0,
-            'sale_price' => $mrp > 0 && $cfg['sale_rate'] > 0 ? $this->roundPrice($mrp * $cfg['sale_rate']) : 0,
-            'sale_rate'  => $cfg['sale_rate'],
+            'sale_price' => $mrp > 0 && $saleRate > 0 ? $this->roundPrice($mrp * $saleRate) : 0,
+            'sale_rate'  => $saleRate,
+            'is_bd'      => $isBd,
+            'source'     => $source,
         ];
+    }
+
+    // =====================================================================
+    //  Per-product landing pages (#custom)
+    //  Any product can have an extra, standalone marketing landing view at
+    //  /landing/{slug} while the product still works normally in the catalogue.
+    //  Config is stored in Settings.options.landing_pages keyed by product id.
+    // =====================================================================
+
+    /** Normalise + default a single landing config (safe for empty input). */
+    private function normalizeLanding($cfg): array
+    {
+        $cfg = is_array($cfg) ? $cfg : [];
+        $strList = function ($v) {
+            return array_values(array_filter(array_map(
+                fn ($x) => is_string($x) ? trim($x) : '',
+                (array) $v
+            ), fn ($x) => $x !== ''));
+        };
+        $themes = ['royal', 'classic', 'festive', 'modern'];
+        // Read the key once — the old form used $cfg['theme'] in the true branch without the
+        // ?? guard, so any config lacking a theme (every product without a saved landing page)
+        // 500'd on "Undefined array key theme".
+        $wantTheme = $cfg['theme'] ?? 'royal';
+        $theme     = in_array($wantTheme, $themes, true) ? $wantTheme : 'royal';
+
+        // Landing template picks WHICH storefront layout renders. 'default' is the
+        // config-driven generic template (theme/badge/highlights/etc. below drive it).
+        // Anything else is a bespoke, single-product design (e.g. 'anandamela' for the
+        // Anandamela 1433 Puja annual) whose look is hard-coded in the shop — the generic
+        // config fields are then decorative only.
+        $templates    = ['default', 'anandamela'];
+        $wantTemplate = $cfg['template'] ?? 'default';
+        $template     = in_array($wantTemplate, $templates, true) ? $wantTemplate : 'default';
+
+        $features = [];
+        foreach ((array) ($cfg['features'] ?? []) as $f) {
+            if (!is_array($f)) continue;
+            $t = trim((string) ($f['title'] ?? ''));
+            $x = trim((string) ($f['text'] ?? ''));
+            if ($t === '' && $x === '') continue;
+            $features[] = ['icon' => trim((string) ($f['icon'] ?? '📘')) ?: '📘', 'title' => $t, 'text' => $x];
+        }
+        $stats = [];
+        foreach ((array) ($cfg['stats'] ?? []) as $s) {
+            if (!is_array($s)) continue;
+            $v = trim((string) ($s['value'] ?? ''));
+            $l = trim((string) ($s['label'] ?? ''));
+            if ($v === '' && $l === '') continue;
+            $stats[] = ['value' => $v, 'label' => $l];
+        }
+        $testimonials = [];
+        foreach ((array) ($cfg['testimonials'] ?? []) as $tt) {
+            if (!is_array($tt)) continue;
+            $txt = trim((string) ($tt['text'] ?? ''));
+            if ($txt === '') continue;
+            $testimonials[] = [
+                'name'   => trim((string) ($tt['name'] ?? 'পাঠক')),
+                'role'   => trim((string) ($tt['role'] ?? '')),
+                'text'   => $txt,
+                'rating' => max(1, min(5, (int) ($tt['rating'] ?? 5))),
+            ];
+        }
+        $faqs = [];
+        foreach ((array) ($cfg['faqs'] ?? []) as $fq) {
+            if (!is_array($fq)) continue;
+            $q = trim((string) ($fq['q'] ?? ''));
+            $a = trim((string) ($fq['a'] ?? ''));
+            if ($q === '' || $a === '') continue;
+            $faqs[] = ['q' => $q, 'a' => $a];
+        }
+
+        return [
+            'enabled'       => (bool) ($cfg['enabled'] ?? false),
+            'template'      => $template,
+            'theme'         => $theme,
+            'badge'         => trim((string) ($cfg['badge'] ?? '')),
+            'headline'      => trim((string) ($cfg['headline'] ?? '')),
+            'subheadline'   => trim((string) ($cfg['subheadline'] ?? '')),
+            'hero_note'     => trim((string) ($cfg['hero_note'] ?? '')),
+            'cta_primary'   => trim((string) ($cfg['cta_primary'] ?? '')),
+            'cta_secondary' => trim((string) ($cfg['cta_secondary'] ?? '')),
+            'video'         => trim((string) ($cfg['video'] ?? '')),
+            'show_related'  => (bool) ($cfg['show_related'] ?? true),
+            'highlights'    => $strList($cfg['highlights'] ?? []),
+            'features'      => $features,
+            'stats'         => $stats,
+            'testimonials'  => $testimonials,
+            'faqs'          => $faqs,
+        ];
+    }
+
+    /** Raw landing map from settings, keyed by (string) product id. */
+    private function landingMap(): array
+    {
+        $map = $this->options()['landing_pages'] ?? [];
+        return is_array($map) ? $map : [];
+    }
+
+    /** Hydrate a product for the storefront landing page. */
+    private function landingProduct(Product $product): array
+    {
+        $product->load([
+            'type:id,name,slug,settings',
+            'shop:id,name,slug',
+            'author:id,name,slug',
+            'manufacturer:id,name,slug,image',
+            'categories:id,name,slug',
+            'tags:id,name,slug',
+        ]);
+        $arr = $product->toArray();
+        $arr['book'] = $product->book;      // appended book_meta spec (may be null)
+        $arr['in_flash_sale'] = (bool) ($product->in_flash_sale ?? false);
+        return $arr;
+    }
+
+    /**
+     * Public: storefront landing page data for one product (by slug or id).
+     * Returns enabled=false when the product has no active landing config so
+     * the shop can show a graceful "not available" state.
+     */
+    public function landingPage(Request $request)
+    {
+        $slug = trim((string) $request->input('slug', ''));
+        $id   = (int) $request->input('product_id', 0);
+        $product = $slug !== ''
+            ? Product::where('slug', $slug)->first()
+            : ($id ? Product::find($id) : null);
+
+        if (!$product) {
+            return ['status' => 'not_found', 'enabled' => false];
+        }
+        $cfg = $this->normalizeLanding($this->landingMap()[(string) $product->id] ?? []);
+        if (!$cfg['enabled']) {
+            return ['status' => 'disabled', 'enabled' => false, 'slug' => $product->slug];
+        }
+        return [
+            'status'  => 'success',
+            'enabled' => true,
+            'config'  => $cfg,
+            'product' => $this->landingProduct($product),
+        ];
+    }
+
+    /** Public: lightweight list of all products that have a live landing page. */
+    public function landingList(Request $request)
+    {
+        $map = $this->landingMap();
+        $ids = [];
+        foreach ($map as $pid => $cfg) {
+            if ((bool) (($cfg['enabled'] ?? false)) && (int) $pid > 0) {
+                $ids[] = (int) $pid;
+            }
+        }
+        if (empty($ids)) {
+            return ['status' => 'success', 'data' => []];
+        }
+        $books = Product::whereIn('id', $ids)->where('status', 'publish')
+            ->get(['id', 'name', 'slug', 'price', 'sale_price', 'image'])
+            ->map(fn ($p) => [
+                'id'         => $p->id,
+                'name'       => $p->name,
+                'slug'       => $p->slug,
+                'price'      => $p->price,
+                'sale_price' => $p->sale_price,
+                'image'      => is_array($p->image) ? ($p->image['original'] ?? null) : null,
+                'url'        => '/landing/' . $p->slug,
+            ]);
+        return ['status' => 'success', 'data' => $books->values()];
+    }
+
+    /**
+     * Super-admin: GET returns every configured landing page (hydrated with its
+     * product) for the overview UI; POST upserts ONE product's landing config.
+     */
+    public function landingSettings(Request $request)
+    {
+        if ($request->isMethod('post')) {
+            $data = $request->validate([
+                'product_id' => 'required|integer',
+                'config'     => 'nullable|array',
+            ]);
+            $pid = (int) $data['product_id'];
+            if (!Product::whereKey($pid)->exists()) {
+                throw new MarvelException('Product not found.');
+            }
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $map      = is_array($options['landing_pages'] ?? null) ? $options['landing_pages'] : [];
+            $cfg      = $this->normalizeLanding($data['config'] ?? []);
+            if (!$cfg['enabled']
+                && $cfg['template'] === 'default'
+                && empty($cfg['headline']) && empty($cfg['highlights'])
+                && empty($cfg['features']) && empty($cfg['badge'])) {
+                // fully empty + disabled + generic template → drop the entry entirely.
+                // A bespoke template (e.g. 'anandamela') is meaningful on its own even
+                // with the generic fields blank, so it is always kept.
+                unset($map[(string) $pid]);
+            } else {
+                $map[(string) $pid] = $cfg;
+            }
+            $options['landing_pages'] = $map;
+            $settings->update(['options' => $options]);
+        }
+
+        $map = $this->landingMap();
+        $out = [];
+        foreach ($map as $pid => $cfg) {
+            $product = Product::find((int) $pid);
+            if (!$product) continue;
+            $out[] = [
+                'product' => [
+                    'id'    => $product->id,
+                    'name'  => $product->name,
+                    'slug'  => $product->slug,
+                    'image' => is_array($product->image) ? ($product->image['original'] ?? null) : null,
+                ],
+                'config'  => $this->normalizeLanding($cfg),
+            ];
+        }
+        return ['status' => 'success', 'data' => $out];
     }
 
     private function options(): array
@@ -5692,4 +7406,443 @@ class IntegrationController extends CoreController
         $s = Settings::first();
         return $s ? ($s->options ?? []) : [];
     }
+
+    /* ============================ Product copy / move ============================
+     * Super-admin tools on the custom "All products" screen: duplicate a product
+     * into a shop (default: its own shop), or move it to a different shop.
+     * ========================================================================== */
+
+    /** Guard: only a super-admin may copy/move products across shops. */
+    private function assertSuperAdmin(Request $request): void
+    {
+        $user = $request->user();
+        if (!$user || !$user->hasPermissionTo(Permission::SUPER_ADMIN)) {
+            throw new MarvelException(NOT_AUTHORIZED);
+        }
+    }
+
+    /**
+     * Guard: who may work the order desk (notes, courier, call/print status, bank verdicts).
+     *
+     * The order-ops route only lives behind `auth:sanctum`, and orderOps looks orders up by id
+     * without checking who owns them — so without this, any signed-in customer could rewrite
+     * any order. Mirrors the admin app's own `allowedRoles`.
+     *
+     * `getPermissionNames()` rather than `hasPermissionTo()`: the latter throws when a
+     * permission isn't registered, which would lock the desk out entirely.
+     */
+    /* ------------------------------------------------- live visitors (command centre) */
+
+    /** A visitor counts as "here" if they pinged within this many seconds. */
+    private const PRESENCE_WINDOW = 120;
+
+    /**
+     * Public: the shop's heartbeat. One upsert per visitor per beat.
+     *
+     * Telemetry must never cost a page view, so every failure here is swallowed and answered
+     * 200 — a visitor counter is not worth breaking the storefront over.
+     */
+    public function presencePing(Request $request)
+    {
+        try {
+            $vid = substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) $request->input('vid', '')), 0, 64);
+            if ($vid === '') {
+                return ['status' => 'success'];
+            }
+            DB::table('visitor_pings')->updateOrInsert(
+                ['visitor_id' => $vid],
+                ['last_seen' => now()]
+            );
+        } catch (\Throwable $e) {
+            // Swallowed on purpose — see above.
+        }
+        return ['status' => 'success'];
+    }
+
+    /** Admin: how many visitors are on the site right now. */
+    public function liveUsers(Request $request)
+    {
+        $this->assertOrderDeskAccess($request);
+        try {
+            $now = now();
+            $live = DB::table('visitor_pings')
+                ->where('last_seen', '>=', $now->copy()->subSeconds(self::PRESENCE_WINDOW))
+                ->count();
+            $today = DB::table('visitor_pings')
+                ->where('last_seen', '>=', $now->copy()->subHour())
+                ->count();
+
+            // Keep the table the size of "recent visitors" instead of "everyone ever". Pruning on
+            // read means no cron to forget about; 1 in ~20 reads is enough to keep up.
+            if (random_int(1, 20) === 1) {
+                DB::table('visitor_pings')
+                    ->where('last_seen', '<', $now->copy()->subDay())
+                    ->delete();
+            }
+            return ['status' => 'success', 'live' => $live, 'last_hour' => $today];
+        } catch (\Throwable $e) {
+            // Never take the dashboard down over a counter — the UI shows "—" for null.
+            return ['status' => 'success', 'live' => null, 'last_hour' => null];
+        }
+    }
+
+    private function assertOrderDeskAccess(Request $request): void
+    {
+        $user = $request->user();
+        $held = $user ? $user->getPermissionNames()->all() : [];
+        $allowed = [Permission::SUPER_ADMIN, Permission::STORE_OWNER, Permission::STAFF];
+        if (!array_intersect($held, $allowed)) {
+            throw new MarvelException(NOT_AUTHORIZED);
+        }
+    }
+
+    /** Small shop list for the copy/move picker: id, name, slug. */
+    public function productShops(Request $request)
+    {
+        $this->assertSuperAdmin($request);
+        $shops = Shop::query()
+            ->orderByDesc('is_active')->orderBy('name')
+            ->get(['id', 'name', 'slug', 'is_active']);
+        return ['status' => 'success', 'data' => $shops];
+    }
+
+    /**
+     * POST integrations/product-move
+     * body: { product_id, target_shop_id }
+     * Reassigns the product (and its variation rows) to another shop.
+     */
+    public function productMove(Request $request)
+    {
+        $this->assertSuperAdmin($request);
+        $request->validate([
+            'product_id'     => ['required', 'exists:Marvel\Database\Models\Product,id'],
+            'target_shop_id' => ['required', 'exists:Marvel\Database\Models\Shop,id'],
+        ]);
+
+        $product   = Product::findOrFail($request->product_id);
+        $targetId  = (int) $request->target_shop_id;
+        if ((int) $product->shop_id === $targetId) {
+            return ['status' => 'error', 'message' => 'Product is already in that shop.'];
+        }
+
+        $product->shop_id = $targetId;
+        $product->save();
+        // variation_options reference the product by product_id only (no shop_id
+        // column), so they move with the product automatically.
+
+        return [
+            'status'  => 'success',
+            'message' => 'Product moved.',
+            'data'    => ['id' => $product->id, 'shop_id' => $targetId],
+        ];
+    }
+
+    /**
+     * POST integrations/product-copy
+     * body: { product_id, target_shop_id }
+     * Duplicates the product into the target shop (draft), including gallery,
+     * category/tag/attribute pivots and variation rows. Returns the new product.
+     */
+    public function productCopy(Request $request)
+    {
+        $this->assertSuperAdmin($request);
+        $request->validate([
+            'product_id'     => ['required', 'exists:Marvel\Database\Models\Product,id'],
+            'target_shop_id' => ['required', 'exists:Marvel\Database\Models\Shop,id'],
+        ]);
+
+        $source   = Product::with(['categories', 'tags', 'variations', 'variation_options'])
+            ->findOrFail($request->product_id);
+        $targetId = (int) $request->target_shop_id;
+
+        return DB::transaction(function () use ($source, $targetId) {
+            $copy = $source->replicate();
+            $copy->shop_id = $targetId;
+            $copy->status  = 'draft';
+            $copy->name    = $source->name . ' (Copy)';
+            $copy->slug    = $this->uniqueProductSlug($source->slug ?: Str::slug($source->name));
+            // Clear anything that must not be shared between two rows.
+            unset($copy->id);
+            $copy->created_at = null;
+            $copy->updated_at = null;
+            $copy->save();
+
+            if ($source->categories->count()) {
+                $copy->categories()->sync($source->categories->pluck('id')->all());
+            }
+            if ($source->tags->count()) {
+                $copy->tags()->sync($source->tags->pluck('id')->all());
+            }
+            if ($source->variations->count()) {
+                $copy->variations()->sync($source->variations->pluck('id')->all());
+            }
+            foreach ($source->variation_options as $v) {
+                $row = $v->replicate();
+                $row->product_id = $copy->id;
+                if (isset($row->sku) && $row->sku !== null) {
+                    $row->sku = $row->sku . '_copy_' . $copy->id;
+                }
+                $row->created_at = null;
+                $row->updated_at = null;
+                $row->save();
+            }
+
+            return [
+                'status'  => 'success',
+                'message' => 'Product copied.',
+                'data'    => ['id' => $copy->id, 'slug' => $copy->slug, 'shop_id' => $targetId],
+            ];
+        });
+    }
+
+    /** Make a product slug unique by appending -copy / -copy-2 … */
+    private function uniqueProductSlug(string $base): string
+    {
+        $base = Str::slug($base) ?: 'product';
+        $slug = $base . '-copy';
+        $i = 2;
+        while (Product::where('slug', $slug)->exists()) {
+            $slug = $base . '-copy-' . $i;
+            $i++;
+        }
+        return $slug;
+    }
+
+    /* ---------------------------------------------------------------------------------------- *
+     *  Feature check board — what has been tested, by the assistant and by a human
+     * ---------------------------------------------------------------------------------------- */
+
+    /**
+     * The registry joined with whatever verdicts exist, plus a tally.
+     *
+     * The registry is the source of truth for *what exists*; the table only says what happened
+     * to it. So a feature shipped after the last check simply appears as untested rather than
+     * vanishing, which is the failure mode a hand-maintained checklist always ends up with.
+     */
+    public function featureChecks(Request $request)
+    {
+        $this->assertOrderDeskAccess($request);
+
+        $rows = DB::table('feature_checks')->get()->keyBy('feature_key');
+
+        $items = [];
+        foreach (FeatureChecks::REGISTRY as $f) {
+            $row = $rows[$f['key']] ?? null;
+
+            // First sight of a feature: write down what the assistant actually did when it
+            // shipped, so the board starts out honest rather than uniformly blank.
+            if (!$row) {
+                DB::table('feature_checks')->insert([
+                    'feature_key'       => $f['key'],
+                    'ai_staging_status' => $f['ai_staging'] ?? 'untested',
+                    'ai_staging_note'   => $f['ai_staging_note'] ?? null,
+                    'ai_staging_at'     => ($f['ai_staging'] ?? 'untested') !== 'untested' ? now() : null,
+                    'ai_live_status'    => $f['ai_live'] ?? 'untested',
+                    'ai_live_note'      => $f['ai_live_note'] ?? null,
+                    'ai_live_at'        => ($f['ai_live'] ?? 'untested') !== 'untested' ? now() : null,
+                    'created_at'        => now(),
+                    'updated_at'        => now(),
+                ]);
+                $row = DB::table('feature_checks')->where('feature_key', $f['key'])->first();
+            }
+
+            $items[] = [
+                'key'               => $f['key'],
+                'area'              => $f['area'],
+                'area_label'        => FeatureChecks::AREAS[$f['area']] ?? $f['area'],
+                'title'             => $f['title'],
+                'where'             => $f['where'],
+                'ai_staging_status' => $row->ai_staging_status,
+                'ai_staging_note'   => $row->ai_staging_note,
+                'ai_staging_at'     => $row->ai_staging_at,
+                'ai_live_status'    => $row->ai_live_status,
+                'ai_live_note'      => $row->ai_live_note,
+                'ai_live_at'        => $row->ai_live_at,
+                'human_status'      => $row->human_status,
+                'human_note'        => $row->human_note,
+                'human_by'          => $row->human_by,
+                'human_checked_at'  => $row->human_checked_at,
+            ];
+        }
+
+        $n = fn ($col, $val) => count(array_filter($items, fn ($i) => $i[$col] === $val));
+        $tally = [
+            'total'           => count($items),
+            'ai_staging_pass' => $n('ai_staging_status', 'passed'),
+            'ai_live_pass'    => $n('ai_live_status', 'passed'),
+            'human_pass'      => $n('human_status', 'passed'),
+            // The number worth acting on: nobody at all has tried these, anywhere.
+            'nobody_checked'  => count(array_filter($items, fn ($i) =>
+                $i['ai_staging_status'] === 'untested'
+                && $i['ai_live_status'] === 'untested'
+                && $i['human_status'] === 'untested')),
+        ];
+
+        return [
+            'status' => 'success',
+            'items'  => $items,
+            'areas'  => FeatureChecks::AREAS,
+            'tally'  => $tally,
+            // The human column is per-database; saying which site avoids reading a staging tick
+            // as a live one. (The assistant's two columns come from the registry, so they read
+            // the same on both.)
+            'env'    => config('app.env'),
+        ];
+    }
+
+    public function featureCheckSet(Request $request)
+    {
+        $this->assertOrderDeskAccess($request);
+
+        $data = $request->validate([
+            'key'    => 'required|string|in:' . implode(',', FeatureChecks::keys()),
+            'column' => 'required|string|in:human,ai_staging,ai_live',
+            'status' => 'required|string|in:untested,passed,failed',
+            'note'   => 'nullable|string|max:500',
+        ]);
+
+        $user = $request->user();
+        $patch = ['updated_at' => now()];
+
+        if ($data['column'] === 'human') {
+            $patch['human_status'] = $data['status'];
+            $patch['human_note'] = $data['note'] ?? null;
+            $patch['human_by'] = $user->name ?? 'Admin';
+            $patch['human_checked_at'] = $data['status'] === 'untested' ? null : now();
+        } else {
+            // ai_staging / ai_live — how the assistant records a run it has just done.
+            $col = $data['column'];
+            $patch[$col . '_status'] = $data['status'];
+            $patch[$col . '_note'] = $data['note'] ?? null;
+            $patch[$col . '_at'] = $data['status'] === 'untested' ? null : now();
+        }
+
+        DB::table('feature_checks')->updateOrInsert(
+            ['feature_key' => $data['key']],
+            $patch + ['created_at' => now()]
+        );
+
+        return ['status' => 'success'] + (array) DB::table('feature_checks')->where('feature_key', $data['key'])->first();
+    }
+
+    /* ============================ Custom sub-admin roles ============================
+     * Super-admin only. Lets a full super-admin define named roles (a set of
+     * admin-panel sections) and create / assign restricted sub-admins.
+     * See Marvel\Traits\AdminRolesTrait for storage + resolution.
+     * ============================================================================ */
+
+    /** GET  -> { sections: catalogue, roles: [...] }
+     *  PUT  -> save the roles array (full super-admin only). */
+    public function adminRoles(Request $request)
+    {
+        if ($request->isMethod('put')) {
+            if (!$this->isFullSuperAdmin($request->user())) {
+                throw new AuthorizationException(NOT_AUTHORIZED);
+            }
+            $data = $request->validate(['roles' => 'nullable|array']);
+            $roles = collect($data['roles'] ?? [])
+                ->map(fn ($r) => $this->sanitizeAdminRole($r))
+                ->filter()
+                ->values()
+                ->all();
+            $settings = Settings::first();
+            $options  = $settings->options ?? [];
+            $options['admin_roles'] = $roles;
+            $settings->update(['options' => $options]);
+        }
+        return [
+            'status'   => 'success',
+            'sections' => $this->adminSectionsCatalog(),
+            'roles'    => $this->adminRolesList(),
+        ];
+    }
+
+    /** POST { name, email, password, role_id? } -> create a new admin/sub-admin.
+     *  role_id empty  => full super-admin; set => restricted to that role. */
+    public function createAdmin(Request $request)
+    {
+        if (!$this->isFullSuperAdmin($request->user())) {
+            throw new AuthorizationException(NOT_AUTHORIZED);
+        }
+        $data = $request->validate([
+            'name'     => 'required|string|max:191',
+            'email'    => 'required|email|unique:users,email',
+            'password' => 'required|string|min:6',
+            'role_id'  => 'nullable|string',
+        ]);
+
+        $roleId = !empty($data['role_id']) ? $data['role_id'] : null;
+        // A restricted role_id must actually exist.
+        if ($roleId !== null && !collect($this->adminRolesList())->firstWhere('id', $roleId)) {
+            throw new MarvelException('Selected role does not exist.');
+        }
+
+        $user = User::create([
+            'name'          => $data['name'],
+            'email'         => $data['email'],
+            'password'      => Hash::make($data['password']),
+            'is_active'     => true,
+            'admin_role_id' => $roleId,
+        ]);
+        // admins skip the e-mail verification gate
+        $user->email_verified_at = now();
+        $user->save();
+
+        // empty roles table gotcha: ensure the role exists before assigning
+        SpatieRole::findOrCreate(Role::SUPER_ADMIN, 'api');
+        $user->givePermissionTo(Permission::SUPER_ADMIN);
+        $user->assignRole(Role::SUPER_ADMIN);
+
+        Profile::firstOrCreate(['customer_id' => $user->id]);
+
+        return [
+            'status'        => 'success',
+            'id'            => $user->id,
+            'admin_role_id' => $user->admin_role_id,
+        ];
+    }
+
+    /** PUT { user_id, role_id? } -> change an existing admin's role.
+     *  role_id empty => promote to full super-admin. */
+    public function assignAdminRole(Request $request)
+    {
+        if (!$this->isFullSuperAdmin($request->user())) {
+            throw new AuthorizationException(NOT_AUTHORIZED);
+        }
+        $data = $request->validate([
+            'user_id' => 'required',
+            'role_id' => 'nullable|string',
+        ]);
+
+        $roleId = !empty($data['role_id']) ? $data['role_id'] : null;
+        if ($roleId !== null && !collect($this->adminRolesList())->firstWhere('id', $roleId)) {
+            throw new MarvelException('Selected role does not exist.');
+        }
+
+        $target = User::find($data['user_id']);
+        if (!$target) {
+            throw new MarvelException(NOT_FOUND);
+        }
+        // never let the caller lock themselves out of full access
+        if ($target->id == $request->user()->id && $roleId !== null) {
+            throw new MarvelException('You cannot restrict your own account.');
+        }
+        // make sure the target can actually reach the admin panel
+        try {
+            if (!$target->hasPermissionTo(Permission::SUPER_ADMIN)) {
+                SpatieRole::findOrCreate(Role::SUPER_ADMIN, 'api');
+                $target->givePermissionTo(Permission::SUPER_ADMIN);
+                $target->assignRole(Role::SUPER_ADMIN);
+            }
+        } catch (\Throwable $e) {
+            // permission not registered yet -> grant it
+            $target->givePermissionTo(Permission::SUPER_ADMIN);
+        }
+
+        $target->admin_role_id = $roleId;
+        $target->save();
+
+        return ['status' => 'success', 'id' => $target->id, 'admin_role_id' => $target->admin_role_id];
+    }
+
 }

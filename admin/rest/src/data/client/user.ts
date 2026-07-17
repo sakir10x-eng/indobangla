@@ -8,6 +8,10 @@ import {
   VerifyForgetPasswordTokenInput,
   ResetPasswordInput,
   MakeAdminInput,
+  AdminRole,
+  AdminRolesResponse,
+  CreateAdminInput,
+  AssignAdminRoleInput,
   BlockUserInput,
   WalletPointsInput,
   UpdateUser,
@@ -55,6 +59,21 @@ export const userClient = {
   },
   makeAdmin: (variables: MakeAdminInput) => {
     return HttpClient.post<any>(API_ENDPOINTS.MAKE_ADMIN, variables);
+  },
+  // custom sub-admin roles
+  fetchAdminRoles: () => {
+    return HttpClient.get<AdminRolesResponse>(API_ENDPOINTS.ADMIN_ROLES);
+  },
+  saveAdminRoles: (roles: AdminRole[]) => {
+    return HttpClient.put<AdminRolesResponse>(API_ENDPOINTS.ADMIN_ROLES, {
+      roles,
+    });
+  },
+  createAdmin: (variables: CreateAdminInput) => {
+    return HttpClient.post<any>(API_ENDPOINTS.CREATE_ADMIN, variables);
+  },
+  assignAdminRole: (variables: AssignAdminRoleInput) => {
+    return HttpClient.put<any>(API_ENDPOINTS.ADMIN_ROLE_ASSIGN, variables);
   },
   block: (variables: BlockUserInput) => {
     return HttpClient.post<any>(API_ENDPOINTS.BLOCK_USER, variables);

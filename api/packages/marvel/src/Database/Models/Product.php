@@ -37,6 +37,9 @@ class Product extends Model
         'gallery' => 'json',
         'video' => 'json',
         'resell_meta' => 'json',
+        'gift_product_ids' => 'array',
+        'preorder_show_count' => 'boolean',
+        'gift_per_copy' => 'boolean',
     ];
 
     protected $appends = [

@@ -5,7 +5,7 @@ import { sessionSeed } from '@/lib/session-seed';
 
 /**
  * IndoBangla home hero — a clean promotional band that replaces the old
- * Pickbazar slider. Search now lives in the header, so the banner focuses on
+ * default slider. Search now lives in the header, so the banner focuses on
  * the brand message plus a peek at trending books.
  */
 export default function IndoHero() {

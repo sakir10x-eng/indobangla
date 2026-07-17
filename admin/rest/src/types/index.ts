@@ -203,6 +203,32 @@ export interface AuthResponse {
   token: string;
   permissions: string[];
   role: string;
+  managed_sections?: string[] | null;
+  admin_role_id?: string | null;
+}
+
+export interface AdminRole {
+  id: string;
+  name: string;
+  sections: string[];
+}
+
+export interface AdminRolesResponse {
+  status: string;
+  sections: { key: string; label: string }[];
+  roles: AdminRole[];
+}
+
+export interface CreateAdminInput {
+  name: string;
+  email: string;
+  password: string;
+  role_id?: string | null;
+}
+
+export interface AssignAdminRoleInput {
+  user_id: string;
+  role_id?: string | null;
 }
 
 export interface Type {

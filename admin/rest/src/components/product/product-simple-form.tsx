@@ -13,6 +13,7 @@ import { useRouter } from 'next/router';
 import Alert from '@/components/ui/alert';
 import { SettingsOptions } from '@/types';
 import TextArea from '@/components/ui/text-area';
+import ProductGiftInput from '@/components/product/product-gift-input';
 
 type IProps = {
   initialValues: any;
@@ -31,24 +32,53 @@ export default function ProductSimpleForm({ initialValues, settings }: IProps) {
   const { locale } = useRouter();
   const isTranslateProduct = locale !== Config.defaultLanguage;
 
-  // #7 — MRP × conversion-rate → price. Recompute when MRP / origin changes.
+  // #7 — Printed country drives the price. A non-Bangladesh book converts MRP with the
+  // conversion rate (honouring any per-category preset from Settings → Conversion Rate);
+  // a Bangladesh book needs no conversion, so the box is hidden and price is entered directly.
   const mrp = watch('mrp');
-  const bookOrigin = watch('book_origin') || 'indian';
+  const printedCountry = (watch('book.printed_country') || '').trim();
+  const categories = watch('categories');
+  const isBd = printedCountry === 'Bangladesh';
   const [convHint, setConvHint] = useState<string>('');
+
+  const catIds = Array.isArray(categories)
+    ? categories.map((c: any) => c?.id).filter(Boolean)
+    : [];
+  const catKey = catIds.join(',');
+
+  // Keep the stored book_origin in sync so the backend reprice/apply path stays correct.
   useEffect(() => {
+    setValue('book_origin', isBd ? 'bd' : 'indian', { shouldDirty: false });
+  }, [isBd, setValue]);
+
+  useEffect(() => {
+    if (isBd) {
+      setConvHint('');
+      return;
+    }
     const m = Number(mrp);
     if (!m || m <= 0) {
       setConvHint('');
       return;
     }
     let cancelled = false;
-    HttpClient.get<any>('conversion-preview', { mrp: m, origin: bookOrigin })
+    HttpClient.get<any>('conversion-preview', {
+      mrp: m,
+      country: printedCountry || 'India',
+      category_ids: catKey,
+    })
       .then((r: any) => {
         if (cancelled) return;
         if (r?.price) {
           setValue('price', r.price, { shouldDirty: true });
           if (r?.sale_price) setValue('sale_price', r.sale_price, { shouldDirty: true });
-          setConvHint(`MRP ${m} × ${r.rate} = ৳${r.price}${r.sale_price ? ` · sale ৳${r.sale_price}` : ''}`);
+          const src =
+            r?.source && String(r.source).startsWith('category:')
+              ? ` (${String(r.source).slice(9)} preset)`
+              : '';
+          setConvHint(
+            `MRP ${m} × ${r.rate}${src} = ৳${r.price}${r.sale_price ? ` · sale ৳${r.sale_price}` : ''}`,
+          );
         }
       })
       .catch(() => {});
@@ -56,7 +86,7 @@ export default function ProductSimpleForm({ initialValues, settings }: IProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mrp, bookOrigin]);
+  }, [mrp, printedCountry, isBd, catKey]);
 
   const is_digital = watch('is_digital');
   const is_external = watch('is_external');
@@ -75,40 +105,32 @@ export default function ProductSimpleForm({ initialValues, settings }: IProps) {
       />
 
       <Card className="w-full sm:w-8/12 md:w-2/3">
-        {/* #7 — MRP + origin drive the price via the conversion rate. */}
-        <div className="mb-5 rounded-lg border border-emerald-100 bg-emerald-50/40 p-3">
-          <div className="grid gap-3 sm:grid-cols-2">
+        {/* #7 — Printed country drives the conversion. Non-Bangladesh → MRP × rate box.
+            Bangladesh → no box, price is entered directly below. */}
+        {isBd ? (
+          <p className="mb-5 rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 text-[11px] font-semibold text-emerald-700">
+            🇧🇩 বাংলাদেশি বই (Printed country = Bangladesh) — কোনো কনভার্সন লাগবে না, নিচে সরাসরি দাম দিন।
+          </p>
+        ) : (
+          <div className="mb-5 rounded-lg border border-amber-100 bg-amber-50/40 p-3">
             <Input
               label="MRP (আসল কভার প্রাইস)"
               {...register('mrp')}
               type="number"
               variant="outline"
             />
-            <div>
-              <Label>Origin</Label>
-              <select
-                {...register('book_origin')}
-                className="mt-0.5 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
-              >
-                <option value="indian">Indian (×conversion rate)</option>
-                <option value="bd">Bangladeshi (MRP as-is)</option>
-              </select>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+                🌍 {printedCountry || 'বিদেশি'} বই — MRP × conversion rate
+              </span>
+              {convHint && <span className="text-xs font-semibold text-emerald-700">💱 {convHint}</span>}
             </div>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Printed country বাংলাদেশ না হলে MRP দিলে দাম স্বয়ংক্রিয়ভাবে conversion rate অনুযায়ী বসবে।
+              রেট বদলাতে Settings → Conversion Rate — ক্যাটাগরি অনুযায়ী প্রিসেটও (যেমন Magazine) ওখানে সেট করা যায়।
+            </p>
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                bookOrigin === 'bd' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-              }`}
-            >
-              {bookOrigin === 'bd' ? '🇧🇩 বাংলাদেশি বই — MRP-ই দাম' : '🇮🇳 ইন্ডিয়ান বই — MRP × conversion rate'}
-            </span>
-            {convHint && <span className="text-xs font-semibold text-emerald-700">💱 {convHint}</span>}
-          </div>
-          <p className="mt-1 text-[11px] text-slate-400">
-            MRP দিলে দাম স্বয়ংক্রিয়ভাবে conversion rate অনুযায়ী বসবে। রেট বদলাতে Settings → Conversion Rate.
-          </p>
-        </div>
+        )}
 
         {/* Pre-order: opens the book for orders before it's in stock. */}
         <div className="mb-5 rounded-lg border border-rose-100 bg-rose-50/40 p-3">
@@ -118,10 +140,10 @@ export default function ProductSimpleForm({ initialValues, settings }: IProps) {
           </label>
           <p className="mt-1 text-[11px] text-slate-500">
             স্টকে না থাকলেও অর্ডার নেওয়া যাবে। কাস্টমারকে কমপক্ষে <b>{watch('preorder_advance_pct') || 50}%</b> অগ্রিম দিতে হবে;
-            পুরো ১০০% দিলে <b>অতিরিক্ত ৫% ছাড়</b> পাবে। প্রি-অর্ডার থাকলে ক্যাশ-অন-ডেলিভারি দেখাবে না।
+            পুরো ১০০% দিলে <b>অতিরিক্ত {watch('preorder_full_pay_discount_pct') ?? 5}% ছাড়</b> পাবে ({Number(watch('preorder_full_pay_discount_pct')) === 0 ? 'এই বইয়ে বন্ধ' : '০ দিলে বন্ধ'})। প্রি-অর্ডার থাকলে ক্যাশ-অন-ডেলিভারি দেখাবে না।
           </p>
           {watch('is_preorder') && (
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div>
                 <Label>কত তারিখ পর্যন্ত</Label>
                 <input type="date" {...register('preorder_until')}
@@ -129,9 +151,16 @@ export default function ProductSimpleForm({ initialValues, settings }: IProps) {
               </div>
               <Input label="কপি সীমা (খালি = সীমাহীন)" {...register('preorder_limit')} type="number" variant="outline" placeholder="সীমাহীন" />
               <Input label="অগ্রিম %" {...register('preorder_advance_pct')} type="number" variant="outline" placeholder="50" />
+              <Input label="পূর্ণ-পেমেন্ট ছাড় % (0 = বন্ধ)" {...register('preorder_full_pay_discount_pct')} type="number" variant="outline" placeholder="5" />
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600 sm:col-span-2 lg:col-span-4">
+                <input type="checkbox" className="h-3.5 w-3.5 accent-[#e63946]" {...register('preorder_show_count')} />
+                👁️ শপে "আর X কপি বাকি" দেখান (আনচেক করলে সংখ্যাটা লুকানো থাকবে)
+              </label>
             </div>
           )}
         </div>
+
+        <ProductGiftInput control={control} register={register} />
         <Input
           label={`${t('form:input-label-price')}*`}
           {...register('price')}

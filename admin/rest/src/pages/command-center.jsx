@@ -259,6 +259,7 @@ function Bar2({ pct, color }) {
 export default function IndoBanglaDashboard() {
   const [dark, setDark] = useState(false);
   const [nav, setNav] = useState("overview");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [modRange, setModRange] = useState("Monthly");
   const [dismissed, setDismissed] = useState([]);
 
@@ -344,22 +345,32 @@ export default function IndoBanglaDashboard() {
     <div className={dark ? "dark" : ""}>
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex text-slate-800 dark:text-slate-200" style={{ fontFamily: "'Inter', 'Hind Siliguri', system-ui, sans-serif" }}>
 
-        {/* Sidebar */}
-        <aside className="hidden lg:flex w-60 flex-col bg-[#0b1220] text-slate-300 sticky top-0 h-screen">
+        {/* Mobile drawer backdrop — this page renders without the admin Layout, so it owns
+            its own nav. Tapping outside closes, same as the rest of the admin. */}
+        {menuOpen && (
+          <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setMenuOpen(false)} />
+        )}
+
+        {/* Sidebar — a slide-in drawer on mobile, a static column from lg up. It used to be
+            `hidden lg:flex`, which left mobile with no navigation at all. */}
+        <aside className={`fixed top-0 left-0 z-50 h-screen w-60 flex flex-col bg-[#0b1220] text-slate-300 transition-transform duration-200 lg:sticky lg:z-auto lg:translate-x-0 ${menuOpen ? "translate-x-0" : "-translate-x-full"}`}>
           <div className="px-5 py-5 border-b border-white/10">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl bg-teal-500 grid place-items-center font-bold text-white">ইব</div>
               <div><div className="text-white font-bold text-sm leading-tight">Indo Bangla</div><div className="text-[11px] text-slate-400">Superadmin</div></div>
+              <button onClick={() => setMenuOpen(false)} className="ml-auto lg:hidden text-slate-400 hover:text-white" aria-label="Close menu">
+                <XOctagon className="w-5 h-5" />
+              </button>
             </div>
           </div>
           <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
             {navItems.map((it) => it.href ? (
-              <Link key={it.id} href={it.href} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors hover:bg-white/5 text-slate-400">
+              <Link key={it.id} href={it.href} onClick={() => setMenuOpen(false)} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors hover:bg-white/5 text-slate-400">
                 <it.icon className="w-[18px] h-[18px]" /><span className="flex-1 text-left">{it.label}</span>
                 {it.badge ? <span className="text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded-full">{it.badge}</span> : null}
               </Link>
             ) : (
-              <button key={it.id} onClick={() => setNav(it.id)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${nav === it.id ? "bg-teal-500/15 text-white" : "hover:bg-white/5 text-slate-400"}`}>
+              <button key={it.id} onClick={() => { setNav(it.id); setMenuOpen(false); }} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${nav === it.id ? "bg-teal-500/15 text-white" : "hover:bg-white/5 text-slate-400"}`}>
                 <it.icon className="w-[18px] h-[18px]" /><span className="flex-1 text-left">{it.label}</span>
                 {it.badge ? <span className="text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded-full">{it.badge}</span> : null}
               </button>
@@ -375,7 +386,7 @@ export default function IndoBanglaDashboard() {
         <div className="flex-1 min-w-0">
           <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
             <div className="px-5 lg:px-8 py-3.5 flex items-center gap-4">
-              <button className="lg:hidden"><Menu className="w-5 h-5" /></button>
+              <button onClick={() => setMenuOpen(true)} className="lg:hidden" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
               <div>
                 <h1 className="font-bold text-slate-900 dark:text-white text-lg leading-tight">স্বাগতম, Sazzad 👋</h1>
                 <p className="text-xs text-slate-500 dark:text-slate-400">আজ {criticalCount} টি জরুরি বিষয়ে আপনার নজর দরকার</p>
@@ -868,7 +879,16 @@ export default function IndoBanglaDashboard() {
               </div>
             </section>
 
-            <footer className="text-center text-xs text-slate-400 dark:text-slate-600 py-4">Indo Bangla Superadmin · sample data · Laravel API connect করলে live হবে</footer>
+            {/* This used to read "sample data · Laravel API connect করলে live হবে" as a fixed
+                string, which was simply untrue — dashboard-summary has been wired up all along.
+                Report what actually happened instead: the page falls back to sample numbers only
+                for blocks the API didn't return. */}
+            <footer className="text-center text-xs text-slate-400 dark:text-slate-600 py-4">
+              Indo Bangla Superadmin ·{' '}
+              {summary
+                ? 'লাইভ ডেটা — Laravel API থেকে'
+                : 'API সাড়া দেয়নি — নিচের সংখ্যাগুলো নমুনা'}
+            </footer>
           </main>
         </div>
       </div>

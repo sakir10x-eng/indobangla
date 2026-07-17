@@ -1,5 +1,6 @@
 import SelectInput from '@/components/ui/select-input';
 import Label from '@/components/ui/label';
+import AddOptionLink from '@/components/product/add-option-link';
 import ValidationError from '@/components/ui/form-validation-error';
 import { Control } from 'react-hook-form';
 import { useTranslation } from 'next-i18next';
@@ -20,7 +21,10 @@ const ProductGroupInput = ({ control, error }: Props) => {
   });
   return (
     <div className="mb-5">
-      <Label>{t('form:input-label-group')}*</Label>
+      <div className="flex items-center justify-between">
+        <Label>{t('form:input-label-group')}*</Label>
+        <AddOptionLink href="/groups/create" label="নতুন টাইপ" />
+      </div>
       <SelectInput
         name="type"
         control={control}

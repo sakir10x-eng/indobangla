@@ -98,7 +98,12 @@ class ProductRepository extends BaseRepository
         'is_preorder',
         'preorder_until',
         'preorder_limit',
-        'preorder_advance_pct'
+        'preorder_show_count',
+        'preorder_advance_pct',
+        'preorder_full_pay_discount_pct',
+        'gift_product_ids',
+        'gift_max',
+        'gift_per_copy'
     ];
     public function getProductDataArray(): array
     {
@@ -214,7 +219,7 @@ class ProductRepository extends BaseRepository
             $data = $request->only($this->dataArray);
             $data['slug'] = $this->makeSlug($request);
 
-            if ($setting->options["isProductReview"]) {
+            if (!empty($setting->options["isProductReview"])) {
                 if ($request->status == ProductStatus::DRAFT) {
                     $data['status'] = ProductStatus::DRAFT;
                 } elseif ($request->status == ProductStatus::UNDER_REVIEW) {
@@ -469,7 +474,7 @@ class ProductRepository extends BaseRepository
             $data = $request->only($this->dataArray);
             $data['sale_price'] = isset($request['sale_price']) ? $request['sale_price'] : null;
 
-            if ($setting->options["isProductReview"]) {
+            if (!empty($setting->options["isProductReview"])) {
                 $data['status'] = $this->checkProductForPublish($request, $product);
             }
 
@@ -512,7 +517,7 @@ class ProductRepository extends BaseRepository
                 ]);
             }
 
-            if ($setting->options["enableEmailForDigitalProduct"]) {
+            if (!empty($setting->options["enableEmailForDigitalProduct"])) {
                 if ($request->product_type == 'variable') {
                     foreach ($request['variation_options']['upsert'] as $variation_data) {
                         if ($variation_data['inform_purchased_customer']) {

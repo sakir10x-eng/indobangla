@@ -18,7 +18,8 @@ import {
   useCourierTrackMutation,
 } from '@/data/courier-order';
 import usePrice from '@/utils/use-price';
-import { printInvoice } from '@/components/order/print-invoice';
+import { printInvoice, type InvoiceCoupon } from '@/components/order/print-invoice';
+import { useSettingsQuery } from '@/data/settings';
 import { HttpClient } from '@/data/client/http-client';
 import { useOrderMoveItemMutation } from '@/data/integrations';
 import { useRouter } from 'next/router';
@@ -187,6 +188,11 @@ export default function OrderDetailsPage() {
     id: query.orderId as string,
     language: locale!,
   });
+  // Same promo-line setting the order board's print control writes. Missing key = the
+  // line has always printed, so keep printing it.
+  const { settings } = useSettingsQuery({ language: locale as string });
+  const invoiceCoupon: InvoiceCoupon =
+    (settings as any)?.options?.invoiceCoupon ?? { enabled: true, code: 'WELCOME50', amount: 50 };
   const { mutate: updateOrder, isLoading: updating } = useUpdateOrderMutation();
   const { mutate: adjust, isLoading: adjusting } = useOrderAdjustMutation();
   const { mutate: editItems, isLoading: editingItems } =
@@ -281,11 +287,12 @@ export default function OrderDetailsPage() {
       delivery: Number(order.delivery_fee) || 0,
       discount: Number(order.discount) || 0,
       total: Number(order.total) || 0,
+      walletPoints: Number((order as any).wallet_point?.amount) || 0,
       paid: order.payment_status === 'payment-success' || Number(order.paid_total) >= Number(order.total),
       createdAt: order.created_at,
       courier: (order.ops_meta as any)?.courier || order.logistics_provider,
       note: order.note,
-    });
+    }, invoiceCoupon);
   };
 
   const notifyMessages: Record<string, string> = {

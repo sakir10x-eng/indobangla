@@ -1,6 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#0f766e"/>
-  <path d="M16 16h13c3 0 5 1.4 5 4v28c0-2-2-3.4-5-3.4H16z" fill="#ffffff"/>
-  <path d="M48 16H35c-3 0-5 1.4-5 4v28c0-2 2-3.4 5-3.4h13z" fill="#e6f2f0"/>
-  <rect x="30" y="16" width="4" height="34" fill="#0b5a53"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ED3444"/>
+      <stop offset="1" stop-color="#C81E2B"/>
+    </linearGradient>
+  </defs>
+  <!-- brand-red rounded tile -->
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- open book, cream/white pages fanning from a centre spine -->
+  <g>
+    <path d="M256 150 C214 122 160 116 118 128 C110 130 104 138 104 147 L104 356 C104 366 113 373 123 371 C160 362 214 366 256 392 Z" fill="#FFFFFF"/>
+    <path d="M256 150 C298 122 352 116 394 128 C402 130 408 138 408 147 L408 356 C408 366 399 373 389 371 C352 362 298 366 256 392 Z" fill="#F1EDE4"/>
+    <rect x="250" y="150" width="12" height="242" rx="6" fill="#C81E2B"/>
+    <g stroke="#E7DFD0" stroke-width="9" stroke-linecap="round">
+      <line x1="140" y1="182" x2="228" y2="196"/>
+      <line x1="140" y1="222" x2="228" y2="236"/>
+      <line x1="140" y1="262" x2="228" y2="276"/>
+      <line x1="140" y1="302" x2="228" y2="316"/>
+    </g>
+    <g stroke="#D9D1C0" stroke-width="9" stroke-linecap="round">
+      <line x1="284" y1="196" x2="372" y2="182"/>
+      <line x1="284" y1="236" x2="372" y2="222"/>
+      <line x1="284" y1="276" x2="372" y2="262"/>
+      <line x1="284" y1="316" x2="372" y2="302"/>
+    </g>
+  </g>
 </svg>

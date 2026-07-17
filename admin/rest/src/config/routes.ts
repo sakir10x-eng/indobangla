@@ -129,6 +129,8 @@ export const Routes = {
     ...routesFactory('/terms-and-conditions'),
   },
   adminList: '/users/admins',
+  createAdmin: '/users/create-admin',
+  adminRoles: '/users/roles',
   vendorList: '/users/vendors',
   pendingVendorList: '/users/vendors/pending',
   customerList: '/users/customer',

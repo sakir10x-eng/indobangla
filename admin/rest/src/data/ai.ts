@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from 'react-query';
 import { toast } from 'react-toastify';
-import { aiClient, AiSettingsInput, AiExtractInput } from '@/data/client/ai';
+import {
+  aiClient,
+  AiSettingsInput,
+  AiExtractInput,
+  UpdateProductInput,
+} from '@/data/client/ai';
 
 export const AI_SETTINGS_KEY = 'ai-settings';
 
@@ -52,4 +57,27 @@ export const useListCrawlMutation = () => {
 
 export const useAiCreateProductMutation = () => {
   return useMutation((product: any) => aiClient.createProduct(product));
+};
+
+export const useAiTestMutation = () => {
+  return useMutation(() => aiClient.test());
+};
+
+export const useAiModelsQuery = (provider: string) => {
+  const { data, isLoading } = useQuery(
+    [AI_SETTINGS_KEY, 'models', provider],
+    () => aiClient.models(provider),
+    // The catalogue barely moves and the API caches it for 6h anyway; refetching
+    // it on every focus would just add latency to the settings page.
+    { staleTime: 30 * 60 * 1000, retry: false, keepPreviousData: true },
+  );
+  return { models: data?.models ?? [], source: data?.source, loading: isLoading };
+};
+
+export const useDuplicateCheckMutation = () => {
+  return useMutation((products: any[]) => aiClient.duplicateCheck(products));
+};
+
+export const useAiUpdateProductMutation = () => {
+  return useMutation((input: UpdateProductInput) => aiClient.updateProduct(input));
 };

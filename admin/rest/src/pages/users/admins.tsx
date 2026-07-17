@@ -5,11 +5,13 @@ import Loader from '@/components/ui/loader/loader';
 import AdminsList from '@/components/user/user-admin-list';
 import { useAdminsQuery } from '@/data/user';
 import { SortOrder } from '@/types';
-import { adminOnly } from '@/utils/auth-utils';
+import { adminOnly, isFullAdmin } from '@/utils/auth-utils';
 import { useTranslation } from 'next-i18next';
 import { serverSideTranslations } from 'next-i18next/serverSideTranslations';
 import { useState } from 'react';
 import PageHeading from '@/components/common/page-heading';
+import LinkButton from '@/components/ui/link-button';
+import { Routes } from '@/config/routes';
 export default function Admins() {
   const { t } = useTranslation();
   const [searchTerm, setSearchTerm] = useState('');
@@ -39,10 +41,21 @@ export default function Admins() {
 
   return (
     <>
-      <Card className="mb-8 flex items-center">
-        <div className="md:w-1/4">
+      <Card className="mb-8 flex flex-col items-center gap-4 md:flex-row">
+        <div className="md:w-1/3">
           <PageHeading title={t('text-admins')} />
         </div>
+
+        {isFullAdmin() && (
+          <div className="flex w-full flex-wrap items-center justify-end gap-3 md:w-2/3">
+            <LinkButton href={Routes.adminRoles} variant="outline" size="small">
+              Manage Roles
+            </LinkButton>
+            <LinkButton href={Routes.createAdmin} size="small">
+              + Create Admin
+            </LinkButton>
+          </div>
+        )}
       </Card>
 
       {loading ? null : (

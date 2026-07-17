@@ -5,8 +5,15 @@ import Link from '@/components/ui/link';
 import {
   Search, Pencil, Eye, Heart, TrendingUp, TrendingDown, Minus, Star,
   Percent, PackageX, AlertTriangle, ArrowUpDown, ChevronDown, Package,
-  ShoppingBag, Megaphone,
+  ShoppingBag, Megaphone, Rocket, Copy, ArrowRightLeft, X, Sparkles,
 } from 'lucide-react';
+import {
+  useLandingSettingsQuery,
+  useProductShopsQuery,
+  useProductCopyMutation,
+  useProductMoveMutation,
+} from '@/data/integrations';
+import LandingEditorModal from '@/components/product/landing-editor-modal';
 
 const C = {
   paper: '#f6f6f3', card: '#fff', ink: '#16221f', sub: '#6b7773', line: '#e7e8e3',
@@ -17,6 +24,15 @@ const C = {
 const covers = [['#e8632a', '#b8401a'], ['#2f6f6b', '#17423f'], ['#7a4bd0', '#4a2a8c'], ['#c9962a', '#8a6412'], ['#3d6cc9', '#22437f'], ['#c94f6d', '#8a2f47']];
 const money = (n: number) => '৳' + (Number(n) || 0).toLocaleString('en-IN');
 const LOW = 10;
+
+// Bespoke, single-product landing designs. When a product's landing_template matches
+// one of these it gets a distinct "Special" badge in the list (vs the generic purple
+// "Landing" pill) so it's obvious the page is a one-off custom design.
+const SPECIAL_LANDINGS: Record<string, string> = {
+  anandamela: 'আনন্দমেলা ১৪৩৩',
+};
+const specialLandingLabel = (p: any) =>
+  p?.has_landing ? SPECIAL_LANDINGS[p?.landing_template as string] : undefined;
 
 function Cover({ p, size = 46 }: any) {
   const [a, b] = covers[p.id % covers.length];
@@ -48,8 +64,14 @@ function Kpi({ icon: Icon, label, value, fg, bg }: any) {
 export default function IndoProductList() {
   const [q, setQ] = useState('');
   const [chip, setChip] = useState('all');
-  const [sort, setSort] = useState('sold');
+  const [sort, setSort] = useState('newest');
   const [page, setPage] = useState(1);
+  const [editing, setEditing] = useState<any>(null);
+  const [shopModal, setShopModal] = useState<{ product: any; mode: 'copy' | 'move' } | null>(null);
+
+  const { items: landingItems } = useLandingSettingsQuery();
+  const landingConfigFor = (id: number) =>
+    (landingItems as any[]).find((x) => x?.product?.id === id)?.config;
 
   const { data, isLoading } = useQuery(
     ['product-admin-list', q, chip, sort, page],
@@ -80,7 +102,7 @@ export default function IndoProductList() {
             <div style={{ width: 5, height: 30, background: C.brand, borderRadius: 3 }} />
             <div><h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Products</h1><div style={{ fontSize: 12.5, color: C.sub }}>IndoBangla • Catalogue overview</div></div>
           </div>
-          <Link href="/products/create" style={{ background: C.brand, color: '#fff', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Package size={16} /> Add product</Link>
+          <Link href="/indo-bangla/products/create" style={{ background: C.brand, color: '#fff', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Package size={16} /> Add product</Link>
         </div>
 
         {/* toolbar */}
@@ -163,9 +185,31 @@ export default function IndoProductList() {
                   </td>
                   <td style={{ ...td, paddingRight: 18 }}>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                      {p.status === 'publish' ? <Pill text="Publish" fg={C.green} bg={C.greenSoft} /> : <Pill text="Draft" fg={C.sub} bg="#eef0ec" />}
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        {p.status === 'publish' ? <Pill text="Publish" fg={C.green} bg={C.greenSoft} /> : <Pill text="Draft" fg={C.sub} bg="#eef0ec" />}
+                        {p.has_landing && (
+                          specialLandingLabel(p)
+                            ? <Pill text={`Special · ${specialLandingLabel(p)}`} icon={Sparkles} fg={C.gold} bg={C.goldSoft} />
+                            : <Pill text="Landing" icon={Rocket} fg="#7c3aed" bg="#f0eafd" />
+                        )}
+                      </div>
                       <div style={{ display: 'flex', gap: 4 }}>
+                        {(() => {
+                          const sp = specialLandingLabel(p);
+                          const on = p.has_landing;
+                          return (
+                            <button
+                              onClick={() => setEditing(p)}
+                              title={sp ? `Special landing: ${sp}` : on ? 'Edit landing page' : 'Create landing page'}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, height: 30, padding: '0 10px', borderRadius: 8, border: `1px solid ${sp ? '#ecd9a6' : on ? '#d9cbf7' : C.line}`, background: sp ? C.goldSoft : on ? '#f0eafd' : C.card, color: sp ? C.gold : on ? '#7c3aed' : C.sub, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                            >
+                              {sp ? <Sparkles size={14} /> : <Rocket size={14} />} Landing
+                            </button>
+                          );
+                        })()}
                         <Link href={`/products/${p.slug}/edit`} title="Edit" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}` }}><Pencil size={15} color={C.brand} /></Link>
+                        <button type="button" onClick={() => setShopModal({ product: p, mode: 'copy' })} title="Copy to a shop" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, cursor: 'pointer' }}><Copy size={15} color={C.sub} /></button>
+                        <button type="button" onClick={() => setShopModal({ product: p, mode: 'move' })} title="Move to another shop" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, cursor: 'pointer' }}><ArrowRightLeft size={15} color={C.sub} /></button>
                         <a href={`https://indobangla.tech/products/${p.slug}`} target="_blank" rel="noreferrer" title="View" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}` }}><Eye size={15} color={C.sub} /></a>
                       </div>
                     </div>
@@ -184,6 +228,92 @@ export default function IndoProductList() {
             <button onClick={() => setPage((p) => Math.min(lastPage, p + 1))} disabled={page >= lastPage} style={{ padding: '8px 16px', border: `1px solid ${C.line}`, borderRadius: 10, background: C.card, fontWeight: 600, opacity: page >= lastPage ? 0.4 : 1 }}>Next →</button>
           </div>
         )}
+      </div>
+
+      {editing && (
+        <LandingEditorModal
+          product={editing}
+          initialConfig={landingConfigFor(editing.id)}
+          onClose={() => setEditing(null)}
+        />
+      )}
+
+      {shopModal && (
+        <ShopPickerModal
+          product={shopModal.product}
+          mode={shopModal.mode}
+          onClose={() => setShopModal(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ShopPickerModal({ product, mode, onClose }: { product: any; mode: 'copy' | 'move'; onClose: () => void }) {
+  const { shops, loading } = useProductShopsQuery();
+  const copy = useProductCopyMutation();
+  const move = useProductMoveMutation();
+  const [target, setTarget] = useState<number>(product?.shop_id || 0);
+  const busy = copy.isLoading || move.isLoading;
+
+  // Default the picker to the product's current shop once shops load.
+  React.useEffect(() => {
+    if (!target && product?.shop_id) setTarget(product.shop_id);
+    else if (!target && shops.length) setTarget(shops[0].id);
+  }, [shops]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isMove = mode === 'move';
+  const disabled = busy || !target || (isMove && target === product?.shop_id);
+
+  const submit = () => {
+    if (!target) return;
+    const input = { product_id: product.id, target_shop_id: target };
+    const m = isMove ? move : copy;
+    m.mutate(input, { onSuccess: () => onClose() });
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,22,20,0.45)', display: 'grid', placeItems: 'center', zIndex: 60, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: 'min(440px, 100%)', padding: 22, fontFamily: "'Inter', system-ui, sans-serif", boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16, fontWeight: 800, color: C.ink }}>
+            {isMove ? <ArrowRightLeft size={18} color={C.brand} /> : <Copy size={18} color={C.brand} />}
+            {isMove ? 'Move product' : 'Copy product'}
+          </div>
+          <button type="button" onClick={onClose} style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}`, background: '#fff', cursor: 'pointer' }}><X size={16} color={C.sub} /></button>
+        </div>
+        <div style={{ fontSize: 13, color: C.sub, marginBottom: 16, lineHeight: 1.4 }}>
+          {isMove
+            ? <>Move <b style={{ color: C.ink }}>{product?.title}</b> to another shop. It leaves its current shop.</>
+            : <>Make a copy of <b style={{ color: C.ink }}>{product?.title}</b> in a shop. The copy is saved as a draft.</>}
+        </div>
+
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
+          {isMove ? 'Move to shop' : 'Copy into shop'}
+        </label>
+        <select
+          value={target || ''}
+          onChange={(e) => setTarget(Number(e.target.value))}
+          disabled={loading || busy}
+          style={{ width: '100%', padding: '11px 12px', borderRadius: 10, border: `1px solid ${C.line}`, fontSize: 14, background: '#fff', color: C.ink, marginBottom: 6 }}
+        >
+          {loading && <option>Loading shops…</option>}
+          {!loading && shops.map((s: any) => (
+            <option key={s.id} value={s.id}>
+              {s.name}{s.id === product?.shop_id ? ' (current)' : ''}{!s.is_active ? ' — inactive' : ''}
+            </option>
+          ))}
+        </select>
+        {isMove && target === product?.shop_id && (
+          <div style={{ fontSize: 12, color: '#b45309', marginBottom: 4 }}>Pick a different shop to move.</div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+          <button type="button" onClick={onClose} disabled={busy} style={{ padding: '10px 16px', borderRadius: 10, border: `1px solid ${C.line}`, background: '#fff', fontWeight: 700, fontSize: 13.5, color: C.sub, cursor: 'pointer' }}>Cancel</button>
+          <button type="button" onClick={submit} disabled={disabled} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: C.brand, color: '#fff', fontWeight: 700, fontSize: 13.5, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 }}>
+            {busy ? 'Working…' : isMove ? 'Move product' : 'Copy product'}
+          </button>
+        </div>
       </div>
     </div>
   );

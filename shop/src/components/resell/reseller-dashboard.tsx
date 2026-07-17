@@ -11,6 +11,10 @@ import { toast } from 'react-toastify';
 
 const bdt = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-IN');
 
+// Effective selling price — mirrors the backend (`sale_price ?: price`). All
+// reseller math (cost, cap, margin) is based on the sale price, not the MRP.
+const eff = (p: any) => (Number(p?.sale_price) > 0 ? Number(p.sale_price) : Number(p?.price));
+
 const check = (res: any): boolean => {
   if (res?.errors?.length) {
     toast.error(res.errors[0]?.message || 'কাজটি করা যায়নি।');
@@ -38,23 +42,49 @@ export default function ResellerDashboard() {
   const [myPrice, setMyPrice] = useState('');
   const [payAmount, setPayAmount] = useState('');
   const [bkash, setBkash] = useState('');
+  const [topupAmount, setTopupAmount] = useState('');
+  const [loadingUp, setLoadingUp] = useState(false);
 
   const refresh = () => qc.invalidateQueries(['reseller-status']);
 
+  // The account no longer opens on click — it opens when the fee is actually paid, so this
+  // just hands the customer to the pay screen (bKash or bank transfer).
   const open = async () => {
     setOpening(true);
     try {
       const res: any = await HttpClient.post('reseller/open', {});
-      if (check(res)) toast.success('রিসেলার অ্যাকাউন্ট চালু হয়েছে!');
-      refresh();
+      if (res?.pay_link) {
+        window.location.href = res.pay_link;
+        return;
+      }
+      if (res?.status === 'already_open') refresh();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'পেমেন্ট শুরু করা যায়নি।');
     } finally {
       setOpening(false);
     }
   };
 
+  const topup = async () => {
+    const amount = Number(topupAmount);
+    if (!amount || amount < 1) return toast.error('কত টাকা লোড করবেন লিখুন।');
+    setLoadingUp(true);
+    try {
+      const res: any = await HttpClient.post('reseller/topup', { amount });
+      if (res?.pay_link) {
+        window.location.href = res.pay_link;
+        return;
+      }
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'ব্যালান্স লোড শুরু করা যায়নি।');
+    } finally {
+      setLoadingUp(false);
+    }
+  };
+
   const addProduct = async () => {
     if (!priceFor) return;
-    const base = Number(priceFor.price);
+    const base = eff(priceFor);
     const cap = base * (1 + (cfg?.markup_cap_pct ?? 5) / 100);
     if (Number(myPrice) < base || Number(myPrice) > cap) {
       return toast.error(`দাম ${bdt(base)} থেকে ${bdt(cap)} এর মধ্যে হতে হবে।`);
@@ -95,16 +125,18 @@ export default function ResellerDashboard() {
           </div>
           <button onClick={open} disabled={opening}
             className="mt-5 w-full rounded-lg bg-accent py-3 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60">
-            {opening ? 'চালু হচ্ছে…' : `রিসেলার অ্যাকাউন্ট চালু করুন (${bdt(cfg?.open_fee ?? 1000)})`}
+            {opening ? 'পেমেন্টে নেওয়া হচ্ছে…' : `${bdt(cfg?.open_fee ?? 1000)} দিয়ে অ্যাকাউন্ট চালু করুন`}
           </button>
-          <p className="mt-2 text-xs text-gray-400">ওপেনিং ফি অ্যাকাউন্টে বকেয়া হিসেবে যোগ হবে।</p>
+          <p className="mt-2 text-xs text-gray-400">
+            বিকাশ বা ব্যাংক ট্রান্সফারে ওপেনিং ফি দিন — পেমেন্ট নিশ্চিত হলেই অ্যাকাউন্ট চালু হবে।
+          </p>
         </div>
       </div>
     );
   }
 
   // ---- reseller panel ----
-  const base = priceFor ? Number(priceFor.price) : 0;
+  const base = priceFor ? eff(priceFor) : 0;
   const cap = base * (1 + (cfg?.markup_cap_pct ?? 5) / 100);
   const cost = base * (1 - (cfg?.discount_pct ?? 5) / 100);
 
@@ -123,6 +155,43 @@ export default function ResellerDashboard() {
         </div>
       </div>
 
+      {/* balance load — same pay screen as the opening fee (bKash or bank transfer) */}
+      <div className="rounded-xl border border-gray-100 bg-white p-5">
+        <h3 className="text-sm font-bold text-heading">💳 ব্যালান্স লোড করুন</h3>
+        <p className="mt-1 text-xs text-gray-400">
+          বিকাশ বা ব্যাংক ট্রান্সফারে টাকা লোড করুন — পেমেন্ট নিশ্চিত হলেই ব্যালান্সে যোগ হবে।
+        </p>
+        <div className="mt-3 flex gap-2">
+          <input
+            type="number"
+            min={1}
+            className={`${inputCls} flex-1`}
+            value={topupAmount}
+            onChange={(e) => setTopupAmount(e.target.value)}
+            placeholder="কত টাকা লোড করবেন?"
+          />
+          <button
+            onClick={topup}
+            disabled={loadingUp}
+            className="shrink-0 rounded-lg bg-accent px-5 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60"
+          >
+            {loadingUp ? 'অপেক্ষা করুন…' : 'লোড করুন'}
+          </button>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {[500, 1000, 2000, 5000].map((a) => (
+            <button
+              key={a}
+              type="button"
+              onClick={() => setTopupAmount(String(a))}
+              className="rounded-full border border-gray-200 px-3 py-1 text-xs font-medium text-gray-500 hover:border-accent hover:text-accent"
+            >
+              {bdt(a)}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* add product */}
       <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
         <h2 className="mb-3 text-lg font-bold text-heading">➕ শপে বই যোগ করুন</h2>
@@ -131,11 +200,11 @@ export default function ResellerDashboard() {
           <div className="mt-2 divide-y divide-gray-50 rounded-lg border border-gray-100">
             {results.length === 0 ? <div className="p-3 text-xs text-gray-400">কিছু পাওয়া যায়নি।</div> :
               results.map((p) => (
-                <button key={p.id} onClick={() => { setPriceFor(p); setMyPrice(String(Math.round(Number(p.price)))); }}
+                <button key={p.id} onClick={() => { setPriceFor(p); setMyPrice(String(Math.round(eff(p)))); }}
                   className="flex w-full items-center gap-3 p-2.5 text-left hover:bg-gray-50">
                   {p.image?.original && <img src={p.image.original} alt="" className="h-10 w-8 rounded object-cover" />}
                   <span className="flex-1 truncate text-sm">{p.name}</span>
-                  <span className="text-sm font-semibold text-heading">{bdt(p.price)}</span>
+                  <span className="text-sm font-semibold text-heading">{bdt(eff(p))}</span>
                 </button>
               ))}
           </div>

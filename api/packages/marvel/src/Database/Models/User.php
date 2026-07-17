@@ -31,7 +31,7 @@ class User extends Authenticatable implements MustVerifyEmail
      * @var array
      */
     protected $fillable = [
-        'name', 'email', 'password', 'is_active', 'shop_id', 'reseller_meta'
+        'name', 'email', 'password', 'is_active', 'shop_id', 'reseller_meta', 'admin_role_id'
     ];
 
     /**
@@ -46,6 +46,8 @@ class User extends Authenticatable implements MustVerifyEmail
     protected $casts = [
         'email_verified_at' => 'datetime',
         'reseller_meta' => 'json',
+        'membership_activated_at' => 'datetime',
+        'membership_expires_at' => 'datetime',
     ];
 
     protected $appends = ['email_verified'];

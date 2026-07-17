@@ -75,6 +75,14 @@ export const useMembershipAssignMutation = () => {
     onSettled: () => qc.invalidateQueries([MEMBER_KEY]),
   });
 };
+export const useMembershipCardActionMutation = () => {
+  const qc = useQueryClient();
+  return useMutation((input: any) => HttpClient.post<any>('membership-card-action', input), {
+    onSuccess: (r: any) => toast.success(r?.message || 'Done'),
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed'),
+    onSettled: () => qc.invalidateQueries([MEMBER_KEY]),
+  });
+};
 
 export const useConversionStatusQuery = () => {
   const { data } = useQuery([CONVERSION_KEY + ':status'], () => HttpClient.get<any>('conversion-status'));
@@ -207,6 +215,58 @@ export const useUpdateFeaturedBooksMutation = () => {
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to save'),
     onSettled: () => qc.invalidateQueries([FEATURED_BOOKS_KEY]),
   });
+};
+
+// per-product landing pages
+const LANDING_KEY = 'landing-settings';
+export const useLandingSettingsQuery = () => {
+  const { data, isLoading } = useQuery([LANDING_KEY], () => HttpClient.get<any>('landing-settings'));
+  return { items: (data as any)?.data ?? [], loading: isLoading };
+};
+export const useUpdateLandingMutation = () => {
+  const qc = useQueryClient();
+  return useMutation((input: any) => HttpClient.post<any>('landing-settings', input), {
+    onSuccess: (r: any) => toast.success('Landing page saved'),
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to save'),
+    onSettled: () => {
+      qc.invalidateQueries([LANDING_KEY]);
+      qc.invalidateQueries(['product-admin-list']);
+    },
+  });
+};
+
+// Product copy / move across shops (super-admin)
+export const useProductShopsQuery = () => {
+  const { data, isLoading } = useQuery(['product-shops'], () =>
+    HttpClient.get<any>('product-shops'),
+  );
+  return { shops: ((data as any)?.data ?? []) as any[], loading: isLoading };
+};
+export const useProductCopyMutation = () => {
+  const qc = useQueryClient();
+  return useMutation(
+    (input: { product_id: number; target_shop_id: number }) =>
+      HttpClient.post<any>('product-copy', input),
+    {
+      onSuccess: (r: any) => toast.success(r?.message || 'Product copied'),
+      onError: (e: any) =>
+        toast.error(e?.response?.data?.message || 'Failed to copy product'),
+      onSettled: () => qc.invalidateQueries(['product-admin-list']),
+    },
+  );
+};
+export const useProductMoveMutation = () => {
+  const qc = useQueryClient();
+  return useMutation(
+    (input: { product_id: number; target_shop_id: number }) =>
+      HttpClient.post<any>('product-move', input),
+    {
+      onSuccess: (r: any) => toast.success(r?.message || 'Product moved'),
+      onError: (e: any) =>
+        toast.error(e?.response?.data?.message || 'Failed to move product'),
+      onSettled: () => qc.invalidateQueries(['product-admin-list']),
+    },
+  );
 };
 
 // #1 — storefront image sizes (single cover / FBT cover / home columns)

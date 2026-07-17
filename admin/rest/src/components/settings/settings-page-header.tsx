@@ -6,6 +6,7 @@ import { useTranslation } from 'next-i18next';
 import { useScrollableSlider } from '@/utils/use-scrollable-slider';
 import { ChevronRight } from '../icons/chevron-right';
 import { ChevronLeft } from '../icons/chevron-left';
+import SettingsSearch from '@/components/settings/settings-search';
 
 export default function SettingsPageHeader({
   pageTitle,
@@ -26,9 +27,12 @@ export default function SettingsPageHeader({
   const sanitizedPath = router.asPath.split('#')[0].split('?')[0];
   return (
     <>
-      <div className="flex pt-1 pb-5 sm:pb-8">
+      <div className="flex pt-1 pb-5 sm:pb-4">
         <h1 className="text-lg font-semibold text-heading">{t(pageTitle)}</h1>
       </div>
+      {/* 20+ settings pages behind a scrolling tab strip — finding "free shipping" meant knowing
+          it lives under "General". This searches the field names too, not just the page names. */}
+      <SettingsSearch />
       <div className="relative mb-9 flex items-center overflow-hidden border-b border-border-base/90 lg:mb-12">
         <button
           title="Prev"

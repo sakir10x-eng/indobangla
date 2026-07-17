@@ -48,18 +48,29 @@ export default function CheckoutPage() {
   if (loading) return <Loader text={t('common:text-loading')} />;
 
   return (
-    <div className="bg-gray-100">
+    <div className="min-h-screen bg-gray-100 px-4 py-8 md:px-6 md:py-10">
+      <div className="m-auto mb-6 w-full max-w-5xl">
+        <h1 className="text-xl font-semibold text-heading md:text-2xl">
+          {t('text-create-order') !== 'text-create-order'
+            ? t('text-create-order')
+            : 'Create Order'}
+        </h1>
+        <p className="mt-1 text-sm text-body">
+          Add customer, contact, address, schedule and payment to place an
+          order. Billing address is optional.
+        </p>
+      </div>
       <div className="lg:space-s-8 m-auto flex w-full max-w-5xl flex-col items-center lg:flex-row lg:items-start">
         <div className="w-full space-y-6 lg:max-w-2xl">
           <CustomerGrid
-            className="shadow-700 bg-light p-5 md:p-8"
+            className="shadow-700 bg-light rounded-xl p-5 md:p-8"
             //@ts-ignore
             // contact={user?.profile?.contact}
             label={t('text-customer')}
             count={1}
           />
           <ContactGrid
-            className="shadow-700 bg-light p-5 md:p-8"
+            className="shadow-700 bg-light rounded-xl p-5 md:p-8"
             //@ts-ignore
             contact={user?.profile?.contact}
             label={t('text-contact-number')}
@@ -68,8 +79,8 @@ export default function CheckoutPage() {
 
           <AddressGrid
             userId={user?.id!}
-            className="shadow-700 bg-light p-5 md:p-8"
-            label={t('text-billing-address')}
+            className="shadow-700 bg-light rounded-xl p-5 md:p-8"
+            label={`${t('text-billing-address')} (${t('text-optional')})`}
             count={2}
             //@ts-ignore
             addresses={user?.address?.filter(
@@ -81,7 +92,7 @@ export default function CheckoutPage() {
           />
           <AddressGrid
             userId={user?.id!}
-            className="shadow-700 bg-light p-5 md:p-8"
+            className="shadow-700 bg-light rounded-xl p-5 md:p-8"
             label={t('text-shipping-address')}
             count={3}
             //@ts-ignore
@@ -93,17 +104,17 @@ export default function CheckoutPage() {
             type={AddressType.Shipping}
           />
           <ScheduleGrid
-            className="shadow-700 bg-light p-5 md:p-8"
+            className="shadow-700 bg-light rounded-xl p-5 md:p-8"
             label={t('text-delivery-schedule')}
             count={4}
           />
           <ManualAdjustments
-            className="shadow-700 bg-light p-5 md:p-8"
+            className="shadow-700 bg-light rounded-xl p-5 md:p-8"
             label="Manual adjustments & note"
             count={5}
           />
         </div>
-        <div className="mb-10 mt-10 w-full sm:mb-12 lg:mb-0 lg:w-96">
+        <div className="mt-10 w-full sm:mb-12 lg:sticky lg:top-8 lg:mb-0 lg:mt-0 lg:w-96">
           <RightSideView />
         </div>
       </div>

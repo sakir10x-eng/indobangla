@@ -6,8 +6,16 @@ import {
   useOrderSearchMutation,
 } from '@/data/order-ops';
 import Link from '@/components/ui/link';
-import { printInvoice } from './print-invoice';
+import { printInvoice, type InvoiceCoupon } from './print-invoice';
 import { useCreateShipmentMutation } from '@/data/courier-order';
+import { useSettingsQuery, useUpdateSettingsMutation } from '@/data/settings';
+import { useRouter } from 'next/router';
+
+/**
+ * The promo line has always printed, so a settings row without the key must keep
+ * printing it — the switch is there to turn it *off*, not to silently drop it.
+ */
+const COUPON_FALLBACK: InvoiceCoupon = { enabled: true, code: 'WELCOME50', amount: 50 };
 
 const COURIERS = ['RedX', 'Steadfast', 'Pathao', 'Paperfly', 'Sundarban', 'Pickup by user', 'Self delivery'];
 
@@ -27,6 +35,19 @@ function applyPatch(prev: any, patch: any, actor = 'You') {
   if (patch.add_note?.text) { ops.notes = [...ops.notes, { role: 'moderator', who: actor, text: patch.add_note.text, at: now }]; log('note_added', 'Note added'); }
   if ('courier' in patch) { ops.courier = patch.courier; if (patch.courier) log('courier_assigned', `Courier set: ${patch.courier}`); }
   if ('tier' in patch) ops.tier = patch.tier;
+  if ((patch.bank_proof === 'confirm' || patch.bank_proof === 'reject') && ops.bank_proof?.status === 'pending_review') {
+    const ok = patch.bank_proof === 'confirm';
+    ops.bank_proof = {
+      ...ops.bank_proof,
+      status: ok ? 'confirmed' : 'rejected',
+      reviewed_by: actor,
+      reviewed_at: now,
+      ...(patch.bank_proof_note ? { review_note: patch.bank_proof_note } : {}),
+    };
+    // The Paid chip reads order.payment_status, not ops — it catches up on the next refetch.
+    log(ok ? 'bank_proof_confirmed' : 'bank_proof_rejected',
+      ok ? `Bank transfer verified — ৳${Math.round(Number(ops.bank_proof.amount_bdt) || 0)} credited` : 'Bank slip rejected — customer may re-upload');
+  }
   return ops;
 }
 
@@ -62,7 +83,7 @@ const CALL: Record<string, any> = {
   noanswer: { label: 'No answer', emoji: '📵', chip: 'ring-rose-300 bg-rose-50 text-rose-700' },
   callback: { label: 'Call back', emoji: '🔁', chip: 'ring-amber-300 bg-amber-50 text-amber-700' },
 };
-// Pickbazar order_status <-> board bucket
+// order_status <-> board bucket
 const TO_BUCKET: Record<string, string> = {
   'order-pending': 'pending',
   'order-processing': 'ready',
@@ -129,6 +150,10 @@ function mapOrder(o: any, stats: any) {
     phone: o.customer_contact,
     address: [addr.street_address, addr.city, addr.state].filter(Boolean).join(', '),
     items,
+    // Settled at checkout and NOT subtracted from `total` — the slip and the payable chip
+    // both have to take it off themselves.
+    walletPoints: Number(o.wallet_point?.amount) || 0,
+    bankProof: ops.bank_proof || null,   // customer-uploaded transfer slip awaiting review
     courier: ops.courier || o.logistics_provider || '',
     courierTrackingId: ops.courier_tracking_id || '',
     courierArea: ops.courier_area || '',
@@ -226,7 +251,7 @@ const TONE: Record<string, string> = {
 };
 
 /* ---------- card ---------- */
-function OrderCard({ o, act, busy }: any) {
+function OrderCard({ o, act, busy, coupon }: any) {
   const [open, setOpen] = useState(false);
   const [showAttn, setShowAttn] = useState(false);
   const [draft, setDraft] = useState('');
@@ -239,7 +264,9 @@ function OrderCard({ o, act, busy }: any) {
   const hint = nextStep(o);
   const itemsTotal = o.items.reduce((s: number, it: any) => s + it.price, 0);
   const qtyTotal = o.items.reduce((s: number, it: any) => s + it.qty, 0);
-  const payable = itemsTotal + o.delivery;
+  // Wallet points are already paid, so they must come off what the courier collects — the
+  // printed slip does the same. (Discount is already reflected in the line prices.)
+  const payable = Math.max(0, itemsTotal + o.delivery - o.walletPoints);
   const rate = o.totalOrders ? Math.round((o.deliveredOrders / o.totalOrders) * 100) : 0;
   const c = CALL[o.call];
   const p = PRINT[o.print];
@@ -396,6 +423,57 @@ function OrderCard({ o, act, busy }: any) {
             </div>
           </div>
 
+          {/* bank transfer slip — money only moves when an admin says so */}
+          {o.bankProof && (
+            <div className={`rounded-xl p-2.5 ring-1 ${o.bankProof.status === 'pending_review' ? 'bg-amber-50/70 ring-amber-300' : o.bankProof.status === 'confirmed' ? 'bg-emerald-50/60 ring-emerald-200' : 'bg-rose-50/60 ring-rose-200'}`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">🏦 Bank transfer slip</span>
+                <span className={`text-[10.5px] font-bold ${o.bankProof.status === 'pending_review' ? 'text-amber-700' : o.bankProof.status === 'confirmed' ? 'text-emerald-700' : 'text-rose-600'}`}>
+                  {o.bankProof.status === 'pending_review' ? 'Needs check' : o.bankProof.status === 'confirmed' ? 'Verified ✓' : 'Rejected'}
+                </span>
+              </div>
+
+              <div className="mt-2 flex items-start gap-2.5">
+                {o.bankProof.url && (
+                  <a href={o.bankProof.url} target="_blank" rel="noreferrer" title="Open full size" className="shrink-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={o.bankProof.thumbnail || o.bankProof.url} alt="Bank slip" className="h-16 w-16 rounded-lg object-cover ring-1 ring-slate-300 hover:ring-emerald-400" />
+                  </a>
+                )}
+                <div className="min-w-0 flex-1 text-[11px] leading-snug text-slate-600">
+                  <div>Customer says they sent <b className="text-slate-900">{bdt(o.bankProof.amount_bdt)}</b></div>
+                  {o.bankProof.submitted_at && (
+                    <div className="text-slate-400">Uploaded {new Date(o.bankProof.submitted_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                  )}
+                  {o.bankProof.reviewed_by && (
+                    <div className="text-slate-400">By {o.bankProof.reviewed_by}</div>
+                  )}
+                </div>
+              </div>
+
+              {o.bankProof.status === 'pending_review' && (
+                <>
+                  <p className="mt-2 text-[10.5px] leading-snug text-amber-800">
+                    Check the amount against the bank statement before confirming — this credits the payment.
+                  </p>
+                  <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                    <button onClick={() => act.ops(o._id, { bank_proof: 'confirm' })} disabled={busy} className="rounded-lg bg-emerald-600 px-2 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700">✓ Money received</button>
+                    <button
+                      onClick={() => {
+                        const note = window.prompt('Why is this slip rejected? (shown to the customer)') ?? '';
+                        act.ops(o._id, { bank_proof: 'reject', bank_proof_note: note.trim() });
+                      }}
+                      disabled={busy}
+                      className="rounded-lg bg-white px-2 py-1.5 text-[11px] font-bold text-rose-600 ring-1 ring-rose-300 hover:bg-rose-50"
+                    >
+                      ✕ Reject
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           {/* print tracker — two step */}
           <div className={`rounded-xl p-2.5 ring-1 ${o.print === 'confirmed' ? 'bg-emerald-50/60 ring-emerald-200' : o.print === 'sent' ? 'bg-amber-50/70 ring-amber-300' : 'bg-white ring-slate-200'}`}>
             <div className="flex items-center justify-between gap-2">
@@ -403,19 +481,19 @@ function OrderCard({ o, act, busy }: any) {
               {o.printCount > 0 && <span className="text-[10px] font-medium text-slate-400">{o.printCount}× printed</span>}
             </div>
             {o.print === 'none' && (
-              <button onClick={() => { printInvoice(o); act.ops(o._id, { print: 'send' }); }} disabled={busy} className="mt-2 w-full rounded-lg bg-slate-800 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-slate-900">🖨️ Print slip</button>
+              <button onClick={() => { printInvoice(o, coupon); act.ops(o._id, { print: 'send' }); }} disabled={busy} className="mt-2 w-full rounded-lg bg-slate-800 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-slate-900">🖨️ Print slip</button>
             )}
             {o.print === 'sent' && (
               <div className="mt-2 space-y-1.5">
                 <p className="text-[10.5px] leading-snug text-amber-800">Check whether the slip actually came out of the printer:</p>
                 <div className="grid grid-cols-2 gap-1.5">
                   <button onClick={() => act.ops(o._id, { print: 'confirm' })} disabled={busy} className="rounded-lg bg-emerald-600 px-2 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700">✓ Slip received</button>
-                  <button onClick={() => { printInvoice(o); act.ops(o._id, { print: 'send' }); }} disabled={busy} className="rounded-lg bg-white px-2 py-1.5 text-[11px] font-bold text-amber-700 ring-1 ring-amber-300 hover:bg-amber-100">↻ Reprint</button>
+                  <button onClick={() => { printInvoice(o, coupon); act.ops(o._id, { print: 'send' }); }} disabled={busy} className="rounded-lg bg-white px-2 py-1.5 text-[11px] font-bold text-amber-700 ring-1 ring-amber-300 hover:bg-amber-100">↻ Reprint</button>
                 </div>
               </div>
             )}
             {o.print === 'confirmed' && (
-              <button onClick={() => { printInvoice(o); act.ops(o._id, { print: 'send' }); }} disabled={busy} className="mt-2 w-full rounded-lg bg-white px-2 py-1.5 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50">↻ Reprint if needed</button>
+              <button onClick={() => { printInvoice(o, coupon); act.ops(o._id, { print: 'send' }); }} disabled={busy} className="mt-2 w-full rounded-lg bg-white px-2 py-1.5 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50">↻ Reprint if needed</button>
             )}
           </div>
 
@@ -529,6 +607,28 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
   const [stats, setStats] = useState<any>({});
   const [localOps, setLocalOps] = useState<Record<string, any>>({});
   const [searchResults, setSearchResults] = useState<any[] | null>(null);
+  const { locale } = useRouter();
+  const { settings } = useSettingsQuery({ language: locale as string });
+  const options: any = (settings as any)?.options;
+  const coupon: InvoiceCoupon = options?.invoiceCoupon ?? COUPON_FALLBACK;
+  const { mutate: updateSettings, isLoading: savingCoupon } = useUpdateSettingsMutation();
+
+  // Typing shouldn't fire a save per keystroke — the inputs hold a draft and commit on blur.
+  const [couponDraft, setCouponDraft] = useState({ code: '', amount: '' });
+  useEffect(() => {
+    setCouponDraft({ code: String(coupon.code ?? ''), amount: String(coupon.amount ?? '') });
+  }, [coupon.code, coupon.amount]);
+
+  const saveCoupon = (patch: Partial<InvoiceCoupon>) => {
+    // `options` is written back whole, so never save before it has loaded — that would
+    // blank out every other setting on the row.
+    if (!options) return;
+    updateSettings({
+      language: locale,
+      options: { ...options, invoiceCoupon: { ...coupon, ...patch } },
+    } as any);
+  };
+
   const { mutate: updateOrder, isLoading: updating } = useUpdateOrderMutation();
   const { mutate: ops } = useOrderOpsMutation();
   const { mutate: fetchStats } = useCustomerStatsMutation();
@@ -634,6 +734,60 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
         ))}
       </div>
 
+      {/* invoice promo line — shared by every admin, applies to all printed slips */}
+      <div className="mb-3 rounded-xl bg-white px-3 py-2.5 ring-1 ring-slate-200">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <label className="inline-flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold text-slate-700">
+            <input
+              type="checkbox"
+              checked={!!coupon.enabled}
+              disabled={!options || savingCoupon}
+              onChange={(e) => saveCoupon({ enabled: e.target.checked })}
+              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-400"
+            />
+            🎁 Coupon line on invoice
+          </label>
+
+          <div className={`flex flex-wrap items-center gap-2 ${coupon.enabled ? '' : 'pointer-events-none opacity-40'}`}>
+            <input
+              value={couponDraft.code}
+              onChange={(e) => setCouponDraft((d) => ({ ...d, code: e.target.value }))}
+              onBlur={() => {
+                const code = couponDraft.code.trim();
+                if (code !== String(coupon.code ?? '')) saveCoupon({ code });
+              }}
+              placeholder="WELCOME50"
+              className="w-32 rounded-lg border border-slate-200 px-2 py-1 font-mono text-[12px] uppercase outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+            />
+            <div className="inline-flex items-center gap-1">
+              <span className="text-[12px] font-semibold text-slate-400">৳</span>
+              <input
+                value={couponDraft.amount}
+                onChange={(e) => setCouponDraft((d) => ({ ...d, amount: e.target.value.replace(/[^0-9]/g, '') }))}
+                onBlur={() => {
+                  const amount = Number(couponDraft.amount) || 0;
+                  if (amount !== Number(coupon.amount ?? 0)) saveCoupon({ amount });
+                }}
+                inputMode="numeric"
+                placeholder="50"
+                className="w-16 rounded-lg border border-slate-200 px-2 py-1 text-[12px] outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              />
+              <span className="text-[12px] font-medium text-slate-400">OFF</span>
+            </div>
+          </div>
+
+          <span className="text-[11px] font-medium text-slate-400">
+            {savingCoupon
+              ? 'Saving…'
+              : !coupon.enabled
+                ? 'Slips print without the promo line.'
+                : couponDraft.code.trim() && Number(couponDraft.amount) > 0
+                  ? `Prints: 🎁 Next order: ${couponDraft.code.trim()} — ৳${Number(couponDraft.amount)} OFF`
+                  : 'Fill in a code and amount, or it will not print.'}
+          </span>
+        </div>
+      </div>
+
       {/* search */}
       <div className="mb-3">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, order #, phone, book title… (whole database)" className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100" />
@@ -662,7 +816,7 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
         {loading && !mapped.length ? (
           <div className="rounded-2xl bg-white py-16 text-center text-sm text-slate-400 ring-1 ring-slate-200">Loading…</div>
         ) : (
-          shown.map((o) => <OrderCard key={o._id} o={o} act={act} busy={busy} />)
+          shown.map((o) => <OrderCard key={o._id} o={o} act={act} busy={busy} coupon={coupon} />)
         )}
         {!loading && shown.length === 0 && (
           <div className="rounded-2xl bg-white py-16 text-center text-sm text-slate-400 ring-1 ring-slate-200">📦 No orders in this filter.</div>

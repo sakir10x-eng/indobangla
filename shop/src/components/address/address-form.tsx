@@ -66,10 +66,14 @@ export const AddressForm: React.FC<any> = ({
         shouldUnregister: true,
         defaultValues: {
           ...defaultValues,
+          // Shipping is the default address type for a new address.
+          type: (defaultValues as any)?.type || AddressType.Shipping,
           address: {
-            country: 'Bangladesh',
-            city: 'Dhaka',
             ...((defaultValues as any)?.address ?? {}),
+            // Bangladesh-only shipping — country is fixed (field is read-only).
+            // Keep an existing city if there is one, otherwise default to Dhaka.
+            country: 'Bangladesh',
+            city: (defaultValues as any)?.address?.city || 'Dhaka',
           },
         } as any,
       }}
@@ -98,8 +102,13 @@ export const AddressForm: React.FC<any> = ({
               </div>
             </div>
 
+            {/* "Title" alone tells the customer nothing — the hint is what makes
+                the field answerable. Clears itself as soon as they type. */}
             <Input
               label={t('text-title')}
+              placeholder={t('text-address-title-placeholder', {
+                defaultValue: 'যেমন: বাসা, অফিস, বন্ধুর বাসা…',
+              })}
               {...register('title')}
               error={t(errors.title?.message!)}
               variant="outline"
@@ -171,14 +180,25 @@ export const AddressForm: React.FC<any> = ({
             </div>
 
             <Input
-              label={t('text-zip')}
+              label={`${t('text-zip')} (${t('text-optional', {
+                defaultValue: 'optional',
+              })})`}
               {...register('address.zip')}
               error={t(errors.address?.zip?.message!)}
               variant="outline"
             />
 
+            {/* "Street address" reads as one line to most customers, and a courier
+                cannot deliver on one line. Name the field for what we actually need
+                and spell the parts out — the rider finds the house by the landmark. */}
             <TextArea
-              label={t('text-street-address')}
+              label={t('text-details-address', {
+                defaultValue: 'বিস্তারিত ঠিকানা (বর্তমান ঠিকানা)',
+              })}
+              placeholder={t('text-details-address-placeholder', {
+                defaultValue:
+                  'বাসা/ফ্ল্যাট নম্বর, রোড, ব্লক, এলাকা ও কাছের ল্যান্ডমার্ক লিখুন।\nযেমন: বাসা ১২ (৩য় তলা), রোড ৫, ব্লক সি, মিরপুর ১০ — ফায়ার সার্ভিসের ঠিক পাশে',
+              })}
               {...register('address.street_address')}
               error={t(errors.address?.street_address?.message!)}
               variant="outline"

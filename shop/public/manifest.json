@@ -1,8 +1,8 @@
 {
   "name": "IndoBangla E-Commerce",
   "short_name": "IndoBangla",
-  "theme_color": "#ffffff",
-  "background_color": "#7F1D1D",
+  "theme_color": "#C81E2B",
+  "background_color": "#C81E2B",
   "display": "fullscreen",
   "orientation": "portrait",
   "scope": "/",

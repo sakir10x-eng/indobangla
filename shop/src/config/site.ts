@@ -72,7 +72,7 @@ export const siteSettings = {
     },
     {
       href: '/resell',
-      label: 'বই রিসেল',
+      label: 'Sell Your Book',
     },
     {
       href: '/reseller',

@@ -137,6 +137,111 @@ class OrderRepository extends BaseRepository
     }
 
     /**
+     * Stamp a pay link on a non-pre-order online order (bKash / Nagad etc.) so the
+     * shop routes the buyer to /pay/{token} — the same custom pay screen pre-orders
+     * use. These BD mobile-money gateways don't use the Stripe payment-intent flow.
+     */
+    private function stampPayLink($order): void
+    {
+        $ops = (array) ($order->ops_meta ?? []);
+        if (!empty($ops['pay_token'])) {
+            return; // already stamped (e.g. by stampPreorder)
+        }
+        $total = (float) $order->total;
+        $ops['pay_amount']  = round($total);
+        $ops['pay_purpose'] = 'full';
+        $ops['pay_token']   = 'pl_' . Str::random(24);
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+    }
+
+    /**
+     * Validate any free-gift lines sent from the shop and force them to zero price.
+     *
+     * A line marked `is_gift` is only honoured when its product is inside the
+     * `gift_product_ids` pool of some *paid* product in the same cart, is in stock,
+     * and the number of gifts does not exceed the combined `gift_max` of those paid
+     * products. Anything that fails is stripped of its gift flag so it is charged
+     * normally (prevents a client from claiming any product for free).
+     *
+     * @param array $products
+     * @return array
+     */
+    /**
+     * Resolve the priced item behind a cart line, exactly as calculateSubtotal does.
+     *
+     * Gift pricing and the subtotal must read the same figure off the same row, or the
+     * gift discount stops cancelling the gift line and the customer is charged.
+     *
+     * @param array $line
+     * @return Variation|Product|null
+     */
+    private function resolveLineItem(array $line)
+    {
+        return isset($line['variation_option_id'])
+            ? Variation::find($line['variation_option_id'])
+            : Product::find($line['product_id'] ?? 0);
+    }
+
+    private function guardGifts(array $products): array
+    {
+        $giftLines = array_filter($products, fn ($p) => !empty($p['is_gift']));
+        if (empty($giftLines)) {
+            return $products;
+        }
+
+        $paidIds = collect($products)->filter(fn ($p) => empty($p['is_gift']))
+            ->pluck('product_id')->filter()->all();
+        $paidProducts = $paidIds
+            ? Product::whereIn('id', $paidIds)->where('gift_max', '>', 0)->get()
+            : collect();
+
+        $allowedGiftIds = [];
+        $maxGifts = 0;
+        foreach ($paidProducts as $p) {
+            $ids = is_array($p->gift_product_ids) ? $p->gift_product_ids : [];
+            $allowedGiftIds = array_merge($allowedGiftIds, $ids);
+            // Per-copy gifts scale with the quantity bought; whole-order gifts are fixed.
+            $paidLine = collect($products)->firstWhere('product_id', $p->id);
+            $paidQty = (int) ($paidLine['order_quantity'] ?? 1);
+            $mult = ($p->gift_per_copy ?? true) ? max(1, $paidQty) : 1;
+            $maxGifts += (int) $p->gift_max * $mult;
+        }
+        $allowedGiftIds = array_map('intval', $allowedGiftIds);
+
+        $giftCount = 0;
+        foreach ($products as &$line) {
+            if (empty($line['is_gift'])) {
+                continue;
+            }
+            $gid = (int) ($line['product_id'] ?? 0);
+            $qty = (int) ($line['order_quantity'] ?? 1);
+            $giftCount += $qty;
+            $gp = $gid ? Product::find($gid) : null;
+
+            $valid = $gp
+                && in_array($gid, $allowedGiftIds, true)
+                && (int) $gp->quantity >= $qty
+                && $giftCount <= $maxGifts;
+
+            if ($valid) {
+                // A gift is priced like any other line — it is cancelled out by an equal
+                // discount in storeOrder, so the invoice shows what the gift is worth
+                // instead of a bare ৳0 while the customer still pays nothing for it.
+                $priced = $this->resolveLineItem($line) ?: $gp;
+                $line['unit_price'] = (float) ($priced->sale_price ?: $priced->price);
+                $line['subtotal']   = $this->calculateEachItemTotal($priced, $qty);
+            } else {
+                // Not a legitimate gift → drop the flag so it is priced normally.
+                unset($line['is_gift']);
+            }
+        }
+        unset($line);
+
+        return $products;
+    }
+
+    /**
      * Store order
      *
      * @param $request
@@ -199,7 +304,32 @@ class OrderRepository extends BaseRepository
                 throw new AuthorizationException(NOT_AUTHORIZED);
             }
         }
+        $request['products'] = $this->guardGifts($request['products']);
         $request['amount'] = $this->calculateSubtotal($request['products']);
+
+        // Gifts are charged in the subtotal above and handed straight back as an equal
+        // discount further down, so the paperwork shows the real value of the gift while
+        // the payable total is unchanged. Must be computed before `is_gift` is stripped
+        // below. It is applied last, after every rounding step, so the two figures cancel
+        // to the taka.
+        $giftValue = 0;
+        foreach ($request['products'] as $line) {
+            if (empty($line['is_gift'])) {
+                continue;
+            }
+            $gift = $this->resolveLineItem($line);
+            if ($gift) {
+                $giftValue += $this->calculateEachItemTotal($gift, $line['order_quantity']);
+            }
+        }
+        $request['discount'] = (float) ($request['discount'] ?? 0);
+
+        // `is_gift` is only needed for the gift pricing above; strip it now so it
+        // doesn't leak into the order_product pivot insert (extra column → 21S01).
+        $request['products'] = array_map(function ($p) {
+            unset($p['is_gift']);
+            return $p;
+        }, $request['products']);
 
         // ---------------------------------------------------------------- PRE-ORDER
         // A cart holding any pre-order book plays by pre-order rules: the window and the
@@ -230,7 +360,20 @@ class OrderRepository extends BaseRepository
 
             $preorderPct = (int) ($preorderBooks->max('preorder_advance_pct') ?: 50);
             if ($preorderFull) {
-                $request['discount'] = round((float) ($request['discount'] ?? 0) + ((float) $request['amount'] * 0.05));
+                // Full-pay discount is per book: each pre-order book carries its own
+                // preorder_full_pay_discount_pct (default 5, 0 = off for that book).
+                $fullPayDiscount = 0;
+                foreach ($preorderBooks as $book) {
+                    $pct = (int) ($book->preorder_full_pay_discount_pct ?? 5);
+                    if ($pct <= 0) {
+                        continue;
+                    }
+                    $line = collect($request['products'])->firstWhere('product_id', $book->id);
+                    $qty = (int) ($line['order_quantity'] ?? 1);
+                    $unit = (float) ($book->sale_price ?: $book->price);
+                    $fullPayDiscount += $unit * $qty * $pct / 100;
+                }
+                $request['discount'] = round((float) ($request['discount'] ?? 0) + $fullPayDiscount);
             }
         }
 
@@ -242,7 +385,11 @@ class OrderRepository extends BaseRepository
                 if (!empty($coupon->user_id) && (int) $coupon->user_id !== (int) ($request->user()->id ?? 0)) {
                     throw new MarvelException('This membership card belongs to another customer.');
                 }
-                $request['discount'] = $this->calculateDiscount($coupon,  $request['amount']);
+                // `+=`, not `=`: a coupon stacks on top of the gift and full-pay discounts
+                // instead of wiping them out (which would charge the customer for the gift).
+                // The coupon is calculated on the paid goods only, so a gift can never
+                // inflate a percentage coupon.
+                $request['discount'] += $this->calculateDiscount($coupon, $request['amount'] - $giftValue);
             } catch (Exception $th) {
                 throw $th;
             }
@@ -253,6 +400,9 @@ class OrderRepository extends BaseRepository
         } else {
             $request['delivery_fee'] = $request['delivery_fee'];
         }
+
+        // Hand the gift back, unrounded, so it cancels the gift line in `amount` exactly.
+        $request['discount'] += $giftValue;
 
         $request['paid_total'] = $request['amount'] + $request['sales_tax'] + $request['delivery_fee'] -  $request['discount'];
         $request['total'] = $request['paid_total'];
@@ -309,11 +459,22 @@ class OrderRepository extends BaseRepository
         if (!$eligible) {
             throw new MarvelBadRequestException('COULD_NOT_PROCESS_THE_ORDER_PLEASE_CONTACT_WITH_THE_ADMIN');
         }
-        // Create Intent
+        // Payment routing for online orders.
         if (!in_array($order->payment_gateway, [
             PaymentGatewayType::CASH, PaymentGatewayType::CASH_ON_DELIVERY, PaymentGatewayType::FULL_WALLET_PAYMENT
         ])) {
-            $order['payment_intent'] = $this->processPaymentIntent($request, $settings);
+            $payLinkGateways = ['bkash', 'nagad', 'rocket', 'upay', 'tap', 'cellfin'];
+            if (in_array(strtolower((string) $order->payment_gateway), $payLinkGateways, true)) {
+                // BD mobile-money gateways pay through the /pay/{token} screen, not a
+                // Stripe payment-intent. (Pre-orders are already stamped above.)
+                $this->stampPayLink($order);
+            } else {
+                // Card / Stripe-style gateways use the payment-intent redirect flow.
+                // The `creating` hook renumbered tracking_number to the 25000+ sequence,
+                // so point the intent lookup at the order's real tracking number.
+                $request['tracking_number'] = $order->tracking_number;
+                $order['payment_intent'] = $this->processPaymentIntent($request, $settings);
+            }
         }
 
 

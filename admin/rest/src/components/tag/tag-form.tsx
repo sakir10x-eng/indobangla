@@ -20,7 +20,7 @@ import { useCreateTagMutation, useUpdateTagMutation } from '@/data/tag';
 import { useTypesQuery } from '@/data/type';
 import OpenAIButton from '../openAI/openAI.button';
 import { useSettingsQuery } from '@/data/settings';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ItemProps } from '@/types';
 import { useModalAction } from '../ui/modal/modal.context';
 import { EditIcon } from '@/components/icons/edit';
@@ -102,9 +102,8 @@ export default function CreateOrUpdateTagForm({ initialValues }: IProps) {
   const { t } = useTranslation();
   const isNewTranslation = router?.query?.action === 'translate';
   const [isSlugDisable, setIsSlugDisable] = useState<boolean>(true);
-  const isSlugEditable =
-    router?.query?.action === 'edit' &&
-    router?.locale === Config.defaultLanguage;
+  // Allow editing the slug on create too (not just edit), in the default language.
+  const isSlugEditable = router?.locale === Config.defaultLanguage;
 
   const {
     register,
@@ -159,6 +158,13 @@ export default function CreateOrUpdateTagForm({ initialValues }: IProps) {
   const { mutate: createTag, isLoading: creating } = useCreateTagMutation();
   const { mutate: updateTag, isLoading: updating } = useUpdateTagMutation();
   const slugAutoSuggest = formatSlug(watch('name'));
+  // Keep the slug in sync with the name until the admin clicks edit to override it.
+  useEffect(() => {
+    if (isSlugDisable) {
+      setValue('slug', slugAutoSuggest);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slugAutoSuggest, isSlugDisable]);
   const onSubmit = async (values: FormValues) => {
     const input = {
       language: router.locale,

@@ -4,7 +4,7 @@ import { Fragment, useEffect, useState } from 'react';
 import Alert from '@/components/ui/alert';
 import CashOnDelivery from '@/components/checkout/payment/cash-on-delivery';
 import { useAtom } from 'jotai';
-import { paymentGatewayAtom } from '@/store/checkout';
+import { paymentGatewayAtom, preorderFullAtom } from '@/store/checkout';
 import cn from 'classnames';
 import { useSettings } from '@/framework/settings';
 import { PaymentGateway } from '@/types';
@@ -218,9 +218,18 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
   // }, [isLoading, cashOnDelivery, defaultGateway, availableGateway]);
 
   useEffect(() => {
-    if (settings && availableGateway) {
+    // Honour the configured default gateway only when it is actually on offer. It used to be
+    // selected blind, so if the default named a gateway that wasn't enabled the radio group
+    // pointed at an option that never rendered and nothing looked selected. Falling back to
+    // the first available one means a single configured gateway (bKash only) is picked
+    // automatically. `availableGateway` is an array — empty is truthy, hence the length check.
+    if (settings && availableGateway?.length) {
+      const available = availableGateway
+        .map((g: any) => g?.name?.toUpperCase())
+        .filter(Boolean);
+      const preferred = settings?.defaultPaymentGateway?.toUpperCase();
       setGateway(
-        settings?.defaultPaymentGateway?.toUpperCase() as PaymentGateway
+        (available.includes(preferred) ? preferred : available[0]) as PaymentGateway
       );
     } else {
       setGateway(PaymentGateway.COD);
@@ -231,6 +240,20 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
   // so cash-on-delivery is not offered at all.
   const { items } = useCart();
   const hasPreorder = (items ?? []).some((i: any) => i?.is_preorder);
+  const [preorderFull, setPreorderFull] = useAtom(preorderFullAtom);
+  // Display-only estimate of the full-pay discount (backend is the source of truth).
+  const fullPayDiscount = Math.round(
+    (items ?? [])
+      .filter((i: any) => i?.is_preorder)
+      .reduce(
+        (s: number, i: any) =>
+          s +
+          Number(i.price) *
+            Number(i.quantity ?? 1) *
+            (Number(i.preorder_full_pay_discount_pct ?? 5) / 100),
+        0,
+      ),
+  );
   // Resold copies are sold as-seen — say so one last time before they pay.
   const resellItems = (items ?? []).filter((i: any) => i?.is_resell);
 
@@ -286,7 +309,37 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
           <b className="text-[#e63946]">📖 আপনার কার্টে প্রি-অর্ডারের বই আছে।</b>
           <br />
           তাই এই অর্ডারে <b>ক্যাশ-অন-ডেলিভারি নেই</b> — কমপক্ষে ৫০% অগ্রিম দিতে হবে, বাকিটা ডেলিভারির সময়।
-          অর্ডার দেওয়ার পর পেমেন্ট লিংকে নিয়ে যাওয়া হবে। <b className="text-[#1f7a52]">পুরো ১০০% দিলে অতিরিক্ত ৫% ছাড়।</b>
+          অর্ডার দেওয়ার পর পেমেন্ট লিংকে নিয়ে যাওয়া হবে।
+          {fullPayDiscount > 0 && (
+            <>
+              {' '}
+              <b className="text-[#1f7a52]">পুরো ১০০% এখনই দিলে ৳{fullPayDiscount} ছাড়।</b>
+            </>
+          )}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setPreorderFull(false)}
+              className={`rounded-lg border p-2.5 text-center text-xs font-semibold transition ${
+                !preorderFull
+                  ? 'border-[#e63946] bg-white text-[#e63946]'
+                  : 'border-[#f4c4c8] bg-transparent text-[#8a4048]'
+              }`}
+            >
+              অগ্রিম দিন
+            </button>
+            <button
+              type="button"
+              onClick={() => setPreorderFull(true)}
+              className={`rounded-lg border p-2.5 text-center text-xs font-semibold transition ${
+                preorderFull
+                  ? 'border-[#1f7a52] bg-white text-[#1f7a52]'
+                  : 'border-[#f4c4c8] bg-transparent text-[#8a4048]'
+              }`}
+            >
+              পুরো ১০০% দিন{fullPayDiscount > 0 ? ` · ৳${fullPayDiscount} ছাড়` : ''}
+            </button>
+          </div>
         </div>
       )}
 

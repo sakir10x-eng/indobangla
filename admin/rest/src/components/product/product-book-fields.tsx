@@ -21,7 +21,21 @@ export default function ProductBookFields() {
 
       <Card className="w-full sm:w-8/12 md:w-2/3">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-          <Input label="Printed Country" {...register('book.printed_country')} />
+          <div>
+            <Label>Printed Country</Label>
+            <select
+              {...register('book.printed_country')}
+              className="mt-1 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
+            >
+              <option value="">— select —</option>
+              <option value="Bangladesh">Bangladesh</option>
+              <option value="India">India</option>
+              <option value="China">China</option>
+              <option value="UK">UK</option>
+              <option value="USA">USA</option>
+              <option value="Others">Others</option>
+            </select>
+          </div>
           <Input label="Language" {...register('book.language')} />
           <Input label="Print Type" {...register('book.print_type')} placeholder="hardcover / paperback" />
 

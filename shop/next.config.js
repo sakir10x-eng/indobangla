@@ -19,6 +19,8 @@ module.exports = {
   images: {
     domains: [
       'indobangla.tech',
+      'staging.indobangla.tech',
+      'indobangla.bd',
       'indobanglabook.s3.us-east-2.amazonaws.com',
       'indobanglalaravel.s3.ap-southeast-1.amazonaws.com',
       'pickbazarlaravel.s3.ap-southeast-1.amazonaws.com',

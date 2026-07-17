@@ -68,8 +68,26 @@ class GetSingleProductResource extends Resource
             'is_preorder'                => (bool) $this->is_preorder,
             'preorder_until'             => $this->preorder_until,
             'preorder_limit'             => $this->preorder_limit,
+            'preorder_show_count'        => (bool) ($this->preorder_show_count ?? true),
             'preorder_count'             => (int) $this->preorder_count,
             'preorder_advance_pct'       => (int) ($this->preorder_advance_pct ?: 50),
+            'preorder_full_pay_discount_pct' => (int) ($this->preorder_full_pay_discount_pct ?? 5),
+            'gift_max'                   => (int) ($this->gift_max ?? 0),
+            'gift_per_copy'              => (bool) ($this->gift_per_copy ?? true),
+            'gift_product_ids'           => $this->gift_product_ids ?: [],
+            'gift_products'              => (($ids = $this->gift_product_ids) && (int) ($this->gift_max ?? 0) > 0)
+                ? \Marvel\Database\Models\Product::whereIn('id', $ids)->get()->map(function ($g) {
+                    return [
+                        'id'         => $g->id,
+                        'name'       => $g->name,
+                        'slug'       => $g->slug,
+                        'price'      => (float) ($g->sale_price ?: $g->price),
+                        'quantity'   => (int) $g->quantity,
+                        'in_stock'   => (int) $g->quantity > 0,
+                        'image'      => $g->image,
+                    ];
+                })->values()
+                : [],
             'book_origin'                => $this->book_origin,
             'quantity'                     => $this->quantity,
             'unit'                         => $this->unit,

@@ -92,6 +92,11 @@ export const siteSettings = {
             icon: 'DashboardIcon',
           },
           {
+            href: '/settings/updates',
+            label: '🆕 Updates',
+            icon: 'DashboardIcon',
+          },
+          {
             href: '/resell',
             label: 'Book Resell',
             icon: 'ProductsIcon',
@@ -272,9 +277,9 @@ export const siteSettings = {
                 icon: 'ProductsIcon',
               },
               {
-                // Super-admin can add a product straight into their own shop
-                // (IndoBangla Store) without entering the shop dashboard.
-                href: '/indobangla-store/products/create',
+                // Super-admin can add a product straight into the main shop
+                // (indo-bangla, shop_id=8) without entering the shop dashboard.
+                href: '/indo-bangla/products/create',
                 label: 'Add Product',
                 icon: 'ProductsIcon',
               },
@@ -444,6 +449,16 @@ export const siteSettings = {
             href: Routes.adminList,
             label: 'text-admin-list',
             icon: 'AdminListIcon',
+          },
+          {
+            href: Routes.createAdmin,
+            label: 'Create Admin',
+            icon: 'AdminListIcon',
+          },
+          {
+            href: Routes.adminRoles,
+            label: 'Admin Roles',
+            icon: 'SettingsIcon',
           },
           {
             href: '',
@@ -673,6 +688,11 @@ export const siteSettings = {
               {
                 href: '/settings/featured-books',
                 label: 'Featured Books',
+                icon: 'SettingsIcon',
+              },
+              {
+                href: '/settings/landing-pages',
+                label: 'Landing Pages',
                 icon: 'SettingsIcon',
               },
               {

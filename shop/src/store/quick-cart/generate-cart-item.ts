@@ -40,6 +40,7 @@ export function generateCartItem(item: Item, variation: Variation) {
     shop,
     is_preorder,
     preorder_advance_pct,
+    preorder_full_pay_discount_pct,
     is_resell,
   } = item;
   if (!isEmpty(variation)) {
@@ -61,6 +62,10 @@ export function generateCartItem(item: Item, variation: Variation) {
       shop_id: shop.id,
       is_preorder: Boolean(is_preorder),
       preorder_advance_pct: Number(preorder_advance_pct) || 50,
+      preorder_full_pay_discount_pct:
+        preorder_full_pay_discount_pct == null
+          ? 5
+          : Number(preorder_full_pay_discount_pct),
       is_resell: Boolean(is_resell),
     };
   }
@@ -78,6 +83,10 @@ export function generateCartItem(item: Item, variation: Variation) {
     shop_id: shop?.id,
     is_preorder: Boolean(is_preorder),
     preorder_advance_pct: Number(preorder_advance_pct) || 50,
+    preorder_full_pay_discount_pct:
+      preorder_full_pay_discount_pct == null
+        ? 5
+        : Number(preorder_full_pay_discount_pct),
     is_resell: Boolean(is_resell),
   };
 }

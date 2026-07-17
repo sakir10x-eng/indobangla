@@ -7,5 +7,7 @@ export function formatOrderedProduct(product: any) {
     order_quantity: product?.quantity,
     unit_price: product?.price,
     subtotal: product?.itemTotal,
+    // Free-gift lines: backend validates + zeroes these (guardGifts).
+    ...(product?.is_gift ? { is_gift: true } : {}),
   };
 }

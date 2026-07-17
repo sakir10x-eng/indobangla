@@ -1,5 +1,6 @@
 import SelectInput from '@/components/ui/select-input';
 import Label from '@/components/ui/label';
+import AddOptionLink from '@/components/product/add-option-link';
 import { Control, useWatch, useFormState } from 'react-hook-form';
 import { useTranslation } from 'next-i18next';
 import { useEffect } from 'react';
@@ -39,7 +40,10 @@ const ProductManufacturerInput = ({ control, setValue }: Props) => {
 
   return (
     <div className="mb-5">
-      <Label>{t('common:text-manufacturers')}</Label>
+      <div className="flex items-center justify-between">
+        <Label>{t('common:text-manufacturers')}</Label>
+        <AddOptionLink href="/manufacturers/create" />
+      </div>
       <SelectInput
         name="manufacturer"
         control={control}

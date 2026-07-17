@@ -4,9 +4,12 @@ import { useEffect, useState } from 'react';
 
 const bdt = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-IN');
 
+// Which of these actually appear is decided by the API (`info.methods`) — Nagad stays out
+// until its credentials land, so it must never be assumed present here.
 const METHODS: { id: string; name: string; tag: string; logo: string; color: string }[] = [
   { id: 'bkash', name: 'বিকাশ', tag: 'Send Money', logo: 'b', color: '#e2136e' },
   { id: 'nagad', name: 'নগদ', tag: 'Send Money', logo: 'ন', color: '#f6921e' },
+  { id: 'bank', name: 'ব্যাংক', tag: 'ট্রান্সফার', logo: '🏦', color: '#2e6b5a' },
   { id: 'card', name: 'কার্ড', tag: 'Visa · Master', logo: '💳', color: '#2b4a8a' },
 ];
 
@@ -18,6 +21,7 @@ export default function PayPage() {
   const [method, setMethod] = useState('bkash');
   const [paying, setPaying] = useState(false);
   const [done, setDone] = useState(false);
+  const [proofFile, setProofFile] = useState<File | null>(null);
 
   const load = async () => {
     if (!token) return;
@@ -51,10 +55,37 @@ export default function PayPage() {
     }
   };
 
+  // Bank transfers don't go through pay-confirm at all — the slip is parked for an admin,
+  // and the order stays unpaid until they say otherwise.
+  const submitProof = async () => {
+    if (!proofFile) return;
+    setErr('');
+    setPaying(true);
+    try {
+      const body = new FormData();
+      body.append('token', token);
+      body.append('screenshot', proofFile);
+      // The axios instance defaults to application/json, so multipart has to be asked for
+      // explicitly — same as settings.upload does.
+      await HttpClient.post<any>('pay-bank-proof', body, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setProofFile(null);
+      await load();
+    } catch (e: any) {
+      setErr(e?.response?.data?.message || 'স্লিপ জমা দেওয়া যায়নি। আবার চেষ্টা করুন।');
+    } finally {
+      setPaying(false);
+    }
+  };
+
   const order = info?.order;
   const payNow = order?.pay_purpose === 'advance' && order?.pay_amount ? order.pay_amount : order?.total;
   const methodName = METHODS.find((m) => m.id === method)?.name ?? '';
   const initial = (order?.customer_name || 'C').trim().charAt(0).toUpperCase();
+  const bank = info?.bank ?? null;
+  const bankProofPending = order?.bank_proof?.status === 'pending_review';
+  const bankProofRejected = order?.bank_proof?.status === 'rejected';
 
   return (
     <div style={{ minHeight: '100vh', background: 'radial-gradient(1000px 500px at 50% -10%, #f4f7f5, transparent), #eef1ef', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '28px 16px', fontFamily: "'Hind Siliguri','Noto Sans Bengali',system-ui,sans-serif", color: '#241a14' }}>
@@ -158,7 +189,8 @@ export default function PayPage() {
               ) : (
                 <>
                   <div style={{ fontWeight: 700, fontSize: 14.5, margin: '22px 0 10px' }}>পেমেন্ট মেথড</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+                  {/* auto-fit, so switching Nagad on later doesn't strand a lone tile */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(88px,1fr))', gap: 10 }}>
                     {(info.methods || METHODS.map((m) => m.id)).map((mid: string) => {
                       const m = METHODS.find((x) => x.id === mid) || { id: mid, name: mid, tag: '', logo: '💰', color: '#2e6b5a' };
                       const on = method === m.id;
@@ -172,9 +204,62 @@ export default function PayPage() {
                     })}
                   </div>
 
-                  <button onClick={pay} disabled={paying} style={{ width: '100%', marginTop: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: 'linear-gradient(135deg,#d43a2b,#b02a1e)', color: '#fff', fontWeight: 700, fontSize: 17, padding: 16, borderRadius: 14, boxShadow: '0 10px 24px rgba(212,58,43,.30)', opacity: paying ? 0.7 : 1 }}>
-                    {paying ? 'প্রসেস হচ্ছে…' : `${methodName}ে ${bdt(payNow)} ${order.pay_purpose === 'advance' ? 'অগ্রিম ' : ''}পরিশোধ করুন`}
-                  </button>
+                  {method === 'bank' ? (
+                    bankProofPending ? (
+                      <div style={{ marginTop: 18, borderRadius: 14, background: '#fff7e6', border: '1px solid #f2d79a', padding: 18, textAlign: 'center' }}>
+                        <div style={{ fontSize: 32 }}>⏳</div>
+                        <div style={{ fontSize: 15.5, fontWeight: 800, color: '#96690d', marginTop: 6 }}>স্লিপ জমা হয়েছে — যাচাই চলছে</div>
+                        <div style={{ fontSize: 12.5, color: '#8a6d2f', marginTop: 5, lineHeight: 1.6 }}>
+                          আমাদের টিম ব্যাংক স্টেটমেন্টের সাথে মিলিয়ে দেখে পেমেন্ট নিশ্চিত করবে।
+                          নিশ্চিত হলে এই পেজেই ✅ দেখতে পাবেন।
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 16 }}>
+                        {bankProofRejected && (
+                          <div style={{ marginBottom: 12, borderRadius: 12, background: '#fdf0f1', border: '1px solid #f4c4c8', padding: 12, fontSize: 12.5, color: '#8a4048', lineHeight: 1.6 }}>
+                            <b style={{ color: '#e63946' }}>আগের স্লিপটি গ্রহণ করা যায়নি।</b>
+                            {order.bank_proof?.note ? <> {order.bank_proof.note}</> : ' অনুগ্রহ করে সঠিক স্লিপটি আবার আপলোড করুন।'}
+                          </div>
+                        )}
+                        {bank ? (
+                          <div style={{ borderRadius: 14, border: '1px dashed #b9cfc4', background: '#f4f8f6', padding: 16 }}>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: '#2e6b5a', marginBottom: 10 }}>
+                              🏦 এই একাউন্টে {bdt(payNow)} পাঠান
+                            </div>
+                            <BankRow label="ব্যাংক" value={`${bank.bank_name}${bank.branch ? ` (${bank.branch})` : ''}`} />
+                            <BankRow label="একাউন্ট নাম" value={bank.account_name} />
+                            <BankRow label="একাউন্ট নম্বর" value={bank.account_no} mono copyable />
+                            {bank.routing_no ? <BankRow label="রাউটিং নম্বর" value={bank.routing_no} mono copyable /> : null}
+                            <div style={{ marginTop: 12, fontSize: 11.5, color: '#5c7a6d', lineHeight: 1.6 }}>
+                              টাকা পাঠানোর পর <b>ডিপোজিট স্লিপ / ট্রান্সফারের স্ক্রিনশট</b> আপলোড করুন। আমরা যাচাই করে পেমেন্ট নিশ্চিত করব।
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <label style={{ display: 'block', marginTop: 14, borderRadius: 12, border: '1.5px dashed #c9c1b4', background: '#fff', padding: 14, textAlign: 'center', cursor: 'pointer' }}>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,image/webp"
+                            style={{ display: 'none' }}
+                            onChange={(e) => setProofFile(e.target.files?.[0] ?? null)}
+                          />
+                          <div style={{ fontSize: 13.5, fontWeight: 700, color: proofFile ? '#2e6b5a' : '#7a6f66' }}>
+                            {proofFile ? `📎 ${proofFile.name}` : '📎 স্লিপের ছবি বাছুন'}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#9b9188', marginTop: 3 }}>JPG / PNG / WEBP · সর্বোচ্চ ৫ MB</div>
+                        </label>
+
+                        <button onClick={submitProof} disabled={paying || !proofFile} style={{ width: '100%', marginTop: 14, border: 'none', cursor: proofFile ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: 'linear-gradient(135deg,#3d7a5f,#2e6b5a)', color: '#fff', fontWeight: 700, fontSize: 16, padding: 15, borderRadius: 14, opacity: paying || !proofFile ? 0.55 : 1 }}>
+                          {paying ? 'আপলোড হচ্ছে…' : 'স্লিপ জমা দিন'}
+                        </button>
+                      </div>
+                    )
+                  ) : (
+                    <button onClick={pay} disabled={paying} style={{ width: '100%', marginTop: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: 'linear-gradient(135deg,#d43a2b,#b02a1e)', color: '#fff', fontWeight: 700, fontSize: 17, padding: 16, borderRadius: 14, boxShadow: '0 10px 24px rgba(212,58,43,.30)', opacity: paying ? 0.7 : 1 }}>
+                      {paying ? 'প্রসেস হচ্ছে…' : `${methodName}ে ${bdt(payNow)} ${order.pay_purpose === 'advance' ? 'অগ্রিম ' : ''}পরিশোধ করুন`}
+                    </button>
+                  )}
                   <div style={{ textAlign: 'center', color: '#7a6f66', fontSize: 12.5, marginTop: 14 }}>
                     🔒 নিরাপদ পেমেন্ট · IndoBangla · ১০০% অরিজিনাল বইয়ের নিশ্চয়তা
                   </div>
@@ -184,6 +269,34 @@ export default function PayPage() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** One line of the bank account block. Long numbers get a tap-to-copy so nobody mistypes. */
+function BankRow({ label, value, mono, copyable }: { label: string; value: string; mono?: boolean; copyable?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    if (!copyable || !navigator?.clipboard) return;
+    navigator.clipboard.writeText(String(value)).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '5px 0' }}>
+      <span style={{ fontSize: 12, color: '#5c7a6d', flexShrink: 0 }}>{label}</span>
+      <b
+        onClick={copy}
+        title={copyable ? 'কপি করুন' : undefined}
+        style={{
+          fontSize: mono ? 13.5 : 12.5, color: '#1f4d3d', fontWeight: 700, textAlign: 'right',
+          fontFamily: mono ? 'monospace' : 'inherit', cursor: copyable ? 'pointer' : 'default',
+          wordBreak: 'break-all',
+        }}
+      >
+        {value}{copied ? ' ✓' : copyable ? ' ⧉' : ''}
+      </b>
     </div>
   );
 }

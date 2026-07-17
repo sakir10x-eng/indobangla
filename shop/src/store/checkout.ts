@@ -74,6 +74,10 @@ export const deliveryTimeAtom = atom(
     return set(checkoutAtom, { ...prev, delivery_time: data });
   }
 );
+// Pre-order full payment: when true the buyer pays 100% up front and earns the
+// per-book full-pay discount (backend applies it). Resets each session.
+export const preorderFullAtom = atom<boolean>(false);
+
 export const paymentGatewayAtom = atom(
   (get) => get(checkoutAtom).payment_gateway,
   (get, set, data: PaymentGateway) => {

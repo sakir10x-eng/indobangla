@@ -106,7 +106,8 @@ export const PlaceOrderAction: React.FC<{
         ? PaymentGateway.FULL_WALLET_PAYMENT
         : payment_gateway,
       billing_address: {
-        ...(billing_address?.address && billing_address.address),
+        // Billing is optional — fall back to the shipping address when unset.
+        ...((billing_address?.address ?? shipping_address?.address) || {}),
       },
       shipping_address: {
         ...(shipping_address?.address && shipping_address.address),
@@ -125,7 +126,7 @@ export const PlaceOrderAction: React.FC<{
     customer,
     customer_contact,
     payment_gateway,
-    billing_address,
+    // billing_address is optional — only shipping is required.
     shipping_address,
     delivery_time,
     available_items,

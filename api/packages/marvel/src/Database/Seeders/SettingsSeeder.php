@@ -126,6 +126,42 @@ class SettingsSeeder extends Seeder
                 "isProductReview" => false,
                 "useEnableGateway" => false,
                 "useCashOnDelivery" => true,
+                // What each mobile-money gateway charges the shop, passed on to the buyer.
+                // Charged on the amount actually going through the gateway (a pre-order
+                // advance, not the whole order). Every row ships off — the admin turns on
+                // what applies. A missing key means no charge, so imported DBs are unchanged.
+                // Rates confirmed by the shop owner: bKash 1.85%, Nagad 1.45%. The rest are
+                // placeholders — confirm before switching one on.
+                "paymentCharges" => [
+                    ["gateway" => "bkash",   "enabled" => false, "percentage" => 1.85],
+                    ["gateway" => "nagad",   "enabled" => false, "percentage" => 1.45],
+                    ["gateway" => "rocket",  "enabled" => false, "percentage" => 1.85],
+                    ["gateway" => "upay",    "enabled" => false, "percentage" => 1.5],
+                    ["gateway" => "tap",     "enabled" => false, "percentage" => 1.5],
+                    ["gateway" => "cellfin", "enabled" => false, "percentage" => 1.5],
+                ],
+                // Manual bank transfer: shown on /pay/{token} when the buyer picks "ব্যাংক".
+                // They transfer, upload a screenshot, and an admin confirms it by hand —
+                // no gateway is involved, so no charge applies to this method.
+                "bankTransfer" => [
+                    "enabled"      => true,
+                    "bank_name"    => "United Commercial Bank PLC",
+                    "branch"       => "Mirpur Road Branch",
+                    "account_name" => "INDO BANGLA BOOK",
+                    "account_no"   => "1202112000004134",
+                    "routing_no"   => "245263073",
+                ],
+                // Nagad is off until its API credentials land — the shop must not offer a
+                // method it cannot actually take money through.
+                "nagadEnabled" => false,
+                // The "🎁 Next order" promo line on the printed invoice slip. Defaults on,
+                // because it has always printed — the switch exists to turn it off, and a
+                // settings row predating this key must keep behaving as it does today.
+                "invoiceCoupon" => [
+                    "enabled" => true,
+                    "code"    => "WELCOME50",
+                    "amount"  => 50,
+                ],
                 "freeShippingAmount" => 0,
                 "minimumOrderAmount" => 0,
                 "useMustVerifyEmail" => false,

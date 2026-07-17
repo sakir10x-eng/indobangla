@@ -17,6 +17,8 @@ export default function AreaPicker({
   const [term, setTerm] = useState(value ?? '');
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState(Boolean(value));
+  // `custom` = the customer typed an area that is not in the courier's list.
+  const [custom, setCustom] = useState(false);
 
   const q = term.trim();
   const { data, isFetching } = useQuery(
@@ -26,30 +28,49 @@ export default function AreaPicker({
   );
   const areas: any[] = (data as any)?.data ?? [];
 
+  const useAsOtherArea = () => {
+    if (!q) return;
+    onChange(q);
+    setPicked(true);
+    setCustom(true);
+    setOpen(false);
+  };
+
   return (
     <div className="relative">
-      <label className="block text-sm font-semibold leading-none text-body-dark">ডেলিভারি এলাকা (কুরিয়ার এরিয়া)</label>
+      {/* Plain words only. The customer does not know the courier keeps a list,
+          and should never have to care — they just say where they live. */}
+      <label className="block text-sm font-semibold leading-none text-body-dark">
+        আপনার এলাকা
+      </label>
       <input
         value={term}
         onChange={(e) => {
           setTerm(e.target.value);
           setPicked(false);
+          setCustom(false);
           setOpen(true);
           onChange(e.target.value);
         }}
         onFocus={() => setOpen(true)}
-        placeholder="এলাকার নাম লিখুন — যেমন Dhanmondi, Mirpur…"
+        placeholder="এলাকার নাম লিখুন — যেমন: ধানমন্ডি, মিরপুর ১০, উত্তরা"
         className="mt-1 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
         autoComplete="off"
       />
 
       {picked ? (
-        <p className="mt-1 text-[11px] font-semibold text-emerald-600">
-          ✓ কুরিয়ারের তালিকা থেকে বেছে নেওয়া হয়েছে
-        </p>
+        custom ? (
+          <p className="mt-1 text-[11px] font-semibold text-emerald-600">
+            ✓ ঠিক আছে — আমরা এই এলাকায় পৌঁছে দেব।
+          </p>
+        ) : (
+          <p className="mt-1 text-[11px] font-semibold text-emerald-600">
+            ✓ এলাকা নির্বাচন করা হয়েছে
+          </p>
+        )
       ) : (
         <p className="mt-1 text-[11px] text-gray-400">
-          লিখলে সাজেশন আসবে — <b>তালিকা থেকে বেছে নিন</b>, তাহলে কুরিয়ারে এরিয়া মিসম্যাচ হবে না।
+          নাম লিখতে শুরু করলে নিচে এলাকার তালিকা আসবে — সেখান থেকে বেছে নিন।
         </p>
       )}
 
@@ -59,7 +80,9 @@ export default function AreaPicker({
             <div className="px-3 py-2 text-sm text-gray-400">খোঁজা হচ্ছে…</div>
           )}
           {!isFetching && areas.length === 0 && (
-            <div className="px-3 py-2 text-sm text-gray-400">এই নামে কোনো এরিয়া পাওয়া যায়নি।</div>
+            <div className="px-3 py-2 text-sm text-gray-400">
+              এই নামে কোনো এলাকা পাওয়া যায়নি — নিচের বোতামে চাপ দিন।
+            </div>
           )}
           {areas.map((a: any, i: number) => (
             <button
@@ -69,6 +92,7 @@ export default function AreaPicker({
                 setTerm(a.name);
                 onChange(a.name);
                 setPicked(true);
+                setCustom(false);
                 setOpen(false);
               }}
               className="block w-full px-3 py-2 text-left text-sm hover:bg-[#fdf0f1]"
@@ -77,6 +101,24 @@ export default function AreaPicker({
               {a.district ? <span className="ml-2 text-xs text-gray-400">{a.district}</span> : null}
             </button>
           ))}
+
+          {/* The escape hatch. Framed as the customer confirming where they live —
+              NOT as "your area is missing from our courier's list", which is our
+              problem, not theirs, and which read as an error to real customers. */}
+          {!isFetching && (
+            <button
+              type="button"
+              onClick={useAsOtherArea}
+              className="block w-full border-t border-border-200 bg-emerald-50 px-3 py-2.5 text-left hover:bg-emerald-100"
+            >
+              <span className="text-sm font-semibold text-emerald-800">
+                ✔ আমার এলাকা “{q}” — এটাই রাখুন
+              </span>
+              <span className="mt-0.5 block text-[11px] text-emerald-700">
+                তালিকায় না পেলেও সমস্যা নেই, আমরা পৌঁছে দেব।
+              </span>
+            </button>
+          )}
         </div>
       )}
     </div>

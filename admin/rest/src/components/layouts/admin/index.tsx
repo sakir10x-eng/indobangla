@@ -15,6 +15,31 @@ import {
   checkIsMaintenanceModeComing,
   checkIsMaintenanceModeStart,
 } from '@/utils/constants';
+import { getManagedSections } from '@/utils/auth-utils';
+import { isPathAllowed } from '@/config/admin-sections';
+
+/**
+ * Prune the sidebar tree to what a restricted sub-admin may reach.
+ * A leaf (real href) is kept when its path is allowed; a parent group is kept
+ * when at least one descendant survives. Full super-admins (sections == null)
+ * get the tree untouched.
+ */
+function filterMenuBySections(node: any, sections: string[] | null): any | null {
+  if (!node) return null;
+  const children = node.childMenu;
+  if (Array.isArray(children) && children.length) {
+    const kept = children
+      .map((c: any) => filterMenuBySections(c, sections))
+      .filter(Boolean);
+    if (!kept.length && !(node.href && isPathAllowed(node.href, sections))) {
+      return null;
+    }
+    return { ...node, childMenu: kept };
+  }
+  // leaf: keep only if its href is allowed (containers with empty href are dropped)
+  if (node.href && isPathAllowed(node.href, sections)) return node;
+  return null;
+}
 
 interface MenuItemsProps {
   [key: string]: {
@@ -66,7 +91,17 @@ const SideBarGroup = () => {
   const { t } = useTranslation();
   // @ts-ignore
   const [miniSidebar, _] = useAtom(miniSidebarInitialValue);
-  const menuItems: MenuItemsProps = siteSettings?.sidebarLinks?.admin;
+  const allMenuItems: MenuItemsProps = siteSettings?.sidebarLinks?.admin;
+  const sections = getManagedSections();
+  // restricted sub-admins only see the groups their role grants
+  const menuItems: MenuItemsProps =
+    sections == null
+      ? allMenuItems
+      : (Object.fromEntries(
+          Object.entries(allMenuItems)
+            .map(([k, group]) => [k, filterMenuBySections(group, sections)])
+            .filter(([, group]) => group && (group as any).childMenu?.length),
+        ) as MenuItemsProps);
   const menuKeys = Object.keys(menuItems);
   const { width } = useWindowSize();
 

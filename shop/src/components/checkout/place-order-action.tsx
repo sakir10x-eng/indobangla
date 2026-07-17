@@ -7,7 +7,7 @@ import ValidationError from '@/components/ui/validation-error';
 import Button from '@/components/ui/button';
 import { formatOrderedProduct } from '@/lib/format-ordered-product';
 import { useCart } from '@/store/quick-cart/cart.context';
-import { checkoutAtom, discountAtom, walletAtom } from '@/store/checkout';
+import { checkoutAtom, discountAtom, walletAtom, preorderFullAtom } from '@/store/checkout';
 import {
   calculatePaidTotal,
   calculateTotal,
@@ -49,6 +49,7 @@ export const PlaceOrderAction: React.FC<{
   ] = useAtom(checkoutAtom);
   const [discount] = useAtom(discountAtom);
   const [use_wallet_points] = useAtom(walletAtom);
+  const [preorderFull] = useAtom(preorderFullAtom);
 
   useEffect(() => {
     setErrorMessage(null);
@@ -105,6 +106,7 @@ export const PlaceOrderAction: React.FC<{
       payment_sub_gateway,
       use_wallet_points,
       isFullWalletPayment,
+      preorder_full: preorderFull,
       billing_address: {
         // Billing is optional — fall back to the shipping address when omitted
         ...((billing_address?.address && billing_address.address) ||

@@ -177,6 +177,72 @@ export const useResetPasswordMutation = () => {
   return useMutation(userClient.resetPassword);
 };
 
+// ------------------------------ custom sub-admin roles ------------------------------
+export const useAdminRolesQuery = () => {
+  const { data, isLoading, error, refetch } = useQuery(
+    [API_ENDPOINTS.ADMIN_ROLES],
+    userClient.fetchAdminRoles,
+    { staleTime: 60 * 1000 },
+  );
+  return {
+    sections: data?.sections ?? [],
+    roles: data?.roles ?? [],
+    loading: isLoading,
+    error,
+    refetch,
+  };
+};
+
+export const useSaveAdminRolesMutation = () => {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  return useMutation(userClient.saveAdminRoles, {
+    onSuccess: () => {
+      toast.success(t('common:successfully-updated'));
+    },
+    onError: (error: any) => {
+      toast.error(
+        error?.response?.data?.message ?? t('common:something-went-wrong'),
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries(API_ENDPOINTS.ADMIN_ROLES);
+    },
+  });
+};
+
+export const useCreateAdminMutation = () => {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  return useMutation(userClient.createAdmin, {
+    onSuccess: () => {
+      toast.success(t('common:successfully-created'));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries(API_ENDPOINTS.ADMIN_LIST);
+      queryClient.invalidateQueries(API_ENDPOINTS.USERS);
+    },
+  });
+};
+
+export const useAssignAdminRoleMutation = () => {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  return useMutation(userClient.assignAdminRole, {
+    onSuccess: () => {
+      toast.success(t('common:successfully-updated'));
+    },
+    onError: (error: any) => {
+      toast.error(
+        error?.response?.data?.message ?? t('common:something-went-wrong'),
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries(API_ENDPOINTS.ADMIN_LIST);
+    },
+  });
+};
+
 export const useMakeOrRevokeAdminMutation = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();

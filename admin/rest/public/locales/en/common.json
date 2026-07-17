@@ -364,6 +364,8 @@
   "text-deals-rate": "Deals rate",
   "text-deals": "Deals",
   "error-add-both-address": "Please add both shipping and billing address",
+  "error-add-shipping-address": "Please add a shipping address",
+  "text-optional": "Optional",
   "sort-by-quantity": "Sort by Quantity",
   "text-by": "By",
   "text-accept-report-modal-description": "Are you sure you want to accept this request? It will delete the review.",

@@ -10,6 +10,9 @@ use Marvel\Http\Controllers\AddressController;
 use Marvel\Http\Controllers\AiController;
 use Marvel\Http\Controllers\AiExtractController;
 use Marvel\Http\Controllers\IntegrationController;
+use Marvel\Http\Controllers\LibraryController;
+use Marvel\Http\Controllers\AwardController;
+use Marvel\Http\Controllers\CommunityController;
 use Marvel\Http\Controllers\AnalyticsController;
 use Marvel\Http\Controllers\AttachmentController;
 use Marvel\Http\Controllers\AttributeController;
@@ -192,6 +195,16 @@ Route::get('product-admin-list', [IntegrationController::class, 'productAdminLis
 // Pay-by-link: public info + confirm (token-authed), admin link generation
 Route::get('pay-info', [IntegrationController::class, 'payInfo']);
 Route::post('pay-confirm', [IntegrationController::class, 'payConfirm']);
+// Manual bank transfer: buyer uploads the counter slip. Public but pay-token guarded, and
+// it only parks the file for review — an admin credits the payment via order-ops.
+Route::post('pay-bank-proof', [IntegrationController::class, 'payBankProof']);
+// bKash sends the customer's browser here after they authorise. Must be public and GET —
+// it carries no auth, so the paymentID is re-verified against bKash before anything is
+// credited. This is where /execute (the actual capture) happens.
+Route::get('bkash-callback', [IntegrationController::class, 'bkashCallback']);
+// Visitor heartbeat for the admin's live-visitor counter. Public and unauthenticated because
+// most shoppers browse logged out — and it swallows its own errors, so it can never cost a page.
+Route::post('presence-ping', [IntegrationController::class, 'presencePing']);
 // Hourly cron (guarded by ?key=<connect token>): reverts an expired scheduled rate.
 Route::get('conversion-cron', [IntegrationController::class, 'conversionCron']);
 Route::post('checkout-intent', [IntegrationController::class, 'checkoutIntent']);
@@ -221,11 +234,45 @@ Route::get('prehome', [IntegrationController::class, 'prehome']);
 Route::get('challenge-info', [IntegrationController::class, 'challengeInfo']);
 Route::get('bundle-coupons', [IntegrationController::class, 'bundleCoupons'])->middleware('catalog.cache:900');
 Route::post('club-join', [IntegrationController::class, 'clubJoin']);
+// Per-product landing pages (public read: single page + list of live pages)
+Route::get('landing-page', [IntegrationController::class, 'landingPage']);
+Route::get('landing-pages', [IntegrationController::class, 'landingList']);
+
+// My Library — public reads: book awards showcase + comments on a review.
+Route::apiResource('awards', AwardController::class, [
+    'only' => ['index', 'show'],
+]);
+Route::get('reviews/{id}/comments', [LibraryController::class, 'reviewComments']);
+
+// Reader community (Phase 2) — public reads (feed + a post's comments).
+// Feed reads the bearer token when present to fill each post's `my_liked`.
+Route::get('community/feed', [CommunityController::class, 'feed']);
+Route::get('community/posts/{id}/comments', [CommunityController::class, 'comments']);
 
 /**
  * IndoBangla AI product ingestion (settings super-admin only; extract for staff+).
  */
 Route::middleware(['auth:sanctum'])->group(function () {
+    // My Library — reader dashboard + review reads/comments.
+    Route::get('my-library', [LibraryController::class, 'myLibrary']);
+    Route::post('reviews/{id}/comments', [LibraryController::class, 'storeReviewComment']);
+    Route::post('reviews/{id}/view', [LibraryController::class, 'markReviewViewed']);
+    // Book awards — admin-managed (super-admin writes).
+    Route::post('awards', [AwardController::class, 'store'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::put('awards/{id}', [AwardController::class, 'update'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::delete('awards/{id}', [AwardController::class, 'destroy'])->middleware('can:' . Permission::SUPER_ADMIN);
+
+    // Reader community (Phase 2) — reader actions.
+    Route::post('community/posts', [CommunityController::class, 'storePost']);
+    Route::delete('community/posts/{id}', [CommunityController::class, 'deletePost']);
+    Route::post('community/posts/{id}/like', [CommunityController::class, 'toggleLike']);
+    Route::post('community/posts/{id}/comments', [CommunityController::class, 'storeComment']);
+    Route::post('community/posts/{id}/report', [CommunityController::class, 'report']);
+    // Community moderation — super-admin.
+    Route::get('community/reported', [CommunityController::class, 'adminReported'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('community/posts/{id}/status', [CommunityController::class, 'adminSetStatus'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::delete('community/admin/posts/{id}', [CommunityController::class, 'adminDeletePost'])->middleware('can:' . Permission::SUPER_ADMIN);
+
     // Support tickets (#10) + restock requests (#12) — customer side.
     Route::post('tickets', [IntegrationController::class, 'ticketCreate']);
     Route::get('tickets', [IntegrationController::class, 'ticketList']);
@@ -234,16 +281,18 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('restock-mine', [IntegrationController::class, 'restockMine']);
 
     // ReplyGenie / bot order creation
-    Route::post('bot-order-create', [IntegrationController::class, 'createOrderApi']);
+    Route::post('bot-order-create', [IntegrationController::class, 'createOrderApi'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // order line-item edit, courier shipment, bKash payment
-    Route::post('order-edit-items', [IntegrationController::class, 'editOrderItems']);
-    Route::post('courier-shipment/{provider}', [IntegrationController::class, 'createShipment']);
-    Route::get('courier-track/{provider}', [IntegrationController::class, 'courierTrack']);
-    Route::post('bkash-create', [IntegrationController::class, 'bkashCreate']);
+    Route::post('order-edit-items', [IntegrationController::class, 'editOrderItems'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('courier-shipment/{provider}', [IntegrationController::class, 'createShipment'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::get('courier-track/{provider}', [IntegrationController::class, 'courierTrack'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('bkash-create', [IntegrationController::class, 'bkashCreate'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // ReplyGenie connection settings (super-admin)
     Route::get('replygenie-settings', [IntegrationController::class, 'getReplygenieSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('replygenie-settings', [IntegrationController::class, 'updateReplygenieSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     // Courier + payment integration settings (super-admin)
+    // Pull RedX's area list into courier_areas so checkout never depends on their API.
+    Route::post('courier-areas-sync', [IntegrationController::class, 'syncCourierAreas'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::get('courier-settings', [IntegrationController::class, 'getCourierSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('courier-settings', [IntegrationController::class, 'updateCourierSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('courier-test/{provider}', [IntegrationController::class, 'testCourier'])->middleware('can:' . Permission::SUPER_ADMIN);
@@ -255,23 +304,36 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('notify-settings', [IntegrationController::class, 'getNotifySettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('notify-settings', [IntegrationController::class, 'updateNotifySettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('notify-test', [IntegrationController::class, 'testNotify'])->middleware('can:' . Permission::SUPER_ADMIN);
+    // custom sub-admin roles (create moderators / assign section-scoped roles)
+    Route::get('admin-roles', [IntegrationController::class, 'adminRoles'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::put('admin-roles', [IntegrationController::class, 'adminRoles'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('create-admin', [IntegrationController::class, 'createAdmin'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::put('admin-role-assign', [IntegrationController::class, 'assignAdminRole'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::get('ai/settings', [AiExtractController::class, 'getSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('ai/settings', [AiExtractController::class, 'updateSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
-    Route::post('ai/product-extract', [AiExtractController::class, 'extractProduct']);
-    Route::post('ai/product-batch', [AiExtractController::class, 'batchExtract']);
-    Route::post('ai/fetch-image', [AiExtractController::class, 'fetchImage']);
-    Route::post('ai/list-crawl', [AiExtractController::class, 'listCrawl']);
-    Route::post('ai/create-product', [AiExtractController::class, 'createProduct']);
+    Route::post('ai/product-extract', [AiExtractController::class, 'extractProduct'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('ai/product-batch', [AiExtractController::class, 'batchExtract'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('ai/fetch-image', [AiExtractController::class, 'fetchImage'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('ai/list-crawl', [AiExtractController::class, 'listCrawl'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('ai/create-product', [AiExtractController::class, 'createProduct'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('ai/duplicate-check', [AiExtractController::class, 'duplicateCheck'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('ai/test', [AiExtractController::class, 'testConnection'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::get('ai/models', [AiExtractController::class, 'listModels'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('ai/update-product', [AiExtractController::class, 'updateExisting'])->middleware('can:' . Permission::SUPER_ADMIN);
 
     // IndoBangla order manual adjustment (discount / delivery / adjustment / note).
-    Route::post('order-adjust', [IntegrationController::class, 'adjustOrder']);
+    Route::post('order-adjust', [IntegrationController::class, 'adjustOrder'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // IndoBangla pay-by-link generation (admin).
-    Route::post('order-pay-link', [IntegrationController::class, 'orderPayLink']);
+    Route::post('order-pay-link', [IntegrationController::class, 'orderPayLink'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // Reader's Club settings (fee / discount %) — super-admin.
     Route::get('club-settings', [IntegrationController::class, 'clubSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('club-settings', [IntegrationController::class, 'clubSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     // Order-amount discount tiers — super-admin.
     Route::get('order-discount-settings', [IntegrationController::class, 'orderDiscountSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::get('dispatch-settings', [IntegrationController::class, 'dispatchSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::get('invoice-settings', [IntegrationController::class, 'invoiceSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::put('invoice-settings', [IntegrationController::class, 'invoiceSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::put('dispatch-settings', [IntegrationController::class, 'dispatchSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('order-discount-settings', [IntegrationController::class, 'orderDiscountSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     // Coupon analytics — real per-coupon redemption/sales aggregation (super-admin).
     Route::get('coupon-analytics', [IntegrationController::class, 'couponAnalytics'])->middleware('can:' . Permission::SUPER_ADMIN);
@@ -288,6 +350,10 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Reseller business (Mode B) — customer.
     Route::get('reseller/status', [IntegrationController::class, 'resellerStatus']);
     Route::post('reseller/open', [IntegrationController::class, 'resellerOpen']);
+    Route::post('reseller/topup', [IntegrationController::class, 'resellerTopup']);
+    // Product info reports (#12). The controller methods existed but were never routed, so the
+    // shop's report button got "route not found". productReport does its own login check.
+    Route::post('product-report', [IntegrationController::class, 'productReport']);
     Route::post('reseller/add-product', [IntegrationController::class, 'resellerAddProduct']);
     Route::post('reseller/remove-product', [IntegrationController::class, 'resellerRemoveProduct']);
     Route::post('reseller/request-payout', [IntegrationController::class, 'resellerRequestPayout']);
@@ -304,6 +370,12 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Featured book selection for banner + FBT — super-admin.
     Route::get('featured-books-settings', [IntegrationController::class, 'featuredBooksSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('featured-books-settings', [IntegrationController::class, 'featuredBooksSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
+    // Per-product landing pages — super-admin (GET list / POST upsert one).
+    Route::match(['get', 'post'], 'landing-settings', [IntegrationController::class, 'landingSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
+    // Product copy / move across shops — super-admin.
+    Route::get('product-shops', [IntegrationController::class, 'productShops'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('product-copy', [IntegrationController::class, 'productCopy'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('product-move', [IntegrationController::class, 'productMove'])->middleware('can:' . Permission::SUPER_ADMIN);
     // Rotating hero banners — super-admin.
     Route::match(['get', 'put'], 'rotating-banners-settings', [IntegrationController::class, 'rotatingBannersSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     // Pre-home intro page toggle — super-admin.
@@ -328,6 +400,10 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('abandoned-checkouts', [IntegrationController::class, 'abandonedCheckouts'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('abandoned-contacted', [IntegrationController::class, 'abandonedContacted'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::get('preorder-summary', [IntegrationController::class, 'preorderSummary'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::get('order-board', [IntegrationController::class, 'orderBoard'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('order-lifecycle', [IntegrationController::class, 'orderLifecycle'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::get('feature-checks', [IntegrationController::class, 'featureChecks'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('feature-check', [IntegrationController::class, 'featureCheckSet'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::match(['get', 'put'], 'pay-link-settings', [IntegrationController::class, 'payLinkSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::get('preorder-products', [IntegrationController::class, 'preorderProducts'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('preorder-update', [IntegrationController::class, 'preorderUpdate'])->middleware('can:' . Permission::SUPER_ADMIN);
@@ -341,13 +417,18 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::match(['get', 'put'], 'membership-tiers', [IntegrationController::class, 'membershipTiers'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::get('membership-search', [IntegrationController::class, 'membershipSearch'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('membership-assign', [IntegrationController::class, 'membershipAssign'])->middleware('can:' . Permission::SUPER_ADMIN);
+    Route::post('membership-card-action', [IntegrationController::class, 'membershipCardAction'])->middleware('can:' . Permission::SUPER_ADMIN);
     // Saved-books (wishlist) insights + quick price edit — super-admin.
     Route::get('wishlist-insights', [IntegrationController::class, 'wishlistInsights'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('product-quick-price', [IntegrationController::class, 'productQuickPrice'])->middleware('can:' . Permission::SUPER_ADMIN);
     // IndoBangla order-management board: operational tracking + customer tier stats
     Route::post('order-ops', [IntegrationController::class, 'orderOps']);
-    Route::post('order-customer-stats', [IntegrationController::class, 'orderCustomerStats']);
-    Route::get('order-search', [IntegrationController::class, 'orderSearch']);
+    Route::get('live-users', [IntegrationController::class, 'liveUsers'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::get('product-reports', [IntegrationController::class, 'productReports'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::put('product-reports/{id}', [IntegrationController::class, 'productReportUpdate'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('admin-create-customer', [IntegrationController::class, 'adminCreateCustomer']);
+    Route::post('order-customer-stats', [IntegrationController::class, 'orderCustomerStats'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::get('order-search', [IntegrationController::class, 'orderSearch'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
 
     // IndoBangla order dashboard summary (counts per order status).
     Route::get('orders-summary', function () {
@@ -360,7 +441,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
             'total'     => (clone $db)->count(),
             'by_status' => $byStatus,
         ];
-    });
+    })->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
 });
 Route::get('/payment-intent', [PaymentIntentController::class, 'getPaymentIntent']);
 

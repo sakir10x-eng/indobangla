@@ -1,5 +1,6 @@
 import SelectInput from '@/components/ui/select-input';
 import Label from '@/components/ui/label';
+import AddOptionLink from '@/components/product/add-option-link';
 import { Control, useFormState, useWatch } from 'react-hook-form';
 import { useEffect } from 'react';
 import { useTagsQuery } from '@/data/tag';
@@ -35,7 +36,10 @@ const ProductTagInput = ({ control, setValue }: Props) => {
 
   return (
     <div>
-      <Label>{t('sidebar-nav-item-tags')}</Label>
+      <div className="flex items-center justify-between">
+        <Label>{t('sidebar-nav-item-tags')}</Label>
+        <AddOptionLink href="/tags/create" />
+      </div>
       <SelectInput
         name="tags"
         isMulti
