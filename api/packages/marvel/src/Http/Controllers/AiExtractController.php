@@ -27,7 +27,8 @@ class AiExtractController extends CoreController
         $rules    = $options['field_rules'] ?? [];
         return [
             'provider' => $ai['provider'] ?? 'openrouter',
-            'model'    => $ai['model'] ?? '',
+            'model'      => $ai['model'] ?? '',
+            'free_model' => $ai['free_model'] ?? '',
             'enabled'  => (bool) ($ai['enabled'] ?? false),
             'has_key'  => !empty($ai['api_key']),
             'key_hint' => !empty($ai['api_key']) ? '****' . substr($ai['api_key'], -4) : '',
@@ -43,7 +44,8 @@ class AiExtractController extends CoreController
     {
         $data = $request->validate([
             'provider' => 'required|in:openrouter,anthropic,openai',
-            'model'    => 'nullable|string',
+            'model'      => 'nullable|string',
+            'free_model' => 'nullable|string',
             'api_key'  => 'nullable|string',
             // Separate from api_key: this one authenticates the r.jina.ai page reader, not the LLM.
             'jina_key' => 'nullable|string',
@@ -59,7 +61,9 @@ class AiExtractController extends CoreController
 
         $options['ai_settings'] = [
             'provider' => $data['provider'],
-            'model'    => $data['model'] ?? ($current['model'] ?? ''),
+            'model'      => $data['model'] ?? ($current['model'] ?? ''),
+            // Free/text model tried first for text extraction; falls back to `model`.
+            'free_model' => array_key_exists('free_model', $data) ? (string) $data['free_model'] : ($current['free_model'] ?? ''),
             // keep existing key if the field is left blank on update
             'api_key'  => !empty($data['api_key']) ? $data['api_key'] : ($current['api_key'] ?? ''),
             'jina_key' => !empty($data['jina_key']) ? $data['jina_key'] : ($current['jina_key'] ?? ''),
@@ -106,6 +110,7 @@ class AiExtractController extends CoreController
             'image_url'   => 'nullable|string',
             'product_url' => 'nullable|string',
             'text'        => 'nullable|string',
+            'printed_country' => 'nullable|string',
         ]);
 
         if (!$request->image_url && !$request->product_url && !$request->text) {
@@ -115,7 +120,8 @@ class AiExtractController extends CoreController
         $product = $this->runExtraction(
             $request->image_url,
             $request->product_url,
-            $request->text
+            $request->text,
+            $request->input('printed_country')
         );
 
         return ['status' => 'success', 'product' => $product];
@@ -132,6 +138,8 @@ class AiExtractController extends CoreController
             throw new MarvelException('Provide an "items" array (max 25).');
         }
         $items = array_slice($items, 0, 25);
+        // Admin picks the printed country once for the whole batch (drives Indian markup).
+        $country = $request->input('printed_country');
 
         $results = [];
         foreach ($items as $i => $item) {
@@ -139,7 +147,8 @@ class AiExtractController extends CoreController
                 $product = $this->runExtraction(
                     $item['image_url'] ?? null,
                     $item['product_url'] ?? null,
-                    $item['text'] ?? null
+                    $item['text'] ?? null,
+                    $item['printed_country'] ?? $country
                 );
                 $results[] = ['index' => $i, 'status' => 'success', 'product' => $product];
             } catch (\Throwable $e) {
@@ -323,6 +332,18 @@ class AiExtractController extends CoreController
 
     // ---------------------------------------------------------------------
 
+    /** True if this free model 429'd recently — skip it for a while to avoid wasted calls. */
+    private function freeModelThrottled(string $model): bool
+    {
+        return (bool) \Illuminate\Support\Facades\Cache::get('ai:free_throttled:' . md5($model));
+    }
+
+    /** Remember a free model is exhausted so the rest of the batch goes straight to paid. */
+    private function markFreeModelThrottled(string $model): void
+    {
+        \Illuminate\Support\Facades\Cache::put('ai:free_throttled:' . md5($model), 1, 600); // 10 min
+    }
+
     private function getAiSettings(): array
     {
         $settings = Settings::first();
@@ -330,7 +351,7 @@ class AiExtractController extends CoreController
         return $options['ai_settings'] ?? [];
     }
 
-    private function runExtraction(?string $imageUrl, ?string $productUrl, ?string $text): array
+    private function runExtraction(?string $imageUrl, ?string $productUrl, ?string $text, ?string $country = null): array
     {
         $ai = $this->getAiSettings();
         if (empty($ai['api_key']) || empty($ai['enabled'])) {
@@ -365,15 +386,76 @@ class AiExtractController extends CoreController
         }
 
         $system = $this->systemPrompt();
-        $raw    = $this->callLLM($ai, $system, $userText, $imageUrl);
 
-        $data = $this->parseJson($raw);
+        // Hybrid model routing to keep cost down (owner's design):
+        //  - reading a COVER IMAGE needs vision → use the paid model only.
+        //  - TEXT / URL extraction → try the free model first (£0), and only fall back to
+        //    the paid model if free is throttled (OpenRouter's free pool 429s a lot) or
+        //    returns unusable JSON. When free works, the extraction is free.
+        $paid = $ai['model'] ?? '';
+        $free = $ai['free_model'] ?? '';
+        $hasImage = !empty($imageUrl);
+
+        $plan = [];
+        if (!$hasImage && $free !== '' && !$this->freeModelThrottled($free)) {
+            $plan[] = ['model' => $free, 'free' => true];
+        }
+        if ($paid !== '') {
+            $plan[] = ['model' => $paid, 'free' => false];
+        }
+        if (!$plan) {
+            // Nothing configured beyond the provider default — let callLLM use it.
+            $plan[] = ['model' => '', 'free' => false];
+        }
+
+        $data = null;
+        $lastRaw = '';
+        $lastErr = '';
+        $usedModel = '';
+        foreach ($plan as $step) {
+            $usedModel = $step['model'];
+            // The free tier fails often, so give it 2 shots; the paid model 2 as well.
+            for ($try = 1; $try <= 2; $try++) {
+                try {
+                    $lastRaw = $this->callLLM($ai, $system, $userText, $imageUrl, $step['model'] ?: null);
+                } catch (\Throwable $e) {
+                    $lastErr = $e->getMessage();
+                    // A 429 on the free model means the shared pool is exhausted — mark it
+                    // throttled so the rest of this batch skips straight to paid.
+                    if ($step['free'] && stripos($lastErr, '429') !== false) {
+                        $this->markFreeModelThrottled($step['model']);
+                    }
+                    break; // provider error — don't hammer the same model, move on in the plan
+                }
+                $data = $this->parseJson($lastRaw);
+                if (is_array($data)) {
+                    break 2;
+                }
+            }
+        }
         if (!is_array($data)) {
-            throw new MarvelException('The AI response could not be parsed. Try again or refine the input.');
+            $hint = $lastErr !== ''
+                ? ('the provider returned an error: ' . Str::limit($lastErr, 140))
+                : (trim($lastRaw) === '' ? 'the model returned an empty response' : 'the model did not return valid JSON');
+            $modelName = $usedModel ?: ($paid ?: '(provider default)');
+            throw new MarvelException(
+                "AI extraction failed — {$hint} (model: {$modelName}). "
+                . 'Try again, or set a stronger paid model in Settings -> AI.'
+            );
         }
         // Always echo back the cover image the user supplied if the model didn't find one.
         if ($imageUrl && empty($data['image_url'])) {
             $data['image_url'] = $imageUrl;
+        }
+
+        // A generic product page exposes its REAL cover via the og:image meta tag. The
+        // model only ever sees stripped page text (no <meta>), so it guesses a logo/404
+        // URL. Trust the page's own og:image over the model for non-AnandaPub pages.
+        if ($productUrl && empty($anand)) {
+            $og = $this->fetchOgImage($productUrl);
+            if ($og) {
+                $data['image_url'] = $og;
+            }
         }
 
         // AnandaPub's own API is authoritative — the model reliably romanises the Bangla
@@ -384,7 +466,7 @@ class AiExtractController extends CoreController
             $data = $this->applyAnandapub($data, $anand);
         }
 
-        return $this->resolveEntities($data, $productUrl);
+        return $this->resolveEntities($data, $productUrl, $country);
     }
 
     /**
@@ -393,8 +475,13 @@ class AiExtractController extends CoreController
      * add "Indian Books" for Indian titles, build an English slug, apply the
      * Indian pricing rules, and default status=publish / quantity=1.
      */
-    private function resolveEntities(array $d, ?string $sourceUrl): array
+    private function resolveEntities(array $d, ?string $sourceUrl, ?string $country = null): array
     {
+        // printed_country override: the admin's up-front choice wins over the model's guess.
+        // It decides the Indian markup (MRP×2 / ×1.75) and the "Indian Books" category.
+        if ($country !== null && trim($country) !== '') {
+            $d['printed_country'] = $country;
+        }
         $indian = (bool) ($d['is_indian'] ?? false)
             || stripos((string) ($d['printed_country'] ?? ''), 'india') !== false
             || ($sourceUrl && stripos($sourceUrl, 'anandapub') !== false);
@@ -639,10 +726,9 @@ class AiExtractController extends CoreController
             }
         }
 
-        // Description: strip the API's HTML so the product form gets clean text.
+        // Description: the API ships HTML — clean it but keep the paragraph breaks.
         if (!empty($bd['description'])) {
-            $desc = html_entity_decode(strip_tags((string) $bd['description']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-            $desc = trim(preg_replace('/\s+/', ' ', $desc));
+            $desc = $this->cleanHtmlText((string) $bd['description']);
             if ($desc !== '') {
                 $d['description'] = $desc;
             }
@@ -721,6 +807,43 @@ class AiExtractController extends CoreController
     }
 
     /** Download an image URL to our public storage; returns an attachment-shaped array. */
+    /**
+     * Pull the real cover from a product page's og:image / twitter:image meta tag.
+     * The book stores (boierhaat, rokomari, etc.) all set og:image to the actual cover;
+     * returns null if none found or if it's obviously a logo/placeholder.
+     */
+    private function fetchOgImage(?string $url): ?string
+    {
+        if (!$url || !preg_match('#^https?://#i', $url)) {
+            return null;
+        }
+        try {
+            $html = Http::timeout(20)->withHeaders([
+                'User-Agent' => 'Mozilla/5.0 (compatible; IndoBanglaBot/1.0)',
+            ])->get($url)->body();
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!$html) {
+            return null;
+        }
+        $patterns = [
+            '#<meta[^>]+property=["\']og:image(?::url)?["\'][^>]+content=["\']([^"\']+)["\']#i',
+            '#<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image(?::url)?["\']#i',
+            '#<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']#i',
+        ];
+        foreach ($patterns as $re) {
+            if (preg_match($re, $html, $m) && !empty($m[1])) {
+                $img = html_entity_decode(trim($m[1]));
+                // Skip a site logo/placeholder set as og:image (some themes do this).
+                if ($img !== '' && !preg_match('#(logo|placeholder|no[-_]?image|default[-_]?(cover|image))#i', $img)) {
+                    return $img;
+                }
+            }
+        }
+        return null;
+    }
+
     private function storeImageFromUrl(string $url): array
     {
         $resp = Http::timeout(45)->withHeaders([
@@ -809,6 +932,43 @@ class AiExtractController extends CoreController
      * Create a product from an (already extracted + enriched) product object,
      * into the IndoBangla Store shop, published. Used by AI batch upload.
      */
+    /**
+     * The author id to save. Prefer an explicit id from extraction, but if the admin
+     * edited the writer's name in the preview (clearing the id), find-or-create by name.
+     */
+    private function resolveAuthorId(array $p): ?int
+    {
+        if (!empty($p['author']['id'])) {
+            return (int) $p['author']['id'];
+        }
+        $name = $p['author']['name']
+            ?? (is_array($p['authors'] ?? null) ? ($p['authors'][0] ?? null) : ($p['authors'] ?? null));
+        if ($name !== null && trim((string) $name) !== '') {
+            $a = $this->findOrCreateAuthor((string) $name);
+            return $a ? (int) $a->id : null;
+        }
+        return null;
+    }
+
+    /**
+     * Turn source HTML (anandapub descriptions are HTML) into clean text that KEEPS
+     * paragraph breaks — the old collapse-all-whitespace flattened a multi-paragraph
+     * synopsis into one wall of text.
+     */
+    private function cleanHtmlText(string $html): string
+    {
+        // Block boundaries become newlines so paragraphs survive strip_tags.
+        $html = preg_replace('#<br\s*/?>#i', "\n", $html);
+        $html = preg_replace('#</(p|div|li|h[1-6]|tr|blockquote)\s*>#i', "\n\n", $html);
+        $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = str_replace(["\r\n", "\r", "\xC2\xA0"], ["\n", "\n", ' '], $text);
+        // Collapse spaces/tabs but NOT newlines, then trim each line and blank runs.
+        $text = preg_replace('/[ \t]+/', ' ', $text);
+        $lines = array_map('trim', explode("\n", $text));
+        $text = preg_replace("/\n{3,}/", "\n\n", implode("\n", $lines));
+        return trim($text);
+    }
+
     public function createProduct(Request $request)
     {
         $p = $request->input('product', []);
@@ -850,23 +1010,40 @@ class AiExtractController extends CoreController
             'language'        => DEFAULT_LANGUAGE ?? 'en',
             'description'     => $p['description'] ?? null,
             'product_type'    => 'simple',
-            'status'          => 'publish',
+            // The preview lets the admin publish a row as a draft instead of live.
+            'status'          => (($p['status'] ?? '') === 'draft') ? 'draft' : 'publish',
             'price'           => $price,
             'max_price'       => $price,
             'min_price'       => $price,
             'sale_price'      => is_numeric($p['sale_price'] ?? null) ? (float) $p['sale_price'] : null,
-            'quantity'        => (int) ($p['quantity'] ?? 1),
+            'quantity'        => max(0, (int) ($p['quantity'] ?? 1)),
             'unit'            => $p['unit'] ?? '1 pc',
             'sku'             => $p['sku'] ?? null,
-            'in_stock'        => true,
+            // Setting stock to 0 in the preview means out of stock — don't force it in.
+            'in_stock'        => max(0, (int) ($p['quantity'] ?? 1)) > 0,
             'is_taxable'      => false,
-            'author_id'       => $p['author']['id'] ?? null,
+            'author_id'       => $this->resolveAuthorId($p),
             'manufacturer_id' => $p['manufacturer']['id'] ?? null,
             'image'           => $image,
         ]);
 
         if (!empty($p['categories']) && is_array($p['categories'])) {
-            $ids = array_values(array_filter(array_map(fn ($c) => is_array($c) ? ($c['id'] ?? null) : $c, $p['categories'])));
+            $ids = [];
+            foreach ($p['categories'] as $c) {
+                if (is_array($c) && !empty($c['id'])) {
+                    $ids[] = (int) $c['id'];
+                    continue;
+                }
+                // A string or {name} with no id = an admin-added category → find or create it.
+                $name = is_array($c) ? ($c['name'] ?? null) : $c;
+                if ($name !== null && trim((string) $name) !== '') {
+                    $cat = $this->findOrCreateCategory((string) $name);
+                    if ($cat) {
+                        $ids[] = (int) $cat->id;
+                    }
+                }
+            }
+            $ids = array_values(array_unique(array_filter($ids)));
             if ($ids) {
                 $product->categories()->attach($ids);
             }
@@ -1269,11 +1446,11 @@ Respond with ONLY a single minified JSON object (no markdown, no commentary) usi
 PROMPT;
     }
 
-    private function callLLM(array $ai, string $system, string $userText, ?string $imageUrl): string
+    private function callLLM(array $ai, string $system, string $userText, ?string $imageUrl, ?string $modelOverride = null): string
     {
         $provider = $ai['provider'] ?? 'openrouter';
         $key      = $ai['api_key'];
-        $model    = $ai['model'] ?? '';
+        $model    = ($modelOverride !== null && $modelOverride !== '') ? $modelOverride : ($ai['model'] ?? '');
 
         if ($provider === 'anthropic') {
             $content = [['type' => 'text', 'text' => $userText]];
@@ -1286,7 +1463,7 @@ PROMPT;
                 'content-type'      => 'application/json',
             ])->timeout(90)->post('https://api.anthropic.com/v1/messages', [
                 'model'      => $model ?: 'claude-sonnet-4-5',
-                'max_tokens' => 2000,
+                'max_tokens' => 4000,
                 'system'     => $system,
                 'messages'   => [['role' => 'user', 'content' => $content]],
             ]);
@@ -1314,6 +1491,9 @@ PROMPT;
 
         $resp = Http::withToken($key)->withHeaders($headers)->timeout(90)->post($base . '/chat/completions', [
             'model'    => $model ?: ($provider === 'openai' ? 'gpt-4o' : 'openai/gpt-4o'),
+            // Without this the model uses its own (sometimes small) default and truncates
+            // the JSON mid-object — the main cause of 'could not be parsed' on cheap models.
+            'max_tokens' => 4000,
             'messages' => [
                 ['role' => 'system', 'content' => $system],
                 ['role' => 'user', 'content' => $userContent],
