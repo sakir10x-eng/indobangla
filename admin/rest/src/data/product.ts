@@ -14,6 +14,27 @@ import { mapPaginatorData } from '@/utils/data-mappers';
 import { Routes } from '@/config/routes';
 import { Config } from '@/config';
 
+/**
+ * Turn an axios error into a human-readable message.
+ * Handles Laravel validation ({ message, errors: { field: [msg] } }), Marvel
+ * exception keys, and network/500s — so the admin never shows a bare "undefined".
+ */
+function apiErrorMessage(error: any, t: any): string {
+  const data = error?.response?.data;
+  // Laravel validation: prefer the first field-level message (e.g. sale_price)
+  if (data?.errors && typeof data.errors === 'object') {
+    const first: any = Object.values(data.errors)[0];
+    const msg = Array.isArray(first) ? first[0] : first;
+    if (msg) return msg;
+  }
+  const raw = data?.message ?? error?.message;
+  if (raw) {
+    // translate known Marvel keys; fall back to the raw text (never "undefined")
+    return t(`common:${raw}`, { defaultValue: raw });
+  }
+  return t('common:something-went-wrong', { defaultValue: 'Something went wrong' });
+}
+
 export const useCreateProductMutation = () => {
   const queryClient = useQueryClient();
   const router = useRouter();
@@ -33,13 +54,7 @@ export const useCreateProductMutation = () => {
       queryClient.invalidateQueries(API_ENDPOINTS.PRODUCTS);
     },
     onError: (error: any) => {
-      const { data, status } = error?.response;
-      if (status === 422) {
-        const errorMessage: any = Object.values(data).flat();
-        toast.error(errorMessage[0]);
-      } else {
-        toast.error(t(`common:${error?.response?.data.message}`));
-      }
+      toast.error(apiErrorMessage(error, t));
     },
   });
 };
@@ -67,7 +82,7 @@ export const useUpdateProductMutation = () => {
       queryClient.invalidateQueries(API_ENDPOINTS.PRODUCTS);
     },
     onError: (error: any) => {
-      toast.error(t(`common:${error?.response?.data.message}`));
+      toast.error(apiErrorMessage(error, t));
     },
   });
 };
@@ -84,7 +99,7 @@ export const useDeleteProductMutation = () => {
       queryClient.invalidateQueries(API_ENDPOINTS.PRODUCTS);
     },
     onError: (error: any) => {
-      toast.error(t(`common:${error?.response?.data.message}`));
+      toast.error(apiErrorMessage(error, t));
     },
   });
 };
