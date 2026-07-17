@@ -1418,7 +1418,7 @@ Respond with ONLY a single minified JSON object (no markdown, no commentary) usi
   "name": string,                 // the book's title in ITS OWN script — if the book is in Bangla, the name MUST stay in Bangla (do NOT romanize or translate it). Romanize only in `slug`.
   "slug": string,                 // English/romanized url slug of the title (transliterate Bangla to Latin), lowercase words separated by hyphens
   "is_indian": boolean,           // true if this is an Indian book / Indian publisher / printed in India
-  "description": string,          // REQUIRED: a 2-4 sentence summary of the book. Never leave this empty — if the page has a synopsis use it, otherwise write a short factual summary from the title, author and category.
+  "description": string,          // REQUIRED: the COMPLETE product description / synopsis from the page — copy ALL of it, every paragraph, verbatim; do NOT shorten, summarise or truncate. Only if the page genuinely has no description, write a short factual summary from the title, author and category. Never leave this empty.
   "price": number|null,           // regular price in BDT
   "sale_price": number|null,      // discounted price in BDT if any
   "quantity": number|null,
@@ -1463,7 +1463,7 @@ PROMPT;
                 'content-type'      => 'application/json',
             ])->timeout(90)->post('https://api.anthropic.com/v1/messages', [
                 'model'      => $model ?: 'claude-sonnet-4-5',
-                'max_tokens' => 4000,
+                'max_tokens' => 6000,
                 'system'     => $system,
                 'messages'   => [['role' => 'user', 'content' => $content]],
             ]);
@@ -1493,7 +1493,7 @@ PROMPT;
             'model'    => $model ?: ($provider === 'openai' ? 'gpt-4o' : 'openai/gpt-4o'),
             // Without this the model uses its own (sometimes small) default and truncates
             // the JSON mid-object — the main cause of 'could not be parsed' on cheap models.
-            'max_tokens' => 4000,
+            'max_tokens' => 6000,
             'messages' => [
                 ['role' => 'system', 'content' => $system],
                 ['role' => 'user', 'content' => $userContent],
