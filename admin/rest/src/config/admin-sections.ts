@@ -55,6 +55,7 @@ const SECTION_ROUTE_RULES: { section: string; prefixes: string[] }[] = [
     section: 'orders',
     prefixes: [
       '/orders',
+      '/payments',
       '/transactions',
       '/preorder',
       '/abandoned',

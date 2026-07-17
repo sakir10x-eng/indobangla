@@ -125,6 +125,7 @@ export const Routes = {
   outOfStockOrLowProducts: '/products/product-stock',
   productInventory: '/products/inventory',
   transaction: '/orders/transaction',
+  payments: '/payments',
   termsAndCondition: {
     ...routesFactory('/terms-and-conditions'),
   },

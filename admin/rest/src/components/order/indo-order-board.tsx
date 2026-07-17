@@ -154,6 +154,10 @@ function mapOrder(o: any, stats: any) {
     // both have to take it off themselves.
     walletPoints: Number(o.wallet_point?.amount) || 0,
     bankProof: ops.bank_proof || null,   // customer-uploaded transfer slip awaiting review
+    payMethod: ops.pay_method || (ops.bkash?.trx_id ? 'bkash' : ops.bank_proof ? 'bank' : null),
+    bkashTrx: ops.bkash?.trx_id || null,
+    paidAmount: ops.bkash?.amount_bdt ?? ops.bank_proof?.amount_bdt ?? null,
+    paymentVerified: Boolean(ops.payment_verified),
     courier: ops.courier || o.logistics_provider || '',
     courierTrackingId: ops.courier_tracking_id || '',
     courierArea: ops.courier_area || '',
@@ -422,6 +426,20 @@ function OrderCard({ o, act, busy, coupon }: any) {
               )}
             </div>
           </div>
+
+          {/* bKash transaction — amount + trx id so the admin can cross-check */}
+          {o.bkashTrx && (
+            <div className="flex items-center justify-between gap-2 rounded-xl bg-pink-50/70 p-2.5 ring-1 ring-pink-200">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-pink-500">🔴 bKash</span>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-[11px] font-semibold text-slate-700">{o.bkashTrx}</span>
+                {o.paidAmount != null && (
+                  <span className="text-[12px] font-bold text-emerald-700">{bdt(o.paidAmount)}</span>
+                )}
+                {o.paymentVerified && <span className="text-[10.5px] font-bold text-emerald-600">✓</span>}
+              </span>
+            </div>
+          )}
 
           {/* bank transfer slip — money only moves when an admin says so */}
           {o.bankProof && (

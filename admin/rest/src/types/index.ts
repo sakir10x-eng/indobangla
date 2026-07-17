@@ -231,6 +231,31 @@ export interface AssignAdminRoleInput {
   role_id?: string | null;
 }
 
+export interface PaymentRow {
+  order_id: number;
+  tracking_number: string;
+  method: 'bkash' | 'bank' | string | null;
+  trx_id: string | null;
+  bkash_payment_id: string | null;
+  bank_status: string | null;
+  bank_slip: string | null;
+  customer_name: string | null;
+  customer_contact: string | null;
+  amount: number;
+  total: number;
+  paid_total: number;
+  payment_status: string | null;
+  order_status: string | null;
+  verified: boolean;
+  paid_at: string | null;
+  created_at: string | null;
+}
+
+export interface PaymentRecheckInput {
+  order_id: number | string;
+  action: 'requery' | 'verify' | 'unverify';
+}
+
 export interface Type {
   id: string;
   name: string;

@@ -140,6 +140,11 @@ export const siteSettings = {
             icon: 'TransactionsIcon',
           },
           {
+            href: Routes.payments,
+            label: '💳 Payments (bKash/Bank)',
+            icon: 'TransactionsIcon',
+          },
+          {
             href: '/preorder',
             label: '📖 Pre-orders',
             icon: 'OrdersIcon',

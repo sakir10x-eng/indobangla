@@ -309,6 +309,9 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::put('admin-roles', [IntegrationController::class, 'adminRoles'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('create-admin', [IntegrationController::class, 'createAdmin'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('admin-role-assign', [IntegrationController::class, 'assignAdminRole'])->middleware('can:' . Permission::SUPER_ADMIN);
+    // online payments (bKash / bank) ledger + re-check
+    Route::get('payments-list', [IntegrationController::class, 'paymentsList'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::post('payment-recheck', [IntegrationController::class, 'paymentRecheck'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::get('ai/settings', [AiExtractController::class, 'getSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('ai/settings', [AiExtractController::class, 'updateSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('ai/product-extract', [AiExtractController::class, 'extractProduct'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);

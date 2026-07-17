@@ -1,6 +1,7 @@
 import Layout from '@/components/layouts/admin';
 import Loader from '@/components/ui/loader/loader';
 import ErrorMessage from '@/components/ui/error-message';
+import OrderPaymentVerify from '@/components/order/order-payment-verify';
 import {
   useDownloadInvoiceMutation,
   useOrderQuery,
@@ -778,6 +779,9 @@ export default function OrderDetailsPage() {
               </button>
             </div>
           </div>
+
+          {/* online payment (bKash/bank) verification */}
+          <OrderPaymentVerify order={order} onDone={refetch} />
 
           {/* payment adjustment */}
           <div className="rounded-xl border border-gray-200 bg-white">

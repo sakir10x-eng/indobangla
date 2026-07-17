@@ -49,6 +49,8 @@ export const API_ENDPOINTS = {
   ADMIN_ROLES: 'admin-roles',
   CREATE_ADMIN: 'create-admin',
   ADMIN_ROLE_ASSIGN: 'admin-role-assign',
+  PAYMENTS_LIST: 'payments-list',
+  PAYMENT_RECHECK: 'payment-recheck',
   AUTHORS: 'authors',
   MANUFACTURERS: 'manufacturers',
   CHECKOUT: 'orders/checkout/verify',

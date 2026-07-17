@@ -7845,4 +7845,171 @@ class IntegrationController extends CoreController
         return ['status' => 'success', 'id' => $target->id, 'admin_role_id' => $target->admin_role_id];
     }
 
+    /* ======================== Online payments (bKash / bank) ledger ========================
+     * bKash & bank-transfer payments live inside orders.ops_meta:
+     *   ops_meta.bkash      = { payment_id, trx_id, amount_bdt, executed_at, last_status }
+     *   ops_meta.bank_proof = { status, amount_bdt, url, submitted_at }
+     *   ops_meta.pay_method / paid_at / payment_verified
+     * This exposes them as a searchable ledger + a re-check (re-query bKash) action so the
+     * admin can confirm a transaction id / amount before shipping.
+     * ===================================================================================== */
+
+    /** WHERE clause: orders that carry a real bKash transaction or a bank slip. */
+    private function scopeHasOnlinePayment($query)
+    {
+        return $query->where(function ($w) {
+            $w->whereRaw("(JSON_UNQUOTE(JSON_EXTRACT(ops_meta,'$.bkash.trx_id')) IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(ops_meta,'$.bkash.trx_id')) <> 'null')")
+              ->orWhereRaw("JSON_EXTRACT(ops_meta,'$.bank_proof.status') IS NOT NULL");
+        });
+    }
+
+    /** Build one flat ledger row from an order. */
+    private function paymentRow($o): array
+    {
+        $ops   = (array) ($o->ops_meta ?? []);
+        $bkash = $ops['bkash'] ?? [];
+        $bank  = $ops['bank_proof'] ?? [];
+        $hasBkash = !empty($bkash['trx_id']);
+        $method = $ops['pay_method'] ?? ($hasBkash ? 'bkash' : (!empty($bank) ? 'bank' : null));
+        $amount = $hasBkash
+            ? ($bkash['amount_bdt'] ?? $o->paid_total)
+            : ($bank['amount_bdt'] ?? $o->paid_total);
+        $when = $ops['paid_at']
+            ?? ($bank['submitted_at'] ?? ($bkash['executed_at'] ?? (string) $o->created_at));
+        return [
+            'order_id'         => $o->id,
+            'tracking_number'  => $o->tracking_number,
+            'method'           => $method,
+            'trx_id'           => $bkash['trx_id'] ?? null,
+            'bkash_payment_id' => $bkash['payment_id'] ?? null,
+            'bank_status'      => $bank['status'] ?? null,
+            'bank_slip'        => $bank['url'] ?? null,
+            'customer_name'    => $o->customer_name,
+            'customer_contact' => $o->customer_contact,
+            'amount'           => round((float) $amount),
+            'total'            => round((float) $o->total),
+            'paid_total'       => round((float) $o->paid_total),
+            'payment_status'   => $o->payment_status,
+            'order_status'     => $o->order_status,
+            'verified'         => (bool) ($ops['payment_verified'] ?? false),
+            'paid_at'          => $when,
+            'created_at'       => (string) $o->created_at,
+        ];
+    }
+
+    /**
+     * GET payments-list?method=all|bkash|bank&search=&page=&limit=
+     * One search box matches across trx id, customer name, mobile, order id, tracking number
+     * and amount.
+     */
+    public function paymentsList(Request $request)
+    {
+        $method = (string) $request->input('method', 'all');
+        $q      = trim((string) $request->input('search', ''));
+        $limit  = min(100, max(5, (int) ($request->input('limit', 30) ?: 30)));
+
+        $query = Order::query()->whereNull('parent_id');
+        $this->scopeHasOnlinePayment($query);
+
+        if ($method === 'bkash') {
+            $query->whereRaw("(JSON_UNQUOTE(JSON_EXTRACT(ops_meta,'$.bkash.trx_id')) IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(ops_meta,'$.bkash.trx_id')) <> 'null')");
+        } elseif ($method === 'bank') {
+            $query->whereRaw("JSON_EXTRACT(ops_meta,'$.bank_proof.status') IS NOT NULL");
+        }
+
+        if ($q !== '') {
+            $like = '%' . $q . '%';
+            $query->where(function ($w) use ($like, $q) {
+                $w->where('tracking_number', 'like', $like)
+                  ->orWhere('customer_name', 'like', $like)
+                  ->orWhere('customer_contact', 'like', $like)
+                  ->orWhere('total', 'like', $like)
+                  ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta,'$.bkash.trx_id')) like ?", [$like]);
+                if (ctype_digit($q)) {
+                    $w->orWhere('id', (int) $q);
+                }
+            });
+        }
+
+        $paginator = $query->orderByDesc('id')->paginate($limit);
+        $paginator->getCollection()->transform(fn ($o) => $this->paymentRow($o));
+
+        // small totals strip for the page header
+        $sumQuery = Order::query()->whereNull('parent_id');
+        $this->scopeHasOnlinePayment($sumQuery);
+
+        return [
+            'status'  => 'success',
+            'summary' => [
+                'count' => (clone $sumQuery)->count(),
+            ],
+            'data'         => $paginator->items(),
+            'total'        => $paginator->total(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'per_page'     => $paginator->perPage(),
+        ];
+    }
+
+    /**
+     * POST payment-recheck { order_id, action: 'requery'|'verify'|'unverify' }
+     *  - requery : re-ask bKash (queryPayment by payment_id) and refresh trx/amount/status
+     *  - verify  : mark ops_meta.payment_verified = true (admin eyeballed it)
+     *  - unverify: clear the flag
+     */
+    public function paymentRecheck(Request $request)
+    {
+        $data = $request->validate([
+            'order_id' => 'required',
+            'action'   => 'required|string|in:requery,verify,unverify',
+        ]);
+        $order = Order::find($data['order_id']);
+        if (!$order) {
+            throw new MarvelException(NOT_FOUND);
+        }
+        $ops = (array) ($order->ops_meta ?? []);
+
+        if ($data['action'] === 'verify' || $data['action'] === 'unverify') {
+            $ops['payment_verified'] = $data['action'] === 'verify';
+            $ops['payment_verified_by'] = optional($request->user())->name;
+            $ops['payment_verified_at'] = now()->toIso8601String();
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+            return ['status' => 'success', 'payment' => $this->paymentRow($order->fresh())];
+        }
+
+        // requery
+        $paymentId = $ops['bkash']['payment_id'] ?? null;
+        if (!$paymentId) {
+            throw new MarvelException('No bKash payment id on this order to re-check.');
+        }
+        if (!$this->bkashConfig()) {
+            throw new MarvelException('bKash is not configured.');
+        }
+        try {
+            $body = (array) BkashPaymentTokenize::queryPayment($paymentId);
+        } catch (\Throwable $e) {
+            throw new MarvelException('bKash query failed: ' . Str::limit($e->getMessage(), 120));
+        }
+        $ops['bkash'] = array_merge($ops['bkash'] ?? [], [
+            'last_status'   => $body['transactionStatus'] ?? ($ops['bkash']['last_status'] ?? null),
+            'trx_id'        => $body['trxID'] ?? ($ops['bkash']['trx_id'] ?? null),
+            'amount_bdt'    => isset($body['amount']) ? (float) $body['amount'] : ($ops['bkash']['amount_bdt'] ?? null),
+            'rechecked_at'  => now()->toIso8601String(),
+        ]);
+        $order->ops_meta = $ops;
+        $order->saveQuietly();
+
+        return [
+            'status'  => 'success',
+            'bkash'   => [
+                'transactionStatus' => $body['transactionStatus'] ?? null,
+                'trxID'             => $body['trxID'] ?? null,
+                'amount'            => $body['amount'] ?? null,
+                'statusCode'        => $body['statusCode'] ?? null,
+            ],
+            'payment' => $this->paymentRow($order->fresh()),
+        ];
+    }
+
 }
