@@ -270,6 +270,17 @@ export default function IndoBanglaDashboard() {
     { staleTime: 60000, refetchOnWindowFocus: false, retry: 1 },
   );
 
+  // Live visitors — its own poll (every 30s) so the counter stays fresh without
+  // re-pulling the whole dashboard summary. `live`/`last_hour` come back null when
+  // the API can't read the table; we fall back to "—" rather than a fake number.
+  const { data: presence } = useQuery(
+    ["live-users"],
+    () => HttpClient.get("live-users"),
+    { refetchInterval: 30000, refetchOnWindowFocus: true, staleTime: 0, retry: 1 },
+  );
+  const liveNow = presence?.live;
+  const lastHour = presence?.last_hour;
+
   const salesData = summary?.sales?.length
     ? summary.sales.map((r) => ({ m: r.m, sales: r.sales, orders: r.orders, last: null }))
     : sampleSalesData;
@@ -423,7 +434,7 @@ export default function IndoBanglaDashboard() {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard icon={ShoppingCart} label="আজকের Order" value={tOrders ?? "—"} sub={tYdayOrders != null ? `গতকাল ${tYdayOrders}` : ""} trend={tOrders != null ? pct(tOrders, tYdayOrders) : undefined} accent="bg-teal-500/10 text-teal-600 dark:text-teal-400" />
                 <StatCard icon={CircleDollarSign} label="আজকের Revenue" value={tRevenue != null ? tk(tRevenue) : "—"} sub={tYdayRevenue != null ? `গতকাল ${tk(tYdayRevenue)}` : ""} trend={tRevenue != null ? pct(tRevenue, tYdayRevenue) : undefined} accent="bg-sky-500/10 text-sky-600 dark:text-sky-400" />
-                <StatCard icon={Eye} label="আজকের Visitor" value="4,210" sub="live এখন ৬৩ জন · নমুনা" trend={8.4} accent="bg-violet-500/10 text-violet-600 dark:text-violet-400" />
+                <StatCard icon={Eye} label="শেষ ঘণ্টায় Visitor" value={lastHour != null ? lastHour.toLocaleString("en-IN") : "—"} sub={liveNow != null ? `live এখন ${liveNow} জন` : "live তথ্য নেই"} accent="bg-violet-500/10 text-violet-600 dark:text-violet-400" />
                 <StatCard icon={UserPlus} label="নতুন Account" value={tNewAcc ?? "—"} sub="৭ দিনে" trend={tNewAcc != null ? pct(tNewAcc, summary?.newAccountsPrev) : undefined} accent="bg-rose-500/10 text-rose-600 dark:text-rose-400" />
               </div>
               <Card className="p-5 mt-4">
@@ -726,7 +737,7 @@ export default function IndoBanglaDashboard() {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
                 <StatCard icon={Zap} label="গড় load time" value={perfStats.loadTime} sub="ভালো (< ২.৫ সে)" accent="bg-teal-500/10 text-teal-600 dark:text-teal-400" />
                 <StatCard icon={Eye} label="আজকের traffic" value={perfStats.todayVisitors.toLocaleString()} trend={perfStats.todayTrend} accent="bg-sky-500/10 text-sky-600 dark:text-sky-400" />
-                <StatCard icon={Activity} label="এখন live" value={perfStats.liveNow} sub="জন browsing করছে" accent="bg-violet-500/10 text-violet-600 dark:text-violet-400" />
+                <StatCard icon={Activity} label="এখন live" value={liveNow != null ? liveNow : "—"} sub={liveNow != null ? "জন browsing করছে" : "তথ্য নেই"} accent="bg-violet-500/10 text-violet-600 dark:text-violet-400" />
                 <StatCard icon={ArrowDownRight} label="Bounce rate" value={perfStats.bounce + "%"} sub="মাঝারি" accent="bg-amber-500/10 text-amber-600 dark:text-amber-400" />
               </div>
               <div className="grid lg:grid-cols-3 gap-4">

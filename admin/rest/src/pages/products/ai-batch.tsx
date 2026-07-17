@@ -7,7 +7,7 @@ import Link from '@/components/ui/link';
 import { Routes } from '@/config/routes';
 import { adminOnly } from '@/utils/auth-utils';
 import { serverSideTranslations } from 'next-i18next/serverSideTranslations';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
 import {
   useBatchExtractMutation,
@@ -18,6 +18,7 @@ import {
 } from '@/data/ai';
 import { useShopsQuery } from '@/data/shop';
 import { useCategoriesQuery } from '@/data/category';
+import { useAuthorsQuery } from '@/data/author';
 import { useFetchImageMutation } from '@/data/ai';
 import type {
   DuplicateMatch,
@@ -674,6 +675,21 @@ function PreviewPanel({
   const [resolvedCover, setResolvedCover] = useState<string | undefined>();
   const [coverTried, setCoverTried] = useState(false);
   const [coverFailed, setCoverFailed] = useState(false);
+  // Writer typeahead — 2805 authors, so search the server (debounced) rather than
+  // load all; picking a suggestion reuses the existing author id.
+  const [writerFocus, setWriterFocus] = useState(false);
+  const [writerRaw, setWriterRaw] = useState<string | null>(null);
+  const [writerQuery, setWriterQuery] = useState('');
+  useEffect(() => {
+    if (writerRaw === null) return;
+    const id = setTimeout(() => setWriterQuery(writerRaw.trim()), 300);
+    return () => clearTimeout(id);
+  }, [writerRaw]);
+  const { authors: writerAuthors } = useAuthorsQuery({
+    name: writerQuery.length >= 2 ? writerQuery : '',
+    limit: 10,
+    language: 'en',
+  });
   if (!p) return <p className="text-xs text-body">Nothing extracted for this row.</p>;
 
   const cover: string | undefined =
@@ -758,7 +774,9 @@ function PreviewPanel({
       v !== undefined &&
       v !== null &&
       v !== '' &&
-      !(label === 'Source MRP' && (p.mrp ?? p.source_price) == null),
+      !(label === 'Source MRP' && (p.mrp ?? p.source_price) == null) &&
+      // Print type has its own editable dropdown above when editing.
+      !(editable && label === 'Print type'),
   );
 
   const input =
@@ -809,17 +827,77 @@ function PreviewPanel({
                 onChange={(e) => onProductPatch({ name: e.target.value })}
               />
             </div>
-            <div>
+            <div className="relative">
               <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Writer</label>
               <input
                 className={input}
                 value={writer}
+                onFocus={() => setWriterFocus(true)}
+                onBlur={() => setTimeout(() => setWriterFocus(false), 150)}
                 onChange={(e) => {
                   const name = e.target.value;
                   // Clear the resolved id so the API re-resolves the edited name.
                   onProductPatch({ author: { name }, authors: name ? [name] : [] });
+                  setWriterRaw(name);
+                  setWriterFocus(true);
                 }}
+                placeholder="Type to match an existing writer…"
               />
+              {writerFocus &&
+                writerQuery.length >= 2 &&
+                (() => {
+                  const sug = (writerAuthors as any[])
+                    .filter(
+                      (a) =>
+                        a?.name &&
+                        a.name.toLowerCase() !== (writer || '').toLowerCase(),
+                    )
+                    .slice(0, 8);
+                  if (!sug.length) return null;
+                  return (
+                    <ul className="absolute z-20 mt-1 max-h-52 w-full overflow-auto rounded-md border border-border-base bg-white py-1 shadow-lg">
+                      {sug.map((a) => (
+                        <li key={a.id}>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              // reuse the existing author (id) instead of re-creating it
+                              onProductPatch({
+                                author: { id: a.id, name: a.name },
+                                authors: [a.name],
+                              });
+                              setWriterFocus(false);
+                            }}
+                            className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs text-heading hover:bg-accent/10"
+                          >
+                            <span>{a.name}</span>
+                            <span className="text-[10px] text-body">existing</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                })()}
+            </div>
+            <div>
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Print type</label>
+              <select
+                className={input}
+                value={p.print_type ?? ''}
+                onChange={(e) =>
+                  onProductPatch({ print_type: e.target.value || undefined })
+                }
+              >
+                <option value="">— not set —</option>
+                <option value="Hardcover">Hardcover</option>
+                <option value="Paperback">Paperback</option>
+                <option value="Leatherbound">Leatherbound</option>
+                {p.print_type &&
+                  !['Hardcover', 'Paperback', 'Leatherbound'].includes(
+                    p.print_type,
+                  ) && <option value={p.print_type}>{p.print_type}</option>}
+              </select>
             </div>
             <div>
               <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Page number</label>

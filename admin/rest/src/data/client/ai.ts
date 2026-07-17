@@ -3,6 +3,7 @@ import { HttpClient } from '@/data/client/http-client';
 export interface AiSettings {
   provider: 'openrouter' | 'anthropic' | 'openai';
   model: string;
+  free_model?: string;
   enabled: boolean;
   has_key: boolean;
   key_hint?: string;
@@ -11,6 +12,7 @@ export interface AiSettings {
 export interface AiSettingsInput {
   provider: string;
   model?: string;
+  free_model?: string;
   api_key?: string;
   enabled?: boolean;
 }
@@ -88,8 +90,11 @@ export const aiClient = {
     HttpClient.put<AiSettings>('ai/settings', data),
   extract: (data: AiExtractInput) =>
     HttpClient.post<any>('ai/product-extract', data),
-  batch: (items: AiExtractInput[]) =>
-    HttpClient.post<any>('ai/product-batch', { items }),
+  batch: (items: AiExtractInput[], printed_country?: string) =>
+    HttpClient.post<any>('ai/product-batch', {
+      items,
+      ...(printed_country ? { printed_country } : {}),
+    }),
   fetchImage: (image_url: string) =>
     HttpClient.post<any>('ai/fetch-image', { image_url }),
   listCrawl: (list_url: string, limit: number) =>

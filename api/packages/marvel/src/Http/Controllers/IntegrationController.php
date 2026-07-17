@@ -2374,6 +2374,153 @@ class IntegrationController extends CoreController
         }
     }
 
+    /**
+     * RedX parcel status → our OrderStatus. Only `delivered` and `pickup-pending`
+     * are confirmed against live parcels; the rest are RedX's documented slugs,
+     * matched loosely (substring) so a wording variant still lands somewhere sane.
+     * Returns null for "no mapping — leave the order status alone" (holds,
+     * in-progress returns): a status we do not understand must never overwrite ours.
+     */
+    protected function redxStatusToOrderStatus(?string $redx): ?string
+    {
+        $s = strtolower(trim((string) $redx));
+        if ($s === '') {
+            return null;
+        }
+        // Exact, strongest first. Note: cancelled / pickup-cancelled deliberately
+        // return null (no change) — a courier-side cancel must not auto-cancel our
+        // order (that releases stock + spams Telegram); the owner reviews those.
+        $exact = [
+            'pickup-pending'    => OrderStatus::PROCESSING,   // booked & ready to ship
+            'pickup-cancelled'  => null,
+            'picked-up'         => OrderStatus::AT_LOCAL_FACILITY,
+            'pickup-completed'  => OrderStatus::AT_LOCAL_FACILITY,
+            'in-transit'        => OrderStatus::AT_LOCAL_FACILITY,
+            'received-at-hub'   => OrderStatus::AT_LOCAL_FACILITY,
+            'out-for-delivery'  => OrderStatus::OUT_FOR_DELIVERY,
+            'delivered'         => OrderStatus::COMPLETED,
+            'partial-delivered' => OrderStatus::COMPLETED,
+            'cancelled'         => null,
+        ];
+        if (array_key_exists($s, $exact)) {
+            return $exact[$s];
+        }
+        // Loose fallback on the words RedX uses in its status/track vocabulary.
+        if (str_contains($s, 'hold') || str_contains($s, 'pending-return') || str_contains($s, 'cancel')) {
+            return null; // in-progress or courier-cancel — don't touch our status
+        }
+        if (str_contains($s, 'return')) {
+            return OrderStatus::CANCELLED; // goods came back → no sale, releases stock
+        }
+        if (str_contains($s, 'deliver') && !str_contains($s, 'out') && !str_contains($s, 'on the way')) {
+            return OrderStatus::COMPLETED;
+        }
+        if (str_contains($s, 'out-for') || str_contains($s, 'on the way') || str_contains($s, 'out for')) {
+            return OrderStatus::OUT_FOR_DELIVERY;
+        }
+        if (str_contains($s, 'transit') || str_contains($s, 'hub') || str_contains($s, 'received') || str_contains($s, 'pick')) {
+            return OrderStatus::AT_LOCAL_FACILITY;
+        }
+        return null;
+    }
+
+    /**
+     * The "hisab": pull /parcel/info and reduce it to the money RedX bills and the
+     * net it will settle to the merchant account. Returns a normalized array;
+     * throws only on a hard transport failure so the caller can surface it.
+     *
+     *   net_payout = cash_collection_amount − charge − cod_charge
+     *
+     * That is exactly the per-parcel figure on RedX's own settlement invoice; RedX
+     * exposes no merchant-level invoice/balance endpoint, so we compute it ourselves.
+     */
+    protected function redxParcelInfo(string $base, array $headers, string $trackingId): array
+    {
+        $r = Http::withHeaders($headers)->timeout(25)->get($base . '/parcel/info/' . $trackingId);
+        if (!$r->successful()) {
+            throw new MarvelException('RedX /parcel/info returned HTTP ' . $r->status() . ' for ' . $trackingId . '.');
+        }
+        $p = (array) ($r->json('parcel') ?? []);
+        $cod       = (float) ($p['cash_collection_amount'] ?? 0);
+        $charge    = (float) ($p['charge'] ?? 0);
+        $codCharge = (float) ($p['cod_charge'] ?? 0);
+        return [
+            'provider'               => 'redx',
+            'tracking_id'            => (string) ($p['tracking_id'] ?? $trackingId),
+            'merchant_invoice_id'    => (string) ($p['merchant_invoice_id'] ?? ''),
+            'courier_status'         => (string) ($p['status'] ?? ''),
+            'value'                  => (float) ($p['value'] ?? 0),
+            'cod_collected'          => $cod,
+            'delivery_charge'        => $charge,
+            'cod_charge'             => $codCharge,
+            'net_payout'             => round($cod - $charge - $codCharge, 2),
+            'delivery_area'          => (string) ($p['delivery_area'] ?? ''),
+        ];
+    }
+
+    /**
+     * Courier transaction ("hisab") for one order: what RedX billed and what it
+     * will pay back, plus the order-status RedX's status maps to.
+     *   GET courier-transaction/{provider}?order_id=123  (or ?tracking_id=...)
+     *   &apply_status=1  → also advance our order_status to the mapped one (guarded)
+     *
+     * Applying status is OFF by default and deliberately conservative: it never
+     * moves an order OUT of a terminal/accounting state (completed/cancelled/
+     * refunded/void/failed) — that path claws back vendor balance and releases
+     * stock — and never auto-cancels. Those stay a human decision.
+     */
+    public function courierTransaction(Request $request, $provider)
+    {
+        if ($provider !== 'redx') {
+            throw new MarvelException('Transactions for ' . ucfirst($provider) . ' are not wired yet.');
+        }
+        $cfg = ($this->options()['couriers'] ?? [])['redx'] ?? [];
+        $base = $this->redxBase($cfg);
+        $headers = ['API-ACCESS-TOKEN' => 'Bearer ' . ($cfg['token'] ?? '')];
+
+        $order = null;
+        $trackingId = (string) $request->input('tracking_id', '');
+        if ($request->filled('order_id')) {
+            $order = Order::findOrFail($request->input('order_id'));
+            $ops = (array) ($order->ops_meta ?? []);
+            $trackingId = $trackingId ?: (string) ($ops['courier_tracking_id'] ?? '');
+        }
+        if ($trackingId === '') {
+            throw new MarvelException('order_id (with a booked RedX parcel) or tracking_id is required.');
+        }
+
+        $info = $this->redxParcelInfo($base, $headers, $trackingId);
+        $mapped = $this->redxStatusToOrderStatus($info['courier_status']);
+        $info['mapped_order_status'] = $mapped;
+
+        if ($order) {
+            // Persist the hisab so the order board shows it without re-hitting RedX.
+            $ops = (array) ($order->ops_meta ?? []);
+            $ops['courier_txn']    = $info;
+            $ops['courier_status'] = $info['courier_status'];
+            $ops['courier_synced_at'] = now()->toIso8601String();
+
+            $applied = false;
+            $terminal = [
+                OrderStatus::COMPLETED, OrderStatus::CANCELLED, OrderStatus::REFUNDED,
+                OrderStatus::FAILED, 'order-void',
+            ];
+            if ($request->boolean('apply_status') && $mapped
+                && $mapped !== $order->order_status
+                && !in_array($order->order_status, $terminal, true)   // don't leave an accounting state
+                && $mapped !== OrderStatus::CANCELLED) {              // never auto-cancel (stock release)
+                $order->order_status = $mapped;
+                $applied = true;
+            }
+            $order->ops_meta = $ops;
+            $order->save();
+            $info['status_applied'] = $applied;
+            $info['order_status']   = $order->order_status;
+        }
+
+        return ['status' => 'success', 'transaction' => $info];
+    }
+
     // --------------------------------------------------------- payment: bKash
     /**
      * Start a bKash tokenized payment for an order and return the bKash URL.
@@ -4899,7 +5046,10 @@ class IntegrationController extends CoreController
                 'area_id'    => (int) ($a['id'] ?? 0),
                 'name'       => trim((string) ($a['name'] ?? '')),
                 'district'   => (string) ($a['district_name'] ?? ($a['division_name'] ?? '')),
+                // RedX sends `zone_id` (int), never `zone_name`; keep the name column
+                // for a future provider that supplies one.
                 'zone'       => (string) ($a['zone_name'] ?? ''),
+                'zone_id'    => (int) ($a['zone_id'] ?? 0),
                 'post_code'  => (string) ($a['post_code'] ?? ''),
                 'created_at' => $now,
                 'updated_at' => $now,
@@ -4916,7 +5066,7 @@ class IntegrationController extends CoreController
             \Marvel\Database\Models\CourierArea::upsert(
                 $chunk->all(),
                 ['provider', 'area_id'],
-                ['name', 'district', 'zone', 'post_code', 'updated_at']
+                ['name', 'district', 'zone', 'zone_id', 'post_code', 'updated_at']
             );
         }
         return $rows->count();

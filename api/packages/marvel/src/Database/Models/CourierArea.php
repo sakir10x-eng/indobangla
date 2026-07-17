@@ -16,5 +16,6 @@ class CourierArea extends Model
 
     protected $casts = [
         'area_id' => 'integer',
+        'zone_id' => 'integer',
     ];
 }

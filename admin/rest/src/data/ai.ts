@@ -42,7 +42,9 @@ export const useExtractProductMutation = () => {
 };
 
 export const useBatchExtractMutation = () => {
-  return useMutation((items: AiExtractInput[]) => aiClient.batch(items));
+  return useMutation((vars: { items: AiExtractInput[]; printed_country?: string }) =>
+    aiClient.batch(vars.items, vars.printed_country),
+  );
 };
 
 export const useFetchImageMutation = () => {

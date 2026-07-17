@@ -25,6 +25,11 @@ const ChallengeBar = dynamic(
   () => import('@/components/challenge/challenge-bar'),
   { ssr: false },
 );
+// Sitewide live-visitor heartbeat — localStorage inside, so client-only.
+const PresencePing = dynamic(
+  () => import('@/components/common/presence-ping'),
+  { ssr: false },
+);
 import Maintenance from '@/components/maintenance/layout';
 import { NotificationProvider } from '@/context/notify-content';
 
@@ -69,6 +74,7 @@ function CustomApp({
                     <ManagedModal />
                     <ManagedDrawer />
                     <ChallengeBar />
+                    <PresencePing />
                     <ToastContainer autoClose={2000} theme="colored" />
                     <SocialLogin />
                   </>

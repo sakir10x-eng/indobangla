@@ -16,6 +16,7 @@ import type { AiModel, AiTestResult } from '@/data/client/ai';
 type FormValues = {
   provider: 'openrouter' | 'anthropic' | 'openai';
   model: string;
+  free_model: string;
   api_key: string;
   enabled: boolean;
   req_sku: boolean;
@@ -50,6 +51,7 @@ export default function AiSettingsForm() {
     defaultValues: {
       provider: 'openrouter',
       model: '',
+      free_model: '',
       api_key: '',
       enabled: false,
       req_sku: false,
@@ -62,6 +64,7 @@ export default function AiSettingsForm() {
       reset({
         provider: (settings.provider as any) || 'openrouter',
         model: settings.model || '',
+        free_model: (settings as any).free_model || '',
         api_key: '',
         enabled: !!settings.enabled,
         req_sku: !!(settings as any)?.field_rules?.sku,
@@ -72,6 +75,7 @@ export default function AiSettingsForm() {
 
   const provider = watch('provider');
   const currentModel = watch('model');
+  const currentFree = watch('free_model');
 
   const { mutateAsync: runTest, isLoading: testing } = useAiTestMutation();
   const [testResult, setTestResult] = useState<AiTestResult | null>(null);
@@ -102,6 +106,12 @@ export default function AiSettingsForm() {
 
   const searching = query.trim().length > 0;
 
+  /** Free models for the cost-saving text pass. Doesn't need vision — images go to paid. */
+  const freeModels = useMemo(
+    () => models.filter((m) => m.free).slice(0, 10),
+    [models],
+  );
+
   async function onTest() {
     setTestResult(null);
     try {
@@ -122,6 +132,7 @@ export default function AiSettingsForm() {
     update({
       provider: values.provider,
       model: values.model,
+      free_model: values.free_model,
       // send api_key only when the admin typed a new one
       ...(values.api_key ? { api_key: values.api_key } : {}),
       enabled: values.enabled,
@@ -302,6 +313,52 @@ export default function AiSettingsForm() {
               </>
             )}
           </div>
+
+          {/* Hybrid cost saver: text extraction tries this free model first; the paid
+              model above is used only for cover images and when free fails/throttles. */}
+          {provider === 'openrouter' && (
+            <div className="mb-5 rounded border border-emerald-200 bg-emerald-50/50 p-3">
+              <Input
+                label="Free model (text only — tried first to save cost)"
+                {...register('free_model')}
+                placeholder="e.g. meta-llama/llama-3.3-70b-instruct:free — leave blank to always use the paid model"
+                className="mb-2"
+              />
+              <p className="mb-2 text-[11px] text-body">
+                Book text (name, price, description from a URL) is pulled with this
+                free model first. Covers, and anything the free model can’t return
+                (OpenRouter’s free pool is often rate-limited), fall back to the paid
+                model above automatically. Leave blank to skip the free pass.
+              </p>
+              {freeModels.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {freeModels.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setValue('free_model', m.id, { shouldDirty: true })}
+                      className={`rounded border px-2 py-1 text-[11px] font-medium ${
+                        m.id === currentFree
+                          ? 'border-emerald-500 bg-emerald-100 text-emerald-800'
+                          : 'border-border-base bg-white text-body hover:bg-gray-50'
+                      }`}
+                    >
+                      {m.id.replace(':free', '')}
+                    </button>
+                  ))}
+                  {currentFree && (
+                    <button
+                      type="button"
+                      onClick={() => setValue('free_model', '', { shouldDirty: true })}
+                      className="rounded border border-border-base bg-white px-2 py-1 text-[11px] font-semibold text-body hover:bg-gray-50"
+                    >
+                      clear
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <Input
             label={

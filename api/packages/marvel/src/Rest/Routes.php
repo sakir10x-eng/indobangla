@@ -286,6 +286,9 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('order-edit-items', [IntegrationController::class, 'editOrderItems'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::post('courier-shipment/{provider}', [IntegrationController::class, 'createShipment'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::get('courier-track/{provider}', [IntegrationController::class, 'courierTrack'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    // Courier "hisab": what RedX billed (delivery + COD charge) and the net it will
+    // settle to the merchant account, plus RedX-status → order-status mapping.
+    Route::get('courier-transaction/{provider}', [IntegrationController::class, 'courierTransaction'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::post('bkash-create', [IntegrationController::class, 'bkashCreate'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // ReplyGenie connection settings (super-admin)
     Route::get('replygenie-settings', [IntegrationController::class, 'getReplygenieSettings'])->middleware('can:' . Permission::SUPER_ADMIN);

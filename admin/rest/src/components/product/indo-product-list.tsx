@@ -102,7 +102,11 @@ export default function IndoProductList() {
             <div style={{ width: 5, height: 30, background: C.brand, borderRadius: 3 }} />
             <div><h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Products</h1><div style={{ fontSize: 12.5, color: C.sub }}>IndoBangla • Catalogue overview</div></div>
           </div>
-          <Link href="/indo-bangla/products/create" style={{ background: C.brand, color: '#fff', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Package size={16} /> Add product</Link>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {/* AI batch import — the page existed but nothing linked to it. */}
+            <Link href="/products/ai-batch" style={{ background: '#fff', color: C.brand, border: `1.5px solid ${C.brand}`, borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Sparkles size={16} /> AI Batch Upload</Link>
+            <Link href="/indo-bangla/products/create" style={{ background: C.brand, color: '#fff', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Package size={16} /> Add product</Link>
+          </div>
         </div>
 
         {/* toolbar */}
