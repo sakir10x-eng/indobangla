@@ -1030,6 +1030,7 @@ class IntegrationController extends CoreController
                 'paid'            => $paid,
                 'subtotal'        => (float) $order->amount,
                 'delivery_fee'    => (float) $order->delivery_fee,
+                'weight_charge'   => (int) ($ops['weight_charge'] ?? 0),
                 'discount'        => (float) $order->discount,
                 'total'           => (float) $order->total,
                 'paid_total'      => (float) $order->paid_total,
