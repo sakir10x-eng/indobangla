@@ -96,9 +96,9 @@ export default function CreateOrUpdateAuthorForm({ initialValues }: IProps) {
   const { locale } = useRouter();
   const { t } = useTranslation();
   const [isSlugDisable, setIsSlugDisable] = useState<boolean>(false);
-  const isSlugEditable =
-    router?.query?.action === 'edit' &&
-    router?.locale === Config.defaultLanguage;
+  // Slug is editable on both create and edit (default language only) — so an author's
+  // slug can be set at creation time, not only when editing an existing one.
+  const isSlugEditable = router?.locale === Config.defaultLanguage;
   const {
     query: { shop },
   } = router;
@@ -116,7 +116,7 @@ export default function CreateOrUpdateAuthorForm({ initialValues }: IProps) {
     watch,
     setError,
     setValue,
-    formState: { errors },
+    formState: { errors, dirtyFields },
   } = useForm<FormValues>({
     shouldUnregister: true,
     //@ts-ignore
@@ -138,6 +138,14 @@ export default function CreateOrUpdateAuthorForm({ initialValues }: IProps) {
 
   const { openModal } = useModalAction();
   const slugAutoSuggest = formatSlug(watch('name'));
+  // On create, keep the (now editable) slug in sync with the name until the admin
+  // types a custom one — so the field is never left blank on submit.
+  useEffect(() => {
+    if (!initialValues && !dirtyFields?.slug) {
+      setValue('slug', slugAutoSuggest);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slugAutoSuggest]);
   const {
     // @ts-ignore
     settings: { options },

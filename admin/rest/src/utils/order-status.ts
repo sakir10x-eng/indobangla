@@ -17,6 +17,12 @@ export const ORDER_STATUS = [
   { name: 'text-order-cancelled', status: 'order-cancelled', serial: 5 },
   { name: 'text-order-refunded', status: 'order-refunded', serial: 5 },
   { name: 'text-order-failed', status: 'order-failed', serial: 5 },
+  // Courier-driven (RedX) — appended so they are selectable without disturbing the
+  // linear pending→completed progression the slice logic above assumes.
+  { name: 'Shipped', status: 'order-shipped', serial: 5 },
+  { name: 'In transit', status: 'order-in-transit', serial: 5 },
+  { name: 'Partial Delivered', status: 'order-partial-delivered', serial: 5 },
+  { name: 'On-Hold', status: 'order-on-hold', serial: 5 },
 ];
 
 export const filterOrderStatus = (

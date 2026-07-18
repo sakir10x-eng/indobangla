@@ -4,6 +4,7 @@ import {
   useOrderOpsMutation,
   useCustomerStatsMutation,
   useOrderSearchMutation,
+  useOrderLifecycleMutation,
 } from '@/data/order-ops';
 import Link from '@/components/ui/link';
 import { printInvoice, type InvoiceCoupon } from './print-invoice';
@@ -76,7 +77,9 @@ const STATUS: Record<string, any> = {
   ready: { label: 'Ready to ship', chip: 'bg-amber-50 text-amber-700 ring-amber-200', dot: 'bg-amber-500', bar: 'border-l-amber-500' },
   shipped: { label: 'Shipped', chip: 'bg-emerald-50 text-emerald-700 ring-emerald-200', dot: 'bg-emerald-500', bar: 'border-l-sky-500' },
   transit: { label: 'In transit', chip: 'bg-teal-50 text-teal-700 ring-teal-200', dot: 'bg-teal-500', bar: 'border-l-teal-500' },
+  hold: { label: 'On-Hold', chip: 'bg-orange-50 text-orange-700 ring-orange-200', dot: 'bg-orange-500', bar: 'border-l-orange-500' },
   delivered: { label: 'Delivered', chip: 'bg-emerald-600 text-white ring-emerald-600', dot: 'bg-white', bar: 'border-l-emerald-500' },
+  partial: { label: 'Partial Delivered', chip: 'bg-lime-50 text-lime-700 ring-lime-200', dot: 'bg-lime-500', bar: 'border-l-lime-500' },
   returned: { label: 'Returned', chip: 'bg-slate-100 text-slate-600 ring-slate-200', dot: 'bg-slate-400', bar: 'border-l-slate-400' },
 };
 const CALL: Record<string, any> = {
@@ -90,8 +93,12 @@ const TO_BUCKET: Record<string, string> = {
   'order-pending': 'pending',
   'order-processing': 'ready',
   'order-at-local-facility': 'ready',
+  'order-shipped': 'shipped',
   'order-out-for-delivery': 'shipped',
+  'order-in-transit': 'transit',
+  'order-on-hold': 'hold',
   'order-completed': 'delivered',
+  'order-partial-delivered': 'partial',
   'order-cancelled': 'returned',
   'order-refunded': 'returned',
 };
@@ -99,8 +106,12 @@ const STATUS_OPTIONS = [
   ['order-pending', 'Pending'],
   ['order-processing', 'Ready to ship'],
   ['order-at-local-facility', 'At facility'],
+  ['order-shipped', 'Shipped'],
   ['order-out-for-delivery', 'Out for delivery'],
+  ['order-in-transit', 'In transit'],
+  ['order-on-hold', 'On-Hold'],
   ['order-completed', 'Delivered'],
+  ['order-partial-delivered', 'Partial Delivered'],
   ['order-cancelled', 'Cancelled'],
   ['order-refunded', 'Refunded'],
 ];
@@ -563,6 +574,51 @@ function OrderCard({ o, act, busy, coupon }: any) {
                 )}
               </div>
             )}
+
+            {/* lifecycle: void / archive — and undo from the Void/Archived tabs */}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2">
+              {o.bucket === 'void' ? (
+                <button
+                  onClick={() => act.lifecycle(o._id, 'unvoid')}
+                  disabled={busy}
+                  className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-300 hover:bg-emerald-50 disabled:opacity-60"
+                  title="Restore this order to its previous status and re-commit stock (super-admin)"
+                >
+                  ↩ Unvoid
+                </button>
+              ) : o.archived_at ? (
+                <button
+                  onClick={() => act.lifecycle(o._id, 'unarchive')}
+                  disabled={busy}
+                  className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-60"
+                  title="Put this order back on the working list"
+                >
+                  🗄️ Unarchive
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => {
+                      if (window.confirm('Void this order? Its stock is released and it leaves the working list.'))
+                        act.lifecycle(o._id, 'void');
+                    }}
+                    disabled={busy}
+                    className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-rose-600 ring-1 ring-rose-200 hover:bg-rose-50 disabled:opacity-60"
+                    title="Mark as never-a-real-order: releases stock and archives it"
+                  >
+                    🚫 Void
+                  </button>
+                  <button
+                    onClick={() => act.lifecycle(o._id, 'archive')}
+                    disabled={busy}
+                    className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-60"
+                    title="Hide from the working list without changing status"
+                  >
+                    🗄️ Archive
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -654,7 +710,8 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
   const { mutate: fetchStats } = useCustomerStatsMutation();
   const { mutate: runSearch, isLoading: searching } = useOrderSearchMutation();
   const { mutate: createShipment, isLoading: shipping } = useCreateShipmentMutation();
-  const busy = updating; // ops are optimistic — never block the buttons
+  const { mutate: lifecycle, isLoading: lifecycling } = useOrderLifecycleMutation();
+  const busy = updating || lifecycling; // ops are optimistic — never block the buttons
 
   // whole-table search (name / phone / order # / book) with a small debounce
   useEffect(() => {
@@ -690,6 +747,8 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
       ops({ order_id: id, patch });
     },
     status: (id: any, order_status: string) => updateOrder({ id, order_status } as any),
+    lifecycle: (id: any, action: 'void' | 'unvoid' | 'archive' | 'unarchive' | 'unlock', reason?: string) =>
+      lifecycle({ order_id: id, action, reason }),
     ship: (id: any, courier: string) => {
       const provider = String(courier || '').toLowerCase().replace(/\s+/g, '');
       createShipment(
@@ -716,8 +775,13 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
   };
 
   const counts = useMemo(() => {
-    const c: any = { all: mapped.length, attention: mapped.filter(needsAttention).length, printstuck: mapped.filter((o) => o.print === 'sent').length };
-    ['pending', 'ready', 'shipped', 'transit', 'delivered', 'returned'].forEach((k) => (c[k] = mapped.filter((o) => o.bucket === k).length));
+    // Archived orders (void auto-archives) are out of the working list — mirror the
+    // backend, whose 'void'/'archived' tabs are the only ones that look past it.
+    const working = mapped.filter((o) => !o.archived_at);
+    const c: any = { all: working.length, attention: working.filter(needsAttention).length, printstuck: working.filter((o) => o.print === 'sent').length };
+    ['pending', 'ready', 'shipped', 'transit', 'hold', 'delivered', 'partial', 'returned'].forEach((k) => (c[k] = working.filter((o) => o.bucket === k).length));
+    c.void = mapped.filter((o) => o.bucket === 'void').length;
+    c.archived = mapped.filter((o) => o.archived_at).length;
     return c;
   }, [mapped]);
 
@@ -739,7 +803,9 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
   const tabs: [string, string, number][] = [
     ['all', 'All', counts.all], ['attention', '⚠️ Attention', counts.attention], ['printstuck', '🖨️ Slip pending', counts.printstuck],
     ['pending', 'Pending', counts.pending], ['ready', 'Ready', counts.ready], ['shipped', 'Shipped', counts.shipped],
-    ['transit', 'Transit', counts.transit], ['delivered', 'Delivered', counts.delivered], ['returned', 'Returned', counts.returned],
+    ['transit', 'Transit', counts.transit], ['hold', '⏸️ On-Hold', counts.hold], ['delivered', 'Delivered', counts.delivered],
+    ['partial', 'Partial', counts.partial], ['returned', 'Returned', counts.returned],
+    ['void', '🚫 Void', counts.void], ['archived', '🗄️ Archived', counts.archived],
   ];
 
   return (

@@ -32,9 +32,18 @@ const StatusColor = (status: string) => {
   } else if (status?.toLowerCase() === 'order-at-local-facility') {
     bg_class =
       'bg-status-out-for-delivery bg-opacity-10 text-status-out-for-delivery';
-  } else if (status?.toLowerCase() === 'order-out-for-delivery') {
+  } else if (
+    status?.toLowerCase() === 'order-out-for-delivery' ||
+    status?.toLowerCase() === 'order-shipped' ||
+    status?.toLowerCase() === 'order-in-transit'
+  ) {
     bg_class =
       'bg-status-out-for-delivery bg-opacity-10 text-status-out-for-delivery';
+  } else if (
+    status?.toLowerCase() === 'order-on-hold' ||
+    status?.toLowerCase() === 'order-partial-delivered'
+  ) {
+    bg_class = 'bg-status-pending bg-opacity-10 text-status-pending';
   } else if (
     status?.toLowerCase() === 'order-refunded' ||
     status?.toLowerCase() === 'refunded' ||

@@ -18,6 +18,7 @@ type FormValues = {
   model: string;
   free_model: string;
   api_key: string;
+  jina_key: string;
   enabled: boolean;
   req_sku: boolean;
   req_unit: boolean;
@@ -53,6 +54,7 @@ export default function AiSettingsForm() {
       model: '',
       free_model: '',
       api_key: '',
+      jina_key: '',
       enabled: false,
       req_sku: false,
       req_unit: true,
@@ -66,6 +68,7 @@ export default function AiSettingsForm() {
         model: settings.model || '',
         free_model: (settings as any).free_model || '',
         api_key: '',
+        jina_key: '',
         enabled: !!settings.enabled,
         req_sku: !!(settings as any)?.field_rules?.sku,
         req_unit: (settings as any)?.field_rules?.unit !== false,
@@ -135,6 +138,8 @@ export default function AiSettingsForm() {
       free_model: values.free_model,
       // send api_key only when the admin typed a new one
       ...(values.api_key ? { api_key: values.api_key } : {}),
+      // Jina page-reader key (authenticates r.jina.ai; kills the free-tier rate limit).
+      ...(values.jina_key ? { jina_key: values.jina_key } : {}),
       enabled: values.enabled,
       field_rules: { sku: values.req_sku, unit: values.req_unit },
     } as any);
@@ -370,6 +375,15 @@ export default function AiSettingsForm() {
             autoComplete="new-password"
             {...register('api_key')}
             placeholder={settings?.has_key ? '•••••••••• (unchanged)' : 'Paste your API key'}
+            className="mb-5"
+          />
+
+          <Input
+            label="Jina Reader Key — page reader for AI Batch (leave blank to keep the saved one)"
+            type="password"
+            autoComplete="new-password"
+            {...register('jina_key')}
+            placeholder="jina_…  (fixes “rate-limited / check API key” on AI Batch)"
             className="mb-5"
           />
 

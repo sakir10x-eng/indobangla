@@ -40,8 +40,12 @@ const STATUS_OPTIONS = [
   'order-pending',
   'order-processing',
   'order-at-local-facility',
+  'order-shipped',
   'order-out-for-delivery',
+  'order-in-transit',
+  'order-on-hold',
   'order-completed',
+  'order-partial-delivered',
   'order-cancelled',
   'order-refunded',
 ];

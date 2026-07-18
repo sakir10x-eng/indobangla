@@ -14,6 +14,7 @@ export interface AiSettingsInput {
   model?: string;
   free_model?: string;
   api_key?: string;
+  jina_key?: string;
   enabled?: boolean;
 }
 

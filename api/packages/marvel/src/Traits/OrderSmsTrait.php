@@ -56,26 +56,51 @@ trait OrderSmsTrait
         $this->sendSmsOnOrderEvent($smsArray);
     }
 
+    /**
+     * Customer status SMS, fully admin-driven — no dev needed to change wording.
+     * Settings → each order status carries its own on/off + template under
+     * `settings.options.orderStatusSms[<order_status>] = ['enabled'=>bool,'template'=>str]`.
+     * A status with no enabled template sends nothing, so turning it on for just a
+     * few statuses (e.g. pending / ready-to-ship / delivered) never spams the rest.
+     * Placeholders in the template: {order} {name} {brand} {status} {total} {paid}
+     * {due} {courier} {tracking}.
+     */
     public function sendOrderStatusChangeSms(Order $order): void
     {
-        $language = $order->language;
-        App::setLocale($language);
-        $status = ucfirst(str_replace('-', ' ', $order->order_status));
-        $smsArray = [
-            'order'             => $order,
-            'language'          => $order->language ?? DEFAULT_LANGUAGE,
-            'smsEventName'      => EventType::ORDER_STATUS_CHANGED,
-            'adminMessage'      => __('sms.order.statusChangeOrder.admin.message', [
-                'ORDER_TRACKING_NUMBER' => $order->tracking_number,
-                'order_status'          => $status
-            ]),
-            'customerMessage'   => __('sms.order.statusChangeOrder.customer.message', [
-                'ORDER_TRACKING_NUMBER' => $order->tracking_number,
-                'order_status'          => $status
-            ]),
-            'storeOwnerMessage' => __('sms.order.statusChangeOrder.storeOwner.message', ['order_status' => $status]),
-        ];
-        $this->sendSmsOnOrderEvent($smsArray, false);
+        try {
+            App::setLocale($order->language ?? DEFAULT_LANGUAGE);
+            // Only the parent order represents the buyer; child (per-shop) rows must not text.
+            if ($order->parent_id !== null) {
+                return;
+            }
+            $settings = \Marvel\Database\Models\Settings::first();
+            $options  = $settings ? (array) $settings->options : [];
+            $cfg = (array) (($options['orderStatusSms'] ?? [])[$order->order_status] ?? []);
+            if (empty($cfg['enabled']) || trim((string) ($cfg['template'] ?? '')) === '') {
+                return; // admin has not turned SMS on for this status
+            }
+            $contact = $order->customer_contact ?: optional(optional($order->customer)->profile)->contact;
+            if (!$contact) {
+                return;
+            }
+            $ops   = (array) ($order->ops_meta ?? []);
+            $total = (float) $order->total;
+            $paid  = (float) $order->paid_total;
+            $text = strtr((string) $cfg['template'], [
+                '{order}'    => (string) $order->tracking_number,
+                '{name}'     => $this->getCustomerName($order) ?: 'গ্রাহক',
+                '{brand}'    => (string) ($options['siteTitle'] ?? config('app.name', 'IndoBangla')),
+                '{status}'   => ucfirst(str_replace('-', ' ', (string) $order->order_status)),
+                '{total}'    => (string) (int) round($total),
+                '{paid}'     => (string) (int) round($paid),
+                '{due}'      => (string) (int) round(max(0, $total - $paid)),
+                '{courier}'  => (string) ($ops['courier'] ?? ''),
+                '{tracking}' => (string) ($ops['courier_tracking_id'] ?? ''),
+            ]);
+            $this->getOtpGateway()->sendSms($contact, $text);
+        } catch (\Throwable $e) {
+            // never block a status update on an SMS failure
+        }
     }
 
     public function sendOrderDeliveredSms($order): void

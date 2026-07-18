@@ -119,6 +119,11 @@ export enum OrderStatus {
   FAILED = 'order-failed',
   AT_LOCAL_FACILITY = 'order-at-local-facility',
   OUT_FOR_DELIVERY = 'order-out-for-delivery',
+  // Courier-driven (RedX). Non-accounting — see api OrderStatus enum.
+  SHIPPED = 'order-shipped',
+  IN_TRANSIT = 'order-in-transit',
+  PARTIAL_DELIVERED = 'order-partial-delivered',
+  ON_HOLD = 'order-on-hold',
 }
 
 export enum FlashSaleType {

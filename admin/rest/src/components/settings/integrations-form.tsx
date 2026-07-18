@@ -2,6 +2,7 @@ import Card from '@/components/common/card';
 import Button from '@/components/ui/button';
 import Description from '@/components/ui/description';
 import Input from '@/components/ui/input';
+import OrderSmsSettings from '@/components/settings/order-sms-settings';
 import { useState } from 'react';
 import {
   useCourierSettingsQuery,
@@ -42,14 +43,48 @@ const PAYMENTS = [
   { key: 'bank', name: 'Bank Transfer', fields: ['account'] },
 ];
 
-function CourierCard({ c }: { c: any }) {
+// Friendly labels for our order statuses in the courier-status mapping dropdown.
+const OUR_STATUS_LABELS: Record<string, string> = {
+  'order-pending': 'Pending',
+  'order-processing': 'Ready to ship',
+  'order-at-local-facility': 'At facility',
+  'order-shipped': 'Shipped',
+  'order-out-for-delivery': 'Out for delivery',
+  'order-in-transit': 'In transit',
+  'order-on-hold': 'On-Hold',
+  'order-completed': 'Delivered',
+  'order-partial-delivered': 'Partial Delivered',
+  'order-cancelled': 'Cancelled',
+  'order-refunded': 'Refunded',
+  'order-failed': 'Failed',
+  'order-void': 'Void',
+};
+
+function CourierCard({ c, orderStatuses = [] }: { c: any; orderStatuses?: string[] }) {
   const { mutate: save, isLoading } = useUpdateCourierMutation();
   const { mutate: test, isLoading: testing } = useTestCourierMutation();
   const [form, setForm] = useState<any>({ enabled: !!c.enabled });
   const [result, setResult] = useState<any>(null);
+  // RedX status → our-status overrides. Seed every known RedX status with its
+  // effective value (saved override, else the built-in default) so a save always
+  // sends the complete map — the backend replaces the whole thing.
+  const [statusMap, setStatusMap] = useState<Record<string, string>>(() => {
+    const defaults = c.status_defaults || {};
+    const saved = c.status_map || {};
+    const m: Record<string, string> = {};
+    Object.keys(defaults).forEach((k) => {
+      m[k] = k in saved ? saved[k] ?? '' : defaults[k] ?? '';
+    });
+    return m;
+  });
 
   const set = (k: string, v: any) => setForm((f: any) => ({ ...f, [k]: v }));
   const courier = COURIERS.find((x) => x.key === c.key)!;
+  const savePayload = () => ({
+    provider: c.key,
+    ...form,
+    ...(c.key === 'redx' ? { status_map: statusMap } : {}),
+  });
 
   return (
     <div className="rounded-lg border border-border-200 p-4">
@@ -76,11 +111,43 @@ function CourierCard({ c }: { c: any }) {
           />
         ))}
       </div>
+      {c.key === 'redx' && Object.keys(statusMap).length > 0 && (
+        <div className="mt-4 rounded-md border border-border-200 p-3">
+          <p className="text-sm font-semibold text-heading">
+            RedX status → order status
+          </p>
+          <p className="mb-3 mt-0.5 text-xs text-body">
+            RedX যে status পাঠায়, তার বিপরীতে আমাদের কোন order status বসবে সেটা বেছে দিন।
+            “— No change —” দিলে ওই RedX status এলে আমাদের order status অপরিবর্তিত থাকবে।
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {Object.keys(statusMap).map((rk) => (
+              <label key={rk} className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-medium text-heading">{rk}</span>
+                <select
+                  value={statusMap[rk]}
+                  onChange={(e) =>
+                    setStatusMap((m) => ({ ...m, [rk]: e.target.value }))
+                  }
+                  className="min-w-[9rem] rounded border border-border-200 bg-white px-2 py-1 text-xs"
+                >
+                  <option value="">— No change —</option>
+                  {orderStatuses.map((os) => (
+                    <option key={os} value={os}>
+                      {OUR_STATUS_LABELS[os] || os}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="mt-3 flex items-center gap-3">
         <Button
           size="small"
           loading={isLoading}
-          onClick={() => save({ provider: c.key, ...form })}
+          onClick={() => save(savePayload())}
         >
           Save
         </Button>
@@ -284,7 +351,7 @@ export default function IntegrationsForm() {
         />
         <Card className="w-full space-y-4 sm:w-8/12 md:w-2/3">
           {loading ? <p>Loading…</p> : COURIERS.map((c) => (
-            <CourierCard key={c.key} c={{ key: c.key, ...(couriers?.[c.key] || {}) }} />
+            <CourierCard key={c.key} c={{ key: c.key, ...(couriers?.[c.key] || {}) }} orderStatuses={couriers?.order_statuses || []} />
           ))}
         </Card>
       </div>
@@ -302,7 +369,7 @@ export default function IntegrationsForm() {
         </Card>
       </div>
 
-      <div className="flex flex-wrap pb-8">
+      <div className="flex flex-wrap border-b border-dashed border-border-base pb-8">
         <Description
           title="ReplyGenie / Messenger bot"
           details="Let your Facebook Messenger bot (ReplyGenie) search your catalogue and place orders. Enable it, copy the connect token into ReplyGenie, and point it at the endpoints shown here."
@@ -310,6 +377,17 @@ export default function IntegrationsForm() {
         />
         <Card className="w-full space-y-4 sm:w-8/12 md:w-2/3">
           <ReplyGenieCard />
+        </Card>
+      </div>
+
+      <div className="flex flex-wrap pb-8">
+        <Description
+          title="Order status SMS"
+          details="প্রতিটি order status-এ গ্রাহক কী SMS পাবে সেটা নিজে লিখে On/Off করুন। Off থাকলে সেই status-এ কোনো SMS যায় না। যেকোনো সময় বদলানো যায়।"
+          className="w-full px-0 sm:w-4/12 sm:pe-4 md:w-1/3 md:pe-5"
+        />
+        <Card className="w-full space-y-4 sm:w-8/12 md:w-2/3">
+          <OrderSmsSettings />
         </Card>
       </div>
     </div>
