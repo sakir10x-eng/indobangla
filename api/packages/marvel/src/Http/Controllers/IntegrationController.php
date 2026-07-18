@@ -1959,30 +1959,54 @@ class IntegrationController extends CoreController
                 'has_token' => !empty($cfg['token']) || !empty($cfg['api_key']),
             ];
         }
+        // Everything the courier-status mapping UI needs: the admin's saved overrides,
+        // the built-in defaults it falls back to, and the order statuses to choose from.
+        $out['redx']['status_map']      = (array) ($c['redx']['status_map'] ?? []);
+        $out['redx']['status_defaults'] = self::REDX_STATUS_DEFAULTS;
+        $out['order_statuses'] = OrderStatus::getValues();
         return ['status' => 'success', 'couriers' => $out];
     }
 
     public function updateCourierSettings(Request $request)
     {
         $data = $request->validate([
-            'provider' => 'required|in:redx,steadfast,paperfly,sundarban,pathao',
-            'enabled'  => 'nullable|boolean',
-            'token'    => 'nullable|string',
-            'api_key'  => 'nullable|string',
-            'secret'   => 'nullable|string',
-            'base_url' => 'nullable|string',
+            'provider'   => 'required|in:redx,steadfast,paperfly,sundarban,pathao',
+            'enabled'    => 'nullable|boolean',
+            'token'      => 'nullable|string',
+            'api_key'    => 'nullable|string',
+            'secret'     => 'nullable|string',
+            'base_url'   => 'nullable|string',
+            // Admin-configured RedX-status → our-order-status map. Each value is one of
+            // our order_status slugs, or '' to mean "leave our status unchanged".
+            'status_map'          => 'nullable|array',
+            'status_map.*'        => 'nullable|string',
         ]);
         $settings = Settings::first();
         $options  = $settings->options;
         $couriers = $options['couriers'] ?? [];
         $cur = $couriers[$data['provider']] ?? [];
+        // Keep only recognised values so a bad slug can never wedge an order into a
+        // status that no query/board knows about.
+        $allowedStatuses = array_merge(OrderStatus::getValues(), ['']);
+        $statusMap = $cur['status_map'] ?? [];
+        if (array_key_exists('status_map', $data) && is_array($data['status_map'])) {
+            $statusMap = [];
+            foreach ($data['status_map'] as $redx => $our) {
+                $redx = strtolower(trim((string) $redx));
+                $our  = (string) $our;
+                if ($redx !== '' && in_array($our, $allowedStatuses, true)) {
+                    $statusMap[$redx] = $our;
+                }
+            }
+        }
         $couriers[$data['provider']] = [
             'enabled'  => array_key_exists('enabled', $data) ? (bool) $data['enabled'] : ($cur['enabled'] ?? false),
             'token'    => !empty($data['token']) ? $data['token'] : ($cur['token'] ?? ''),
             'api_key'  => !empty($data['api_key']) ? $data['api_key'] : ($cur['api_key'] ?? ''),
             'secret'   => !empty($data['secret']) ? $data['secret'] : ($cur['secret'] ?? ''),
             'base_url' => $data['base_url'] ?? ($cur['base_url'] ?? ''),
-        ];
+            'status_map' => $statusMap,
+        ] + array_diff_key($cur, array_flip(['enabled', 'token', 'api_key', 'secret', 'base_url', 'status_map']));
         $options['couriers'] = $couriers;
         $settings->update(['options' => $options]);
         return $this->getCourierSettings($request);
@@ -2381,36 +2405,58 @@ class IntegrationController extends CoreController
      * Returns null for "no mapping — leave the order status alone" (holds,
      * in-progress returns): a status we do not understand must never overwrite ours.
      */
+    /**
+     * The built-in RedX-status → our-status defaults. A `null` value means
+     * "leave our order status alone". The admin can override any row from
+     * Settings → Couriers (stored in couriers.redx.status_map); those wins.
+     * The new courier statuses (shipped/in-transit/partial-delivered/on-hold)
+     * are non-accounting — see OrderStatus.
+     */
+    public const REDX_STATUS_DEFAULTS = [
+        'pickup-pending'    => OrderStatus::PROCESSING,        // booked & ready to ship
+        'pickup-cancelled'  => null,                           // courier cancel — owner reviews
+        'picked-up'         => OrderStatus::SHIPPED,
+        'pickup-completed'  => OrderStatus::SHIPPED,
+        'in-transit'        => OrderStatus::IN_TRANSIT,
+        'received-at-hub'   => OrderStatus::IN_TRANSIT,
+        'out-for-delivery'  => OrderStatus::OUT_FOR_DELIVERY,
+        'delivered'         => OrderStatus::COMPLETED,
+        'partial-delivered' => OrderStatus::PARTIAL_DELIVERED,
+        'agent-hold'        => OrderStatus::ON_HOLD,
+        'on-hold'           => OrderStatus::ON_HOLD,
+        'return-to-merchant' => OrderStatus::CANCELLED,        // goods came back → no sale
+        'cancelled'         => null,
+    ];
+
     protected function redxStatusToOrderStatus(?string $redx): ?string
     {
         $s = strtolower(trim((string) $redx));
         if ($s === '') {
             return null;
         }
-        // Exact, strongest first. Note: cancelled / pickup-cancelled deliberately
-        // return null (no change) — a courier-side cancel must not auto-cancel our
-        // order (that releases stock + spams Telegram); the owner reviews those.
-        $exact = [
-            'pickup-pending'    => OrderStatus::PROCESSING,   // booked & ready to ship
-            'pickup-cancelled'  => null,
-            'picked-up'         => OrderStatus::AT_LOCAL_FACILITY,
-            'pickup-completed'  => OrderStatus::AT_LOCAL_FACILITY,
-            'in-transit'        => OrderStatus::AT_LOCAL_FACILITY,
-            'received-at-hub'   => OrderStatus::AT_LOCAL_FACILITY,
-            'out-for-delivery'  => OrderStatus::OUT_FOR_DELIVERY,
-            'delivered'         => OrderStatus::COMPLETED,
-            'partial-delivered' => OrderStatus::COMPLETED,
-            'cancelled'         => null,
-        ];
-        if (array_key_exists($s, $exact)) {
-            return $exact[$s];
+        // 1) Admin override from Settings → Couriers wins. An empty string in the
+        // map is an explicit "no change" the admin chose, so honour it as null.
+        $override = ($this->options()['couriers'] ?? [])['redx']['status_map'] ?? [];
+        if (is_array($override) && array_key_exists($s, $override)) {
+            $v = $override[$s];
+            return ($v === '' || $v === null) ? null : (string) $v;
         }
-        // Loose fallback on the words RedX uses in its status/track vocabulary.
-        if (str_contains($s, 'hold') || str_contains($s, 'pending-return') || str_contains($s, 'cancel')) {
+        // 2) Built-in defaults.
+        if (array_key_exists($s, self::REDX_STATUS_DEFAULTS)) {
+            return self::REDX_STATUS_DEFAULTS[$s];
+        }
+        // 3) Loose fallback on the words RedX uses in its status/track vocabulary.
+        if (str_contains($s, 'hold')) {
+            return OrderStatus::ON_HOLD;
+        }
+        if (str_contains($s, 'pending-return') || str_contains($s, 'cancel')) {
             return null; // in-progress or courier-cancel — don't touch our status
         }
         if (str_contains($s, 'return')) {
-            return OrderStatus::CANCELLED; // goods came back → no sale, releases stock
+            return OrderStatus::CANCELLED;
+        }
+        if (str_contains($s, 'partial')) {
+            return OrderStatus::PARTIAL_DELIVERED;
         }
         if (str_contains($s, 'deliver') && !str_contains($s, 'out') && !str_contains($s, 'on the way')) {
             return OrderStatus::COMPLETED;
@@ -2418,8 +2464,11 @@ class IntegrationController extends CoreController
         if (str_contains($s, 'out-for') || str_contains($s, 'on the way') || str_contains($s, 'out for')) {
             return OrderStatus::OUT_FOR_DELIVERY;
         }
-        if (str_contains($s, 'transit') || str_contains($s, 'hub') || str_contains($s, 'received') || str_contains($s, 'pick')) {
-            return OrderStatus::AT_LOCAL_FACILITY;
+        if (str_contains($s, 'transit') || str_contains($s, 'hub') || str_contains($s, 'received')) {
+            return OrderStatus::IN_TRANSIT;
+        }
+        if (str_contains($s, 'pick')) {
+            return OrderStatus::SHIPPED;
         }
         return null;
     }
@@ -5949,9 +5998,11 @@ class IntegrationController extends CoreController
      */
     private const BOARD_BUCKETS = [
         'ready'     => ['order-processing', 'order-at-local-facility'],
-        'shipped'   => ['order-out-for-delivery'],
-        'transit'   => [],   // nothing maps here — TO_BUCKET has no transit status either
+        'shipped'   => ['order-out-for-delivery', 'order-shipped'],
+        'transit'   => ['order-in-transit'],
+        'hold'      => ['order-on-hold'],
         'delivered' => ['order-completed'],
+        'partial'   => ['order-partial-delivered'],
         'returned'  => ['order-cancelled', 'order-refunded'],
         'void'      => ['order-void'],
     ];
@@ -5970,7 +6021,7 @@ class IntegrationController extends CoreController
      * what you had voided. Both tabs therefore ignore the archived filter; the other tabs still
      * partition the working list exactly.
      */
-    private const BOARD_TABS = ['all', 'attention', 'printstuck', 'pending', 'ready', 'shipped', 'transit', 'delivered', 'returned', 'void', 'archived'];
+    private const BOARD_TABS = ['all', 'attention', 'printstuck', 'pending', 'ready', 'shipped', 'transit', 'hold', 'delivered', 'partial', 'returned', 'void', 'archived'];
 
     /** Tabs that deliberately look past the "hide archived" default. */
     private const BOARD_TABS_INCLUDING_ARCHIVED = ['void', 'archived'];
@@ -6090,7 +6141,9 @@ class IntegrationController extends CoreController
             case 'ready':
             case 'shipped':
             case 'transit':
+            case 'hold':
             case 'delivered':
+            case 'partial':
             case 'returned':
             case 'void':
                 return $q->whereIn('orders.order_status', self::BOARD_BUCKETS[$tab]);
@@ -8162,4 +8215,51 @@ class IntegrationController extends CoreController
         ];
     }
 
+    /**
+     * Void pre-orders whose advance was never paid, after a grace period.
+     *
+     * Targets only stampPreorder orders (`ops_meta.advance.status = pending_advance`) still
+     * pending with nothing paid — never a COD order, never a partial payment, never a
+     * bank-transfer awaiting verification. Goes through save() (not a bulk UPDATE) on purpose:
+     * the Order model's `updated` hook is what puts the reserved books back and hands the
+     * pre-order slot back; a plain UPDATE would skip it.
+     */
+    public function voidAbandonedPreorders(int $hours = 24, int $limit = 200): int
+    {
+        $orders = Order::whereNull('deleted_at')
+            ->where('order_status', 'order-pending')
+            ->where('payment_status', 'payment-pending')
+            ->where(function ($q) {
+                $q->whereNull('paid_total')->orWhere('paid_total', '<=', 0);
+            })
+            ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.advance.status')) = 'pending_advance'")
+            ->where('created_at', '<=', now()->subHours(max(1, $hours)))
+            ->orderBy('id')
+            ->limit(max(1, $limit))
+            ->get();
+
+        $voided = 0;
+        foreach ($orders as $order) {
+            try {
+                if ($order->order_status === OrderStatus::VOID) {
+                    continue;
+                }
+                $ops = (array) ($order->ops_meta ?? []);
+                $ops['void'] = [
+                    'from'   => $order->order_status,
+                    'by'     => 'system (auto)',
+                    'at'     => now()->toIso8601String(),
+                    'reason' => "pre-order advance unpaid > {$hours}h",
+                ];
+                $order->ops_meta = $ops;
+                $order->order_status = OrderStatus::VOID;
+                $order->archived_at = now();
+                $order->save(); // saved, not saveQuietly: the updated hook releases stock + slot
+                $voided++;
+            } catch (\Throwable $e) {
+                // one bad order must not stop the sweep
+            }
+        }
+        return $voided;
+    }
 }
