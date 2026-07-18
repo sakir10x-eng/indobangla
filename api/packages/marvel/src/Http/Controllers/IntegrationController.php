@@ -1908,6 +1908,11 @@ class IntegrationController extends CoreController
         if ($request->boolean('mark_paid')) {
             $order->paid_total = $order->total;
         }
+        // #paid — let the desk correct the amount actually received, independent of the total
+        // (e.g. record a partial payment). Clamped to 0…total.
+        if ($request->filled('paid_total')) {
+            $order->paid_total = min((float) $order->total, max(0, round((float) $request->input('paid_total'), 2)));
+        }
         $order->save();
         return [
             'status' => 'success',

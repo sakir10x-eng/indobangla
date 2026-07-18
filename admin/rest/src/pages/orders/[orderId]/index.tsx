@@ -215,7 +215,7 @@ export default function OrderDetailsPage() {
 
   const [status, setStatus] = useState('');
   const [pay, setPay] = useState('');
-  const [adj, setAdj] = useState({ discount: 0, delivery_fee: 0, weight_rate: 0, weight_kg: 0, adjustment: 0, note: '' });
+  const [adj, setAdj] = useState({ discount: 0, delivery_fee: 0, weight_rate: 0, weight_kg: 0, adjustment: 0, paid_total: 0, note: '' });
   const [q, setQ] = useState('');
   const [courier, setCourier] = useState('redx');
   const [trackNo, setTrackNo] = useState('');
@@ -233,6 +233,7 @@ export default function OrderDetailsPage() {
         weight_rate: (order.ops_meta as any)?.weight_rate ?? 0,
         weight_kg: (order.ops_meta as any)?.weight_kg ?? 0,
         adjustment: 0,
+        paid_total: order.paid_total ?? 0,
         note: order.note ?? '',
       });
     }
@@ -262,6 +263,7 @@ export default function OrderDetailsPage() {
         weight_rate: Number(adj.weight_rate) || 0,
         weight_kg: Number(adj.weight_kg) || 0,
         adjustment: Number(adj.adjustment) || 0,
+        paid_total: Number(adj.paid_total) || 0,
         note: adj.note ?? '',
       },
       { onSuccess: () => refetch() },
@@ -833,6 +835,18 @@ export default function OrderDetailsPage() {
                   <span className="whitespace-nowrap text-xs font-bold text-heading">= ৳{Math.round((Number(adj.weight_rate) || 0) * (Number(adj.weight_kg) || 0))}</span>
                 </div>
                 <div className="mt-1 text-[10px] text-body">রেট (৳/কেজি) × ওজন (কেজি)</div>
+              </div>
+              {/* Paid amount — the amount actually received; the rest stays due. */}
+              <div>
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-body">Paid amount (received)</label>
+                <div className="flex items-center gap-2">
+                  <input type="number" step="any" value={adj.paid_total} onChange={(e) => setAdj({ ...adj, paid_total: e.target.value as any })} className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-accent" />
+                  <span className="whitespace-nowrap text-[10px] text-body">of ৳{Math.round(Number(order.total) || 0)}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-[10px] text-body">
+                  <button type="button" onClick={() => setAdj({ ...adj, paid_total: Math.round(Number(order.total) || 0) as any })} className="font-semibold text-accent underline">Mark fully paid</button>
+                  <span>Due: ৳{Math.max(0, Math.round((Number(order.total) || 0) - (Number(adj.paid_total) || 0)))}</span>
+                </div>
               </div>
               <div>
                 <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-body">Note</label>
