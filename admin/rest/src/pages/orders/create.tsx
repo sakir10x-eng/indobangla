@@ -189,11 +189,19 @@ export default function CreateOrderPage() {
     }
     setFullCust(full);
     setCustomer({ value: full.id, label: full.name, ...full });
-    setContact(full?.profile?.contact ?? '');
+    // customerAtom's setter NULLS customer_contact / shipping_address /
+    // delivery_time when a customer is picked, so re-set them here. delivery_time
+    // was only being re-set by a post-render effect, which left Place order
+    // disabled right after picking a customer — set it explicitly instead.
+    setContact(full?.profile?.contact ?? full?.mobile_number ?? '');
     const addrs = full?.address ?? [];
     const ship =
       addrs.find((a: any) => a?.type === 'shipping') ?? addrs[0] ?? null;
     if (ship) setShipping(ship);
+    setDeliveryT({
+      title: `${deliveryBy} — ${area === 'inside' ? 'Inside Dhaka' : 'Outside Dhaka'}`,
+      description: `Delivery charge ৳${Math.round(deliveryCharge)}`,
+    } as any);
     setCustQ(`${full.name}${full?.profile?.contact ? ' · ' + full.profile.contact : ''}`);
   }
 
