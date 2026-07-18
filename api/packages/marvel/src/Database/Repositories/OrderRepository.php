@@ -281,12 +281,12 @@ class OrderRepository extends BaseRepository
 
         switch ($payment_gateway_type) {
             case PaymentGatewayType::CASH_ON_DELIVERY:
-                $request['order_status'] = OrderStatus::PROCESSING;
+                $request['order_status'] = OrderStatus::PENDING;
                 $request['payment_status'] = PaymentStatus::CASH_ON_DELIVERY;
                 break;
 
             case PaymentGatewayType::CASH:
-                $request['order_status'] = OrderStatus::PROCESSING;
+                $request['order_status'] = OrderStatus::PENDING;
                 $request['payment_status'] = PaymentStatus::CASH;
                 break;
 
