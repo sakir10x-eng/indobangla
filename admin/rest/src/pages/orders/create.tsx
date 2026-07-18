@@ -498,7 +498,13 @@ export default function CreateOrderPage() {
                         }
                         onClick={() => b.quantity && addBook(b)}
                       >
-                        <div>
+                        <div className="rcover">
+                          {b.image?.thumbnail ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={b.image.thumbnail} alt={b.name} />
+                          ) : null}
+                        </div>
+                        <div className="rinfo">
                           <div className="nm">{b.name}</div>
                           <div className="sb">
                             {b.quantity
@@ -519,7 +525,12 @@ export default function CreateOrderPage() {
                 ) : (
                   items.map((i: any) => (
                     <div className="item" key={i.id}>
-                      <div className="cover" />
+                      <div className="cover">
+                        {i.image ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={i.image} alt={i.name} />
+                        ) : null}
+                      </div>
                       <div className="info">
                         <div className="nm">{i.name}</div>
                         <div className="sb">
@@ -1054,6 +1065,23 @@ export default function CreateOrderPage() {
           font-weight: 600;
           white-space: nowrap;
         }
+        .res .rcover {
+          width: 28px;
+          height: 38px;
+          border-radius: 3px;
+          background: linear-gradient(160deg, #ede7e0, #dcd4cb);
+          flex-shrink: 0;
+          overflow: hidden;
+        }
+        .res .rcover img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+        .res .rinfo {
+          min-width: 0;
+        }
         .tags {
           display: flex;
           gap: 5px;
@@ -1097,6 +1125,13 @@ export default function CreateOrderPage() {
           border-radius: 3px;
           background: linear-gradient(160deg, #ede7e0, #dcd4cb);
           flex-shrink: 0;
+          overflow: hidden;
+        }
+        .cover img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
         }
         .item .info {
           min-width: 0;
