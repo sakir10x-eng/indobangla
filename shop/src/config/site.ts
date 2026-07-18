@@ -66,6 +66,16 @@ export const siteSettings = {
       href: Routes.orders,
       label: 'profile-sidebar-orders',
     },
+    // Library + Community are built but not launched yet — the pages and API routes exist,
+    // they're just not advertised. Uncomment both (and the headerLinks entry below) to launch.
+    // {
+    //   href: '/library',
+    //   label: 'আমার লাইব্রেরি',
+    // },
+    // {
+    //   href: '/community',
+    //   label: 'পাঠক কমিউনিটি',
+    // },
     {
       href: '/requests',
       label: 'আমার রিকোয়েস্ট',
@@ -123,6 +133,8 @@ export const siteSettings = {
     app_store_link: '/',
   },
   headerLinks: [
+    // Not launched yet — see the sidebar note above.
+    // { href: '/community', icon: null, label: 'পাঠক কমিউনিটি' },
     { href: Routes.shops, icon: null, label: 'nav-menu-shops' },
     { href: Routes.coupons, icon: null, label: 'nav-menu-offer' },
     { href: Routes.contactUs, label: 'nav-menu-contact' },

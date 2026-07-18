@@ -43,7 +43,7 @@ export default function OtpCodeForm({
                   <MobileOtpInput
                     value={value}
                     onChange={onChange}
-                    numInputs={6}
+                    numInputs={4}
                     renderSeparator={<span className="hidden sm:inline-block">-</span>}
                     containerStyle="flex items-center justify-between -mx-2"
                     inputStyle="flex items-center justify-center !w-full mx-2 sm:!w-9 !px-0 appearance-none transition duration-300 ease-in-out text-heading text-sm focus:outline-0 focus:ring-0 border border-border-base rounded focus:border-accent h-12"

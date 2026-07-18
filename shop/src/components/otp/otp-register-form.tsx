@@ -14,17 +14,17 @@ interface OtpRegisterFormProps {
 }
 
 type OtpRegisterFormValues = {
-  email: string;
+  password: string;
   name: string;
   code: string;
 };
 
 const otpLoginFormSchemaForNewUser = yup.object().shape({
-  email: yup
-    .string()
-    .email('error-email-format')
-    .required('error-email-required'),
   name: yup.string().required('error-name-required'),
+  password: yup
+    .string()
+    .required('error-password-required')
+    .min(6, 'error-password-minimum-length'),
   code: yup.string().required('error-code-required'),
 });
 
@@ -44,19 +44,19 @@ export default function OtpRegisterForm({
         {({ register, control, formState: { errors } }) => (
           <>
             <Input
-              label={t('text-email')}
-              {...register('email')}
-              type="email"
-              variant="outline"
-              className="mb-5"
-              error={t(errors.email?.message!)}
-            />
-            <Input
               label={t('text-name')}
               {...register('name')}
               variant="outline"
               className="mb-5"
               error={t(errors.name?.message!)}
+            />
+            <Input
+              label={t('text-password')}
+              {...register('password')}
+              type="password"
+              variant="outline"
+              className="mb-5"
+              error={t(errors.password?.message!)}
             />
 
             <div className="mb-5">
@@ -67,7 +67,7 @@ export default function OtpRegisterForm({
                   <MobileOtpInput
                     value={value}
                     onChange={onChange}
-                    numInputs={6}
+                    numInputs={4}
                     renderSeparator={<span className="hidden sm:inline-block">-</span>}
                     containerStyle="flex items-center justify-between -mx-2"
                     inputStyle="flex items-center justify-center !w-full mx-2 sm:!w-9 !px-0 appearance-none transition duration-300 ease-in-out text-heading text-sm focus:outline-0 focus:ring-0 border border-border-base rounded focus:border-accent h-12"

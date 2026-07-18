@@ -15,6 +15,7 @@ interface AddressesProps {
   userId: string;
   count: number;
   type: string;
+  hideHeader?: boolean;
 }
 
 export const AddressGrid: React.FC<AddressesProps> = ({
@@ -25,6 +26,7 @@ export const AddressGrid: React.FC<AddressesProps> = ({
   userId,
   count,
   type,
+  hideHeader,
 }) => {
   const { t } = useTranslation('common');
   const [selectedAddress, setAddress] = useAtom(atom);
@@ -51,9 +53,19 @@ export const AddressGrid: React.FC<AddressesProps> = ({
     openModal('DELETE_ADDRESS', { customerId: userId, addressId: address?.id });
   }
 
+  const gridCols = hideHeader
+    ? 'grid grid-cols-1 gap-3 sm:grid-cols-2'
+    : 'grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3';
+
   return (
     <div className={className}>
-      <AddressHeader onAdd={onAdd} count={count} label={label} />
+      {hideHeader ? (
+        <label className="mb-1.5 block text-xs font-semibold text-[#6E6C6D]">
+          {label}
+        </label>
+      ) : (
+        <AddressHeader onAdd={onAdd} count={count} label={label} />
+      )}
       {!addresses?.length ? (
         <div className="grid grid-cols-1 gap-4">
           <span className="relative rounded border border-border-200 bg-gray-100 px-5 py-6 text-center text-base">
@@ -63,7 +75,7 @@ export const AddressGrid: React.FC<AddressesProps> = ({
       ) : (
         <RadioGroup value={selectedAddress} onChange={setAddress}>
           <RadioGroup.Label className="sr-only">{label}</RadioGroup.Label>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
+          <div className={gridCols}>
             {addresses?.map((address) => (
               <RadioGroup.Option value={address} key={address?.id}>
                 {({ checked }: { checked: boolean }) => (
@@ -78,6 +90,24 @@ export const AddressGrid: React.FC<AddressesProps> = ({
             ))}
           </div>
         </RadioGroup>
+      )}
+      {hideHeader && (
+        <button
+          onClick={onAdd}
+          className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-[10px] border-[1.5px] border-dashed border-border-base text-sm font-semibold text-accent transition-colors hover:border-accent hover:bg-accent/5"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.4}
+            strokeLinecap="round"
+            className="h-4 w-4"
+          >
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          নতুন ঠিকানা যোগ করুন
+        </button>
       )}
     </div>
   );

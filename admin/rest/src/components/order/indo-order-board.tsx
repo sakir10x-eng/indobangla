@@ -76,7 +76,6 @@ const STATUS: Record<string, any> = {
   transit: { label: 'In transit', chip: 'bg-teal-50 text-teal-700 ring-teal-200', dot: 'bg-teal-500' },
   delivered: { label: 'Delivered', chip: 'bg-emerald-600 text-white ring-emerald-600', dot: 'bg-white' },
   returned: { label: 'Returned', chip: 'bg-slate-100 text-slate-600 ring-slate-200', dot: 'bg-slate-400' },
-  void: { label: 'Void', chip: 'bg-slate-200 text-slate-500 ring-slate-300', dot: 'bg-slate-400' },
 };
 const CALL: Record<string, any> = {
   none: { label: 'Not called', emoji: '📞', chip: 'ring-slate-200 bg-white text-slate-400' },
@@ -93,7 +92,6 @@ const TO_BUCKET: Record<string, string> = {
   'order-completed': 'delivered',
   'order-cancelled': 'returned',
   'order-refunded': 'returned',
-  'order-void': 'void',
 };
 const STATUS_OPTIONS = [
   ['order-pending', 'Pending'],
@@ -105,7 +103,7 @@ const STATUS_OPTIONS = [
   ['order-refunded', 'Refunded'],
 ];
 const bdt = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-IN');
-const isOpen = (b: string) => !['delivered', 'returned', 'void'].includes(b);
+const isOpen = (b: string) => !['delivered', 'returned'].includes(b);
 
 function computeTier(cs: any, override?: string) {
   if (override) return override;
@@ -138,7 +136,6 @@ function mapOrder(o: any, stats: any) {
     sourceKey: (ops.source || '').toLowerCase(),
     bucket: TO_BUCKET[o.order_status] || 'pending',
     order_status: o.order_status,
-    archived_at: o.archived_at ?? null,
     paid: o.payment_status === 'payment-success' || (Number(o.paid_total) >= Number(o.total) && Number(o.total) > 0),
     paidTotal: Number(o.paid_total) || 0,
     isPreorder: Boolean(o.is_preorder || ops.advance),
@@ -717,13 +714,8 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
   };
 
   const counts = useMemo(() => {
-    // Archived orders (void auto-archives) are out of the working list — mirror the
-    // backend, whose 'void'/'archived' tabs are the only ones that look past it.
-    const working = mapped.filter((o) => !o.archived_at);
-    const c: any = { all: working.length, attention: working.filter(needsAttention).length, printstuck: working.filter((o) => o.print === 'sent').length };
-    ['pending', 'ready', 'shipped', 'transit', 'delivered', 'returned'].forEach((k) => (c[k] = working.filter((o) => o.bucket === k).length));
-    c.void = mapped.filter((o) => o.bucket === 'void').length;
-    c.archived = mapped.filter((o) => o.archived_at).length;
+    const c: any = { all: mapped.length, attention: mapped.filter(needsAttention).length, printstuck: mapped.filter((o) => o.print === 'sent').length };
+    ['pending', 'ready', 'shipped', 'transit', 'delivered', 'returned'].forEach((k) => (c[k] = mapped.filter((o) => o.bucket === k).length));
     return c;
   }, [mapped]);
 
@@ -731,15 +723,7 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
     // `mapped` already arrives newest-first (created_at desc); keep that order and
     // only pin attention orders to the top (stable sort preserves recency within groups).
     return mapped
-      .filter((o) => {
-        // Archived rows only surface under the 'archived' and 'void' tabs.
-        if (o.archived_at && tab !== 'archived' && tab !== 'void') return false;
-        if (tab === 'attention') return needsAttention(o);
-        if (tab === 'printstuck') return o.print === 'sent';
-        if (tab === 'all') return true;
-        if (tab === 'archived') return !!o.archived_at;
-        return o.bucket === tab; // includes 'void'
-      })
+      .filter((o) => (tab === 'attention' ? needsAttention(o) : tab === 'printstuck' ? o.print === 'sent' : tab === 'all' ? true : o.bucket === tab))
       .sort((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)));
   }, [mapped, tab]);
 
@@ -754,7 +738,6 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
     ['all', 'All', counts.all], ['attention', '⚠️ Attention', counts.attention], ['printstuck', '🖨️ Slip pending', counts.printstuck],
     ['pending', 'Pending', counts.pending], ['ready', 'Ready', counts.ready], ['shipped', 'Shipped', counts.shipped],
     ['transit', 'Transit', counts.transit], ['delivered', 'Delivered', counts.delivered], ['returned', 'Returned', counts.returned],
-    ['void', '🚫 Void', counts.void], ['archived', '🗄️ Archived', counts.archived],
   ];
 
   return (

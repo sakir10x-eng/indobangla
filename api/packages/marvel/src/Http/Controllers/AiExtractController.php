@@ -951,6 +951,24 @@ class AiExtractController extends CoreController
     }
 
     /**
+     * The manufacturer/publisher id to save. Prefer an explicit id from extraction,
+     * but if the admin picked/typed a publisher in the preview (clearing the id),
+     * find-or-create by name — same contract as {@see resolveAuthorId}.
+     */
+    private function resolvePublisherId(array $p): ?int
+    {
+        if (!empty($p['manufacturer']['id'])) {
+            return (int) $p['manufacturer']['id'];
+        }
+        $name = $p['manufacturer']['name'] ?? ($p['publisher'] ?? null);
+        if ($name !== null && trim((string) $name) !== '') {
+            $m = $this->findOrCreateManufacturer((string) $name);
+            return $m ? (int) $m->id : null;
+        }
+        return null;
+    }
+
+    /**
      * Turn source HTML (anandapub descriptions are HTML) into clean text that KEEPS
      * paragraph breaks — the old collapse-all-whitespace flattened a multi-paragraph
      * synopsis into one wall of text.
@@ -1023,7 +1041,7 @@ class AiExtractController extends CoreController
             'in_stock'        => max(0, (int) ($p['quantity'] ?? 1)) > 0,
             'is_taxable'      => false,
             'author_id'       => $this->resolveAuthorId($p),
-            'manufacturer_id' => $p['manufacturer']['id'] ?? null,
+            'manufacturer_id' => $this->resolvePublisherId($p),
             'image'           => $image,
         ]);
 

@@ -1,26 +1,5 @@
 # Deploying IndoBangla
 
-## ⚠️ The new box is shared with lcghs.edu.bd
-
-`187.127.122.242` also serves **lcghs.edu.bd**, a live school site, from the **host's**
-nginx + php-fpm + mysql. It has nothing to do with Docker and nothing to do with us, and it
-must never go down because of something we did.
-
-There are exactly three ways we could break it, and each is closed off:
-
-| Risk | What stops it |
-|---|---|
-| Taking ports 80/443 | Our containers publish on **127.0.0.1:8080** (live) and **:8081** (staging) only. The host nginx is the edge. **Never run Traefik here** — that was the first plan, and it would have taken the school site down. |
-| Eating the RAM | Every container has a `mem_limit` (~4 GB of the box's 7.9 GB), and `oom_score_adj: 600` makes **us** the kernel's first victim if memory runs out — not their mysql. |
-| Breaking nginx | Our config is its own file (`sites-available/indobangla-app`). Reload, never restart: a bad config fails `nginx -t` and the old one keeps serving. |
-
-**Never touch** `/etc/nginx/sites-*/lcghs.edu.bd`, `/etc/nginx/sites-*/indo_school_v2`, or the
-host's `mysql` / `php8.2-fpm` / `nginx` services.
-
-Run `sh check-neighbours.sh` **before and after every deploy**. It fails loudly if the school
-site stops answering, if a container grabs :80/:443, or if memory gets tight.
-
-
 Live: <https://indobangla.tech> — one VPS (`72.61.244.150`), Docker Compose, Traefik at the
 edge. Shop at `/`, admin at `/admin`, Laravel API at `/backend`.
 

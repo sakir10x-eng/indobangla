@@ -39,6 +39,14 @@ class Kernel extends ConsoleKernel
             ->dailyAt('03:40')
             ->withoutOverlapping()
             ->runInBackground();
+
+        // Pre-orders reserve stock and a pre-order slot the moment they're created, before the
+        // advance is paid. When the advance never comes, this hands both back after a day so the
+        // quota reflects real, paid demand. Hourly; matches nothing on most runs.
+        $schedule->command('orders:void-abandoned-preorders')
+            ->hourly()
+            ->withoutOverlapping()
+            ->runInBackground();
     }
 
     /**

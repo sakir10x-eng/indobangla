@@ -9,6 +9,9 @@ import { Form } from '@/components/ui/forms/form';
 import type { RegisterUserInput } from '@/types';
 import * as yup from 'yup';
 import { useRegister } from '@/framework/user';
+import { signIn } from 'next-auth/react';
+import { GoogleIcon } from '@/components/icons/google';
+import { MobileIcon } from '@/components/icons/mobile-icon';
 
 const registerFormSchema = yup.object().shape({
   name: yup.string().required('error-name-required'),
@@ -34,6 +37,31 @@ function RegisterForm() {
 
   return (
     <>
+      {/* Mobile registration is the primary option; email + Google are the alternatives below. */}
+      <div className="flex flex-col space-y-4">
+        <Button
+          type="button"
+          className="h-11 w-full !bg-accent !text-light hover:!bg-accent-hover sm:h-12"
+          onClick={() => openModal('OTP_LOGIN')}
+        >
+          <MobileIcon className="h-5 text-light ltr:mr-2 rtl:ml-2" />
+          {t('text-login-mobile')}
+        </Button>
+        <Button
+          type="button"
+          className="!bg-social-google !text-light hover:!bg-social-google-hover"
+          onClick={() => signIn('google')}
+        >
+          <GoogleIcon className="w-4 h-4 ltr:mr-3 rtl:ml-3" />
+          {t('text-login-google')}
+        </Button>
+      </div>
+      <div className="relative mt-6 mb-6 flex flex-col items-center justify-center text-sm text-heading">
+        <hr className="w-full" />
+        <span className="absolute -top-2.5 bg-light px-2 ltr:left-2/4 ltr:-ml-8 rtl:right-2/4 rtl:-mr-8">
+          {t('text-or')}
+        </span>
+      </div>
       <Form<RegisterUserInput>
         onSubmit={onSubmit}
         validationSchema={registerFormSchema}

@@ -25,13 +25,9 @@ const ChallengeBar = dynamic(
   () => import('@/components/challenge/challenge-bar'),
   { ssr: false },
 );
-// Sitewide live-visitor heartbeat — localStorage inside, so client-only.
-const PresencePing = dynamic(
-  () => import('@/components/common/presence-ping'),
-  { ssr: false },
-);
 import Maintenance from '@/components/maintenance/layout';
 import { NotificationProvider } from '@/context/notify-content';
+import { usePresencePing } from '@/lib/use-presence-ping';
 
 type AppPropsWithLayout = AppProps & {
   Component: NextPageWithLayout;
@@ -50,6 +46,9 @@ function CustomApp({
   const authenticationRequired = Component.authenticationRequired ?? false;
   const { locale } = useRouter();
   const dir = getDirection(locale);
+  // Heartbeat for the admin's live-visitor counter. Here in _app so it covers every page; it
+  // swallows its own errors and never renders anything.
+  usePresencePing();
   return (
     <>
       <div dir={dir}>
@@ -74,7 +73,6 @@ function CustomApp({
                     <ManagedModal />
                     <ManagedDrawer />
                     <ChallengeBar />
-                    <PresencePing />
                     <ToastContainer autoClose={2000} theme="colored" />
                     <SocialLogin />
                   </>

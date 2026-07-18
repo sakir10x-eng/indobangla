@@ -1,7 +1,13 @@
 import { HttpClient } from '@/framework/client/http-client';
 import { useQuery, useMutation } from 'react-query';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
+import { toast } from 'react-toastify';
 import Link from '@/components/ui/link';
+import { useCart } from '@/store/quick-cart/cart.context';
+import { generateCartItem } from '@/store/quick-cart/generate-cart-item';
+import { useChallengeGate } from '@/lib/use-challenge-gate';
+import { Routes } from '@/config/routes';
 
 function ReadersClub() {
   const { data } = useQuery(['club-info'], () => HttpClient.get<any>('club-info'));
@@ -18,6 +24,9 @@ function ReadersClub() {
       },
     },
   );
+
+  // Hidden entirely when the admin turns the Readers' Club off (settings.options.readers_club.enabled).
+  if (!club || club.enabled === false) return null;
 
   return (
     <div className="overflow-hidden rounded-2xl bg-gradient-to-br from-[#7d141d] to-[#530b12] p-6 text-white sm:p-8">
@@ -157,6 +166,46 @@ export default function HomeDeals() {
   const bundleSave = Math.max(0, bundleWas - bundleTotal);
   const bundleSavePct = bundleWas > 0 ? Math.round((bundleSave / bundleWas) * 100) : 0;
 
+  // "Shop these books" used to be a Link to bundle[0].url — it just opened one book's page and
+  // left the bundle behind, which next to a bundle total and a "You save" line reads as broken.
+  // It now does what it says: puts the whole bundle in the cart and goes to checkout.
+  const { addItemToCart } = useCart();
+  const { guardAdd } = useChallengeGate();
+  const router = useRouter();
+  const [addingBundle, setAddingBundle] = useState(false);
+  const addBundleToCart = async () => {
+    // A bundle is not a discovery — during a challenge run these books earn nothing, so the
+    // whole action is refused rather than quietly adding books that don't count.
+    const ok = await guardAdd('bundle', bundle[0]?.id);
+    if (!ok) return;
+    setAddingBundle(true);
+    try {
+      // Reshape to what generateCartItem actually reads: it wants `shop.id` (we get a flat
+      // `shop_id`) and `image.thumbnail` (these endpoints send a plain URL string). Passing the
+      // raw payload silently produced items with no shop_id — which fail at checkout — and no
+      // image. `quantity` is the stock figure; both endpoints now send it.
+      bundle.forEach((p: any) =>
+        addItemToCart(
+          generateCartItem(
+            {
+              ...p,
+              shop: { id: p.shop_id },
+              image: { thumbnail: p.image, original: p.image },
+            },
+            {} as any,
+          ),
+          1,
+        ),
+      );
+      toast.success(`${bundle.length}টি বই কার্টে যোগ হয়েছে`);
+      router.push(Routes.checkout);
+    } catch {
+      toast.error('কার্টে যোগ করা যায়নি।');
+    } finally {
+      setAddingBundle(false);
+    }
+  };
+
   return (
     <section className="mx-auto max-w-[1500px] px-5 py-6 sm:px-8 lg:px-12">
       <div className="space-y-6">
@@ -257,12 +306,14 @@ export default function HomeDeals() {
                   <span>Total</span>
                   <span className="text-accent">{bdt(bundleTotal)}</span>
                 </div>
-                <Link
-                  href={bundle[0]?.url || '/'}
-                  className="mt-3 block rounded-full bg-accent py-2.5 text-center text-sm font-bold text-white hover:bg-accent-hover"
+                <button
+                  type="button"
+                  onClick={addBundleToCart}
+                  disabled={addingBundle}
+                  className="mt-3 block w-full rounded-full bg-accent py-2.5 text-center text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60"
                 >
-                  Shop these books
-                </Link>
+                  {addingBundle ? 'যোগ করা হচ্ছে…' : `${bundle.length}টি বই কার্টে যোগ করুন`}
+                </button>
               </div>
             </div>
           </div>

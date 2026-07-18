@@ -10,7 +10,12 @@ type FormValues = {
 };
 
 const checkoutContactSchema = yup.object().shape({
-  phone_number: yup.string().required('error-contact-required'),
+  phone_number: yup
+    .string()
+    .required('error-contact-required')
+    // Bangladesh: react-phone-input-2 gives 880 + the 11-digit local number without its
+    // leading 0 → 8801XXXXXXXXX (13 chars). Anything shorter/longer is a wrong number.
+    .matches(/^8801[3-9]\d{8}$/, '১১ ডিজিটের সঠিক মোবাইল নম্বর দিন (যেমন 01712345678)'),
 });
 
 interface PhoneNumberFormProps {
@@ -46,7 +51,7 @@ export default function PhoneNumberForm({
               control={control}
               render={({ field }) => (
                 <PhoneInput
-                  country="us"
+                  country="bd"
                   inputClass="!p-0 ltr:!pr-4 rtl:!pl-4 ltr:!pl-14 rtl:!pr-14 !flex !items-center !w-full !appearance-none !transition !duration-300 !ease-in-out !text-heading !text-sm focus:!outline-none focus:!ring-0 !border !border-border-base ltr:!border-r-0 rtl:!border-l-0 !rounded ltr:!rounded-r-none rtl:!rounded-l-none focus:!border-accent !h-12"
                   dropdownClass="focus:!ring-0 !border !border-border-base !shadow-350"
                   {...field}

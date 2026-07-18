@@ -40,6 +40,7 @@ export default function ResellerDashboard() {
 
   const [priceFor, setPriceFor] = useState<any>(null);
   const [myPrice, setMyPrice] = useState('');
+  const [qty, setQty] = useState('');
   const [payAmount, setPayAmount] = useState('');
   const [bkash, setBkash] = useState('');
   const [topupAmount, setTopupAmount] = useState('');
@@ -89,8 +90,18 @@ export default function ResellerDashboard() {
     if (Number(myPrice) < base || Number(myPrice) > cap) {
       return toast.error(`দাম ${bdt(base)} থেকে ${bdt(cap)} এর মধ্যে হতে হবে।`);
     }
-    const res: any = await HttpClient.post('reseller/add-product', { product_id: priceFor.id, my_price: Number(myPrice) });
-    if (check(res)) { toast.success('প্রোডাক্ট যোগ হয়েছে।'); setPriceFor(null); setMyPrice(''); setTerm(''); refresh(); }
+    // Checked here only to save a round-trip; the API enforces the same minimum, because this
+    // form is not the only way to reach that endpoint.
+    const wanted = Number(qty || minQty);
+    if (wanted < minQty) {
+      return toast.error(`যেকোনো বইয়ের অন্তত ${minQty} কপি নিতে হবে।`);
+    }
+    const res: any = await HttpClient.post('reseller/add-product', {
+      product_id: priceFor.id,
+      my_price: Number(myPrice),
+      qty: wanted,
+    });
+    if (check(res)) { toast.success('প্রোডাক্ট যোগ হয়েছে।'); setPriceFor(null); setMyPrice(''); setQty(''); setTerm(''); refresh(); }
   };
 
   const removeProduct = async (id: number) => {
@@ -122,6 +133,7 @@ export default function ResellerDashboard() {
           <div className="mt-4 grid grid-cols-2 gap-3 text-left text-sm">
             <div className="rounded-lg bg-gray-50 p-3"><div className="text-gray-400">রিসেলার ছাড়</div><div className="font-bold text-heading">{cfg?.discount_pct}% কমে পাবেন</div></div>
             <div className="rounded-lg bg-gray-50 p-3"><div className="text-gray-400">দাম বাড়ানো যাবে</div><div className="font-bold text-heading">সর্বোচ্চ {cfg?.markup_cap_pct}%</div></div>
+            <div className="rounded-lg bg-gray-50 p-3"><div className="text-gray-400">প্রতি বইয়ে কমপক্ষে</div><div className="font-bold text-heading">{Math.max(1, Number(cfg?.min_qty ?? 3))} কপি</div></div>
           </div>
           <button onClick={open} disabled={opening}
             className="mt-5 w-full rounded-lg bg-accent py-3 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60">
@@ -139,6 +151,7 @@ export default function ResellerDashboard() {
   const base = priceFor ? eff(priceFor) : 0;
   const cap = base * (1 + (cfg?.markup_cap_pct ?? 5) / 100);
   const cost = base * (1 - (cfg?.discount_pct ?? 5) / 100);
+  const minQty = Math.max(1, Number(cfg?.min_qty ?? 3));
 
   return (
     <div className="space-y-6">
@@ -218,9 +231,19 @@ export default function ResellerDashboard() {
               <div><span className="text-gray-400">মার্জিন</span><div className="font-bold text-accent">{bdt(Number(myPrice) - cost)}</div></div>
             </div>
             <div className="flex gap-2">
-              <input type="number" className={inputCls} value={myPrice} onChange={(e) => setMyPrice(e.target.value)} placeholder={`${Math.round(base)}–${Math.round(cap)}`} />
-              <button onClick={addProduct} className="whitespace-nowrap rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover">যোগ করুন</button>
-              <button onClick={() => setPriceFor(null)} className="text-sm text-gray-400">✕</button>
+              <div className="flex-1">
+                <label className="mb-0.5 block text-[10px] font-semibold text-gray-400">আপনার দাম</label>
+                <input type="number" className={inputCls} value={myPrice} onChange={(e) => setMyPrice(e.target.value)} placeholder={`${Math.round(base)}–${Math.round(cap)}`} />
+              </div>
+              <div className="w-24">
+                <label className="mb-0.5 block text-[10px] font-semibold text-gray-400">কপি (কমপক্ষে {minQty})</label>
+                <input type="number" min={minQty} className={inputCls} value={qty} onChange={(e) => setQty(e.target.value)} placeholder={String(minQty)} />
+              </div>
+              <button onClick={addProduct} className="mt-4 h-fit whitespace-nowrap rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover">যোগ করুন</button>
+              <button onClick={() => setPriceFor(null)} className="mt-4 h-fit text-sm text-gray-400">✕</button>
+            </div>
+            <div className="mt-1.5 text-[11px] text-gray-400">
+              যেকোনো বইয়ের অন্তত <b className="text-heading">{minQty} কপি</b> নিতে হবে। খালি রাখলে {minQty} কপি ধরা হবে।
             </div>
           </div>
         )}
@@ -238,7 +261,7 @@ export default function ResellerDashboard() {
                 {p.image && <img src={p.image} alt="" className="h-12 w-9 rounded object-cover" />}
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold">{p.name}</div>
-                  <div className="text-xs text-gray-400">খরচ {bdt(p.cost)} · দাম {bdt(p.my_price)} · মার্জিন <b className="text-accent">{bdt(p.margin)}</b> · বিক্রি {p.sold_count ?? 0}</div>
+                  <div className="text-xs text-gray-400">খরচ {bdt(p.cost)} · দাম {bdt(p.my_price)} · মার্জিন <b className="text-accent">{bdt(p.margin)}</b>{p.qty ? ` · কপি ${p.qty}` : ''} · বিক্রি {p.sold_count ?? 0}</div>
                 </div>
                 <button onClick={() => removeProduct(p.product_id)} className="text-xs text-gray-400 hover:text-red-500">সরান</button>
               </div>

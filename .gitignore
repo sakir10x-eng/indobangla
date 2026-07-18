@@ -89,6 +89,10 @@ deploy/*.sh
 !deploy/stage.sh
 !deploy/promote.sh
 !deploy/rollback.sh
-!deploy/check-neighbours.sh
 deploy/*.bak
 deploy/*.presecret
+
+# Local backup snapshots & editor .bak files (never version these)
+*.bak
+deploy/backups_*/
+deploy/*.tsv

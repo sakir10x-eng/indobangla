@@ -220,8 +220,10 @@ const IndoHeader = () => {
 
       {/* category menu bar */}
       <nav className="border-t border-border-100 bg-white">
-        <div className="mx-auto flex max-w-[1500px] items-center gap-1 overflow-x-auto px-4 py-2 text-sm font-medium text-heading sm:px-6 lg:px-10">
-          {/* All categories dropdown */}
+        <div className="mx-auto flex max-w-[1500px] items-center gap-1 px-4 py-2 text-sm font-medium text-heading sm:px-6 lg:px-10">
+          {/* All categories dropdown. This stays OUTSIDE the scrolling strip below: that strip's
+              overflow-x-auto clips absolutely-positioned children, which silently swallowed this
+              panel and made the button look dead. */}
           <div className="relative shrink-0" ref={allRef}>
             <button
               type="button"
@@ -255,29 +257,31 @@ const IndoHeader = () => {
             )}
           </div>
 
-          {inline.map((c) => (
+          <div className="flex items-center gap-1 overflow-x-auto">
+            {inline.map((c) => (
+              <Link
+                key={c.id}
+                href={`/books/search?category=${c.slug}`}
+                className="shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-body transition-colors hover:bg-accent/10 hover:text-accent"
+              >
+                {c.name}
+              </Link>
+            ))}
+
+            <span className="mx-1 hidden h-4 w-px shrink-0 bg-border-200 sm:block" />
             <Link
-              key={c.id}
-              href={`/books/search?category=${c.slug}`}
+              href="/authors"
               className="shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-body transition-colors hover:bg-accent/10 hover:text-accent"
             >
-              {c.name}
+              লেখক
             </Link>
-          ))}
-
-          <span className="mx-1 hidden h-4 w-px shrink-0 bg-border-200 sm:block" />
-          <Link
-            href="/authors"
-            className="shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-body transition-colors hover:bg-accent/10 hover:text-accent"
-          >
-            লেখক
-          </Link>
-          <Link
-            href="/manufacturers"
-            className="shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-body transition-colors hover:bg-accent/10 hover:text-accent"
-          >
-            প্রকাশনী
-          </Link>
+            <Link
+              href="/manufacturers"
+              className="shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-body transition-colors hover:bg-accent/10 hover:text-accent"
+            >
+              প্রকাশনী
+            </Link>
+          </div>
         </div>
       </nav>
     </header>

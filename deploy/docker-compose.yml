@@ -62,6 +62,14 @@ services:
         # Kept out of the image definition — see deploy/README.md.
         SECRET: ${NEXTAUTH_SECRET}
     image: indobangla-shop
+    # Google social login (NextAuth) reads these at runtime. Redirect URI registered in
+    # Google console: https://indobangla.bd/api/auth/callback/google
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=https://indobangla.bd
     restart: unless-stopped
     mem_limit: 900m
     oom_score_adj: 600

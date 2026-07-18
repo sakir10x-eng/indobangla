@@ -25,20 +25,20 @@ export default function CartDiscountProgress() {
   const pct = Math.min(100, Math.round((total / (target || 1)) * 100));
 
   return (
-    <div className="mx-4 mt-4 rounded-xl border border-accent/30 bg-accent/5 p-3">
+    <div className="mx-4 mt-4 rounded-xl border border-emerald-300/60 bg-emerald-50 p-3">
       {current && (
-        <p className="text-sm font-bold text-accent">
+        <p className="text-sm font-bold text-emerald-700">
           🎉 আপনি {current.pct}% ছাড় পাচ্ছেন! কুপন: <span className="font-mono">{current.code}</span>
         </p>
       )}
       {next ? (
         <>
           <p className={`text-xs text-body ${current ? 'mt-1' : ''}`}>
-            আর <b className="text-accent">{bdt(next.min - total)}</b> এর বই যোগ করলে{' '}
-            <b className="text-accent">{next.pct}%</b> ছাড় (কুপন {next.code})
+            আর <b className="text-emerald-700">{bdt(next.min - total)}</b> এর বই যোগ করলে{' '}
+            <b className="text-emerald-700">{next.pct}%</b> ছাড় (কুপন {next.code})
           </p>
-          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-accent/15">
-            <div className="h-full rounded-full bg-accent transition-all" style={{ width: pct + '%' }} />
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-emerald-100">
+            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: pct + '%' }} />
           </div>
         </>
       ) : (

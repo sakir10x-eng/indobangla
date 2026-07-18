@@ -1,5 +1,3 @@
-import { CloseIcon } from '@/components/icons/close-icon';
-import { PencilIcon } from '@/components/icons/pencil-icon';
 import { formatAddress } from '@/lib/format-address';
 import classNames from 'classnames';
 import { useTranslation } from 'next-i18next';
@@ -11,50 +9,54 @@ interface AddressProps {
   onDelete?: () => void;
   userId?: any;
 }
-const AddressCard: React.FC<AddressProps> = ({
-  checked,
-  address,
-  userId,
-  onEdit,
-  onDelete,
-}) => {
+const AddressCard: React.FC<AddressProps> = ({ checked, address, onEdit }) => {
   const { t } = useTranslation();
+  const editLabel = t('text-edit');
   return (
     <div
       className={classNames(
-        'group relative cursor-pointer rounded border p-4 hover:border-accent',
-        {
-          'border-accent shadow-sm': checked,
-          'border-transparent bg-gray-100': !checked,
-        }
+        'relative flex h-full cursor-pointer items-start gap-3 rounded-[10px] border p-3 transition-colors',
+        checked
+          ? 'border-accent shadow-[inset_0_0_0_1px_rgb(var(--color-accent))]'
+          : 'border-[#E4E1DC] bg-light hover:border-[#CFCBC4]'
       )}
     >
-      <p className="mb-3 text-sm font-semibold capitalize text-heading">
-        {address?.title}
-      </p>
-      <p className="text-sm text-sub-heading">
-        {formatAddress(address?.address)}
-      </p>
-      <div className="absolute top-4 flex space-x-2 opacity-0 group-hover:opacity-100 ltr:right-4 rtl:left-4 rtl:space-x-reverse">
-        {onEdit && (
-          <button
-            className="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-light"
-            onClick={onEdit}
-          >
-            <span className="sr-only">{t('text-edit')}</span>
-            <PencilIcon className="h-3 w-3" />
-          </button>
+      {/* radio dot */}
+      <span
+        className={classNames(
+          'mt-0.5 flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-full border-[1.5px] transition-colors',
+          checked ? 'border-accent' : 'border-[#CFCBC4]'
         )}
-        {onDelete && (
-          <button
-            className="flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-light"
-            onClick={onDelete}
-          >
-            <span className="sr-only">{t('text-delete')}</span>
-            <CloseIcon className="h-3 w-3" />
-          </button>
-        )}
+      >
+        <span
+          className={classNames(
+            'h-2 w-2 rounded-full bg-accent transition-transform',
+            checked ? 'scale-100' : 'scale-0'
+          )}
+        />
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold capitalize text-heading">
+          {address?.title}
+        </p>
+        <p className="mt-0.5 text-[12.5px] leading-snug text-[#6E6C6D]">
+          {formatAddress(address?.address)}
+        </p>
       </div>
+
+      {onEdit && (
+        <button
+          type="button"
+          className="shrink-0 rounded px-1.5 py-0.5 text-[12.5px] font-semibold text-accent underline underline-offset-2 hover:bg-accent/5"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit();
+          }}
+        >
+          {editLabel === 'text-edit' ? 'বদলান' : editLabel}
+        </button>
+      )}
     </div>
   );
 };

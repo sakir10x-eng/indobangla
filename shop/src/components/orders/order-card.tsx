@@ -29,16 +29,15 @@ const OrderCard: React.FC<OrderCardProps> = ({ onClick, order, isActive }) => {
         isActive === true && '!border-accent'
       )}
     >
-      <div className="flex items-center justify-between border-b border-border-200 py-3 px-5 md:px-3 lg:px-5 ">
-        <span className="flex shrink-0 text-sm font-bold text-heading ltr:mr-4 rtl:ml-4 lg:text-base">
+      <div className="flex items-center justify-between gap-2 border-b border-border-200 py-3 px-4 md:px-3 lg:px-5">
+        <span className="flex min-w-0 truncate text-sm font-bold text-heading lg:text-base">
           {t('text-order')}
-          <span className="font-normal">#{id}</span>
+          <span className="truncate font-normal">#{id}</span>
         </span>
         <span
-          // className="max-w-full truncate whitespace-nowrap rounded bg-blue-100 px-3 py-2 text-sm text-blue-500"
-          className={`max-w-full truncate whitespace-nowrap rounded ${StatusColor(
+          className={`shrink-0 max-w-[55%] truncate whitespace-nowrap rounded ${StatusColor(
             order?.order_status
-          )} px-3 py-2 text-sm`}
+          )} px-2.5 py-1 text-xs sm:px-3 sm:py-1.5 sm:text-sm`}
           title={t(order_status)}
         >
           {t(order_status)}
@@ -60,7 +59,7 @@ const OrderCard: React.FC<OrderCardProps> = ({ onClick, order, isActive }) => {
             {t('text-deliver-time')}
           </span>
           <span className="ltr:mr-auto rtl:ml-auto">:</span>
-          <span className="truncate ltr:ml-1 rtl:mr-1">{delivery_time}</span>
+          <span className="truncate ltr:ml-1 rtl:mr-1">{delivery_time || '—'}</span>
         </p>
         <p className="mb-4 flex w-full items-center justify-between text-sm font-bold text-heading last:mb-0">
           <span className="w-24 shrink-0 overflow-hidden">

@@ -11,12 +11,14 @@ interface ScheduleProps {
   label: string;
   className?: string;
   count?: number;
+  hideHeader?: boolean;
 }
 
 export const ScheduleGrid: React.FC<ScheduleProps> = ({
   label,
   className,
   count,
+  hideHeader,
 }) => {
   const { t } = useTranslation('common');
   const {
@@ -31,21 +33,35 @@ export const ScheduleGrid: React.FC<ScheduleProps> = ({
   }, [schedules]);
   return (
     <div className={className}>
-      <div className="mb-5 flex items-center justify-between md:mb-8">
-        <div className="flex items-center space-x-3 rtl:space-x-reverse md:space-x-4">
-          {count && (
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-base text-light lg:text-xl">
-              {count}
-            </span>
-          )}
-          <p className="text-lg capitalize text-heading lg:text-xl">{label}</p>
+      {hideHeader ? (
+        <label className="mb-1.5 block text-xs font-semibold text-[#6E6C6D]">
+          {label}
+        </label>
+      ) : (
+        <div className="mb-5 flex items-center justify-between md:mb-8">
+          <div className="flex items-center space-x-3 rtl:space-x-reverse md:space-x-4">
+            {count && (
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-base text-light lg:text-xl">
+                {count}
+              </span>
+            )}
+            <p className="text-lg capitalize text-heading lg:text-xl">
+              {label}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {schedules && schedules?.length ? (
         <RadioGroup value={selectedSchedule} onChange={setSchedule}>
           <RadioGroup.Label className="sr-only">{label}</RadioGroup.Label>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
+          <div
+            className={
+              hideHeader
+                ? 'grid grid-cols-1 gap-3 sm:grid-cols-2'
+                : 'grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3'
+            }
+          >
             {schedules?.map((schedule: any, idx: number) => (
               <RadioGroup.Option value={schedule} key={idx}>
                 {({ checked }) => (

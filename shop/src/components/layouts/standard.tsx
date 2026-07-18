@@ -1,12 +1,16 @@
 import IndoHero from '@/components/banners/indo-hero-banner';
 import ValueProps from '@/components/common/value-props';
-import HomeDeals from '@/components/common/home-deals';
-import HomeCategorySections from '@/components/common/home-category-sections';
 import AllBooksGrid from '@/components/common/all-books-grid';
-import RotatingBanners from '@/components/common/rotating-banners';
-import BookSpotlight from '@/components/common/book-spotlight';
-import BuyMoreSaveMore from '@/components/common/buy-more-save-more';
+import LazyOnView from '@/components/common/lazy-on-view';
 import dynamic from 'next/dynamic';
+
+// Below-the-fold sections are code-split so the initial home render/hydration isn't blocked by
+// their JS + data fetches — they stream in as the shopper scrolls. Keeps first paint fast.
+const HomeDeals = dynamic(() => import('@/components/common/home-deals'), { ssr: false });
+const HomeCategorySections = dynamic(() => import('@/components/common/home-category-sections'), { ssr: false });
+const RotatingBanners = dynamic(() => import('@/components/common/rotating-banners'), { ssr: false });
+const BookSpotlight = dynamic(() => import('@/components/common/book-spotlight'), { ssr: false });
+const BuyMoreSaveMore = dynamic(() => import('@/components/common/buy-more-save-more'), { ssr: false });
 
 // Client-only: uses the authenticated wishlist query, which must not run during
 // static generation (it 401s server-side and fails the page build).
@@ -83,26 +87,42 @@ export default function Standard({ variables }: HomePageProps) {
       {/* Reader's pick spotlight — above the second (rotating) banner */}
       <BookSpotlight />
 
-      {/* Auto-rotating promotional book banners (15s) */}
-      <RotatingBanners />
+      {/* Everything below the first few sections mounts (and fetches) only as the shopper
+          scrolls near it, so the top of the home page paints fast even with a big catalogue. */}
+      <LazyOnView minHeight={260}>
+        {/* Auto-rotating promotional book banners (15s) */}
+        <RotatingBanners />
+      </LazyOnView>
 
-      {/* 1-minute book challenge — hides itself when the admin has it switched off */}
-      <ChallengeBanner />
+      <LazyOnView minHeight={80}>
+        {/* 1-minute book challenge — hides itself when the admin has it switched off */}
+        <ChallengeBanner />
+      </LazyOnView>
 
-      <HomeDeals />
+      <LazyOnView minHeight={420}>
+        <HomeDeals />
+      </LazyOnView>
 
-      {/* Personalized rails for logged-in shoppers */}
-      <PersonalizedSections />
+      <LazyOnView minHeight={80}>
+        {/* Personalized rails for logged-in shoppers */}
+        <PersonalizedSections />
+      </LazyOnView>
 
-      {/* Category-wise book rails */}
-      <HomeCategorySections />
+      <LazyOnView minHeight={420}>
+        {/* Category-wise book rails */}
+        <HomeCategorySections />
+      </LazyOnView>
 
-      <FilterBar variables={variables?.categories} />
-      <Categories layout="standard" variables={variables?.categories} />
-      <AllBooksGrid />
+      <LazyOnView minHeight={520}>
+        <FilterBar variables={variables?.categories} />
+        <Categories layout="standard" variables={variables?.categories} />
+        <AllBooksGrid />
+      </LazyOnView>
 
-      {/* Buy-more-save-more moved to the end */}
-      <BuyMoreSaveMore />
+      <LazyOnView minHeight={200}>
+        {/* Buy-more-save-more moved to the end */}
+        <BuyMoreSaveMore />
+      </LazyOnView>
     </>
   );
 }

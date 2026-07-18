@@ -114,4 +114,13 @@ return [
 
     'password_timeout' => 10800,
 
+    /*
+    |--------------------------------------------------------------------------
+    | Active OTP Gateway
+    |--------------------------------------------------------------------------
+    | Which SMS/OTP provider to use. Resolves to Marvel\Otp\Gateways\{Ucfirst}Gateway.
+    | Set ACTIVE_OTP_GATEWAY=smsnetbd (sms.net.bd) in .env.
+    */
+    'active_otp_gateway' => env('ACTIVE_OTP_GATEWAY', 'smsnetbd'),
+
 ];

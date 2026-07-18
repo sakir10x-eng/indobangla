@@ -60,17 +60,33 @@ const PaymentGroupOption: React.FC<PaymentGroupOptionProps> = ({
       {({ checked }) => (
         <div
           className={cn(
-            'relative flex h-full w-full cursor-pointer items-center justify-center rounded border border-gray-200 bg-light p-3 text-center',
-            checked && '!border-accent bg-light shadow-600',
-            {
-              '!border-accent bg-light shadow-600': theme === 'bw' && checked,
-            }
+            'relative flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[10px] border p-3',
+            checked
+              ? '!border-accent shadow-[inset_0_0_0_1px_rgb(var(--color-accent))]'
+              : 'border-[#E4E1DC] bg-light hover:border-[#CFCBC4]'
           )}
         >
+          <span
+            className={cn(
+              'flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-full border-[1.5px] transition-colors',
+              checked ? 'border-accent' : 'border-[#CFCBC4]'
+            )}
+          >
+            <span
+              className={cn(
+                'h-2 w-2 rounded-full bg-accent transition-transform',
+                checked ? 'scale-100' : 'scale-0'
+              )}
+            />
+          </span>
           {icon ? (
-            <>{icon}</>
+            <span className="flex items-center [&_img]:max-h-5 [&_svg]:max-h-5 [&_svg]:w-auto">
+              {icon}
+            </span>
           ) : (
-            <span className="text-xs font-semibold text-heading">{name}</span>
+            <span className="text-[13px] font-semibold text-heading">
+              {name}
+            </span>
           )}
         </div>
       )}
@@ -344,11 +360,11 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
       )}
 
       <RadioGroup value={gateway} onChange={setGateway}>
-        <RadioGroup.Label className="mb-5 block text-base font-semibold text-heading">
+        <RadioGroup.Label className="mb-1.5 block text-xs font-semibold text-[#6E6C6D]">
           {t('text-choose-payment')}
         </RadioGroup.Label>
 
-        <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-3">
+        <div className="mb-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
           {/* {settings?.paymentGateway && (
             <PaymentGroupOption
               theme={theme}

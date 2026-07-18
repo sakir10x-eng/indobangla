@@ -56,7 +56,9 @@ class SmsnetbdGateway implements OtpInterface
             $json = $response->json();
 
             if (is_array($json) && (int) ($json['error'] ?? 1) === 0) {
-                return new Result($json['data']['request_id'] ?? 'sent');
+                // request_id comes back as an integer; Result only accepts string|array, so a
+                // raw int would throw InvalidArgumentException and be misreported as a failure.
+                return new Result((string) ($json['data']['request_id'] ?? 'sent'));
             }
 
             return new Result(['SMS failed: ' . ($json['msg'] ?? $response->body())]);
@@ -67,22 +69,52 @@ class SmsnetbdGateway implements OtpInterface
 
     public function startVerification($phone_number)
     {
-        $code = (string) random_int(100000, 999999);
+        $code = (string) random_int(1000, 9999);
         $id   = 'smsnetbd_' . bin2hex(random_bytes(8));
+        // Send first — if the SMS API rejects it (bad key, no balance, bad number), surface
+        // that as a failure so /send-otp-code returns success:false instead of pretending the
+        // code was delivered. (Note: sms.net.bd "error:0" only means accepted for delivery.)
+        $sent = $this->sendSms($phone_number, "Your IndoBangla verification code is $code");
+        if (!$sent->isValid()) {
+            return $sent;
+        }
         Cache::put("otp:$id", ['code' => $code, 'phone' => (string) $phone_number], now()->addMinutes(5));
-        $this->sendSms($phone_number, "Your IndoBangla verification code is $code");
         return new Result($id);
     }
+
+    /** Wrong guesses allowed against one code before it is thrown away. */
+    private const MAX_ATTEMPTS = 5;
 
     public function checkVerification($id, $code, $phone_number)
     {
         $stored = Cache::get("otp:$id");
-        $ok = $stored
-            && (string) $stored['code'] === (string) $code
+        if (!$stored) {
+            return new Result(['Invalid or expired verification code']);
+        }
+
+        // The code is four digits — ten thousand possibilities, which an unthrottled loop walks
+        // through in minutes. Since the caller is handed the otp_id when the code is sent, anyone
+        // could request a code for someone else's number and then guess their way into that
+        // account. Five wrong tries and the code is burnt; they have to request a new one, and
+        // that path is rate-limited.
+        $tries = (int) Cache::get("otp_tries:$id", 0);
+        if ($tries >= self::MAX_ATTEMPTS) {
+            Cache::forget("otp:$id");
+            Cache::forget("otp_tries:$id");
+            return new Result(['Too many incorrect attempts — please request a new code']);
+        }
+
+        $ok = (string) $stored['code'] === (string) $code
             && (string) $stored['phone'] === (string) $phone_number;
+
         if ($ok) {
             Cache::forget("otp:$id");
+            Cache::forget("otp_tries:$id");
+            return new Result('approved');
         }
-        return new Result($ok ? 'approved' : ['Invalid or expired verification code']);
+
+        // Expires with the code itself, so the counter can't outlive what it protects.
+        Cache::put("otp_tries:$id", $tries + 1, now()->addMinutes(5));
+        return new Result(['Invalid or expired verification code']);
     }
 }

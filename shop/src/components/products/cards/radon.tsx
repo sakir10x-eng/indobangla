@@ -9,6 +9,11 @@ import { productPlaceholder } from '@/lib/placeholders';
 import usePrice from '@/lib/use-price';
 import { ExternalIcon } from '@/components/icons/external-icon';
 
+const FavoriteButton = dynamic(
+  () => import('@/components/products/details/favorite-button'),
+  { ssr: false },
+);
+
 const AddToCart = dynamic(
   () =>
     import('@/components/products/add-to-cart/add-to-cart').then(
@@ -25,6 +30,7 @@ type RadonProps = {
 const Radon: React.FC<RadonProps> = ({ product, className }) => {
   const { t } = useTranslation('common');
   const {
+    id,
     name,
     slug,
     image,
@@ -87,14 +93,30 @@ const Radon: React.FC<RadonProps> = ({ product, className }) => {
             </Link>
           )}
 
-          {author && (
-            <Link
-              href={Routes.author(author?.slug!)}
-              className="mt-1 line-clamp-1 text-[11px] text-gray-400 transition-colors hover:text-accent md:text-xs"
-            >
-              {author?.name}
-            </Link>
-          )}
+          {/* The heart lives beside the author, not over the cover: on a pale cover a white
+              button was invisible. It stays outside the product <Link> so a tap saves the book
+              rather than opening it. */}
+          <div className="mt-1 flex items-center gap-1.5">
+            {author ? (
+              <Link
+                href={Routes.author(author?.slug!)}
+                className="line-clamp-1 min-w-0 flex-1 text-[11px] text-gray-400 transition-colors hover:text-accent md:text-xs"
+              >
+                {author?.name}
+              </Link>
+            ) : (
+              <span className="min-w-0 flex-1" />
+            )}
+            {/* `default`, not `minimal`: minimal paints a WHITE heart on a translucent black
+                circle, which is meant to sit over a cover image — on this white card it was
+                invisible. default gives an accent-coloured heart that also fills in once saved,
+                so the state is readable at a glance. */}
+            <FavoriteButton
+              productId={id as string}
+              variant="default"
+              className="!mt-0 !h-7 !w-7 shrink-0 !text-base"
+            />
+          </div>
 
           <div className="mt-2 flex items-center shrink-0">
             {product_type.toLowerCase() === 'variable' ? (

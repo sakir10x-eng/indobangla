@@ -19,6 +19,7 @@ import {
 import { useShopsQuery } from '@/data/shop';
 import { useCategoriesQuery } from '@/data/category';
 import { useAuthorsQuery } from '@/data/author';
+import { useManufacturersQuery } from '@/data/manufacturer';
 import { useFetchImageMutation } from '@/data/ai';
 import type {
   DuplicateMatch,
@@ -569,16 +570,27 @@ function BatchRow({
               <span className="font-semibold text-accent">
                 {r.updated ? `updated ✓ (${r.updated.join(', ')})` : 'published ✓'}
               </span>
-              {/* Let the admin jump to the real storefront page of what they just created. */}
+              {/* Let the admin jump to the real storefront page of what they just created… */}
               {r.publishedSlug && (
-                <a
-                  href={`https://indobangla.bd/products/${r.publishedSlug}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs font-semibold text-blue-600 hover:underline"
-                >
-                  View live ↗
-                </a>
+                <div className="flex flex-wrap items-center gap-3">
+                  <a
+                    href={`https://indobangla.bd/products/${r.publishedSlug}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs font-semibold text-blue-600 hover:underline"
+                  >
+                    View live ↗
+                  </a>
+                  {/* …or open the full product editor to add anything the batch form
+                      doesn't cover. New tab so the rest of the batch review isn't lost. */}
+                  <Link
+                    href={Routes.product.editWithoutLang(r.publishedSlug)}
+                    target="_blank"
+                    className="text-xs font-semibold text-accent hover:underline"
+                  >
+                    ✏️ Edit product
+                  </Link>
+                </div>
               )}
             </div>
           ) : r.publishError ? (
@@ -690,6 +702,21 @@ function PreviewPanel({
     limit: 10,
     language: 'en',
   });
+  // Publisher typeahead — same pattern as the writer field: search existing
+  // manufacturers (debounced) so picking one reuses its id, or type a new name.
+  const [pubFocus, setPubFocus] = useState(false);
+  const [pubRaw, setPubRaw] = useState<string | null>(null);
+  const [pubQuery, setPubQuery] = useState('');
+  useEffect(() => {
+    if (pubRaw === null) return;
+    const id = setTimeout(() => setPubQuery(pubRaw.trim()), 300);
+    return () => clearTimeout(id);
+  }, [pubRaw]);
+  const { manufacturers: pubOptions } = useManufacturersQuery({
+    name: pubQuery.length >= 2 ? pubQuery : '',
+    limit: 10,
+    language: 'en',
+  });
   if (!p) return <p className="text-xs text-body">Nothing extracted for this row.</p>;
 
   const cover: string | undefined =
@@ -703,6 +730,8 @@ function PreviewPanel({
     : Array.isArray(p.authors)
     ? p.authors[0] ?? ''
     : '';
+
+  const publisher = p.manufacturer?.name ?? p.publisher ?? '';
 
   const catList: any[] = Array.isArray(p.categories) ? p.categories : [];
   const catName = (c: any) => (typeof c === 'string' ? c : c?.name ?? '');
@@ -775,8 +804,8 @@ function PreviewPanel({
       v !== null &&
       v !== '' &&
       !(label === 'Source MRP' && (p.mrp ?? p.source_price) == null) &&
-      // Print type has its own editable dropdown above when editing.
-      !(editable && label === 'Print type'),
+      // Print type & Publisher have their own editable inputs above when editing.
+      !(editable && (label === 'Print type' || label === 'Publisher')),
   );
 
   const input =
@@ -879,6 +908,63 @@ function PreviewPanel({
                     </ul>
                   );
                 })()}
+            </div>
+            <div className="relative">
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Publisher</label>
+              <input
+                className={input}
+                value={publisher}
+                onFocus={() => setPubFocus(true)}
+                onBlur={() => setTimeout(() => setPubFocus(false), 150)}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  // Clear the resolved id so the API re-resolves (find-or-creates) the
+                  // edited name; publisher string kept as the fallback the backend reads.
+                  onProductPatch({ manufacturer: { name }, publisher: name });
+                  setPubRaw(name);
+                  setPubFocus(true);
+                }}
+                placeholder="Type to match an existing publisher…"
+              />
+              {pubFocus &&
+                pubQuery.length >= 2 &&
+                (() => {
+                  const sug = (pubOptions as any[])
+                    .filter(
+                      (m) =>
+                        m?.name &&
+                        m.name.toLowerCase() !== (publisher || '').toLowerCase(),
+                    )
+                    .slice(0, 8);
+                  if (!sug.length) return null;
+                  return (
+                    <ul className="absolute z-20 mt-1 max-h-52 w-full overflow-auto rounded-md border border-border-base bg-white py-1 shadow-lg">
+                      {sug.map((m) => (
+                        <li key={m.id}>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              // reuse the existing publisher (id) instead of re-creating it
+                              onProductPatch({
+                                manufacturer: { id: m.id, name: m.name },
+                                publisher: m.name,
+                              });
+                              setPubFocus(false);
+                            }}
+                            className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs text-heading hover:bg-accent/10"
+                          >
+                            <span>{m.name}</span>
+                            <span className="text-[10px] text-body">existing</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                })()}
+              <p className="mt-0.5 text-[10px] text-body">
+                Pick a suggestion to reuse a publisher; a new name is created on publish.
+              </p>
             </div>
             <div>
               <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Print type</label>

@@ -495,6 +495,43 @@ class Client {
     finish: (input: { token: string }) =>
       HttpClient.post<any>('challenge/finish', input),
   };
+  // My Library — the reader's personal dashboard, plus review reads/comments.
+  library = {
+    get: () => HttpClient.get<any>('my-library'),
+    reviewComments: (id: string | number) =>
+      HttpClient.get<any>(`reviews/${id}/comments`),
+    addReviewComment: ({
+      id,
+      comment,
+    }: {
+      id: string | number;
+      comment: string;
+    }) => HttpClient.post<any>(`reviews/${id}/comments`, { comment }),
+    markReviewViewed: (id: string | number) =>
+      HttpClient.post<any>(`reviews/${id}/view`, {}),
+  };
+  // Reader community (Phase 2) — Facebook-style book feed.
+  community = {
+    feed: (params: { page?: number; limit?: number }) =>
+      HttpClient.get<any>('community/feed', params),
+    createPost: (input: {
+      body?: string;
+      photos?: any[];
+      product_id?: number | null;
+    }) => HttpClient.post<any>('community/posts', input),
+    deletePost: (id: string | number) =>
+      HttpClient.delete<any>(`community/posts/${id}`),
+    toggleLike: (id: string | number) =>
+      HttpClient.post<any>(`community/posts/${id}/like`, {}),
+    comments: (id: string | number) =>
+      HttpClient.get<any>(`community/posts/${id}/comments`),
+    addComment: ({ id, body }: { id: string | number; body: string }) =>
+      HttpClient.post<any>(`community/posts/${id}/comments`, { body }),
+    report: ({ id, reason }: { id: string | number; reason?: string }) =>
+      HttpClient.post<any>(`community/posts/${id}/report`, { reason }),
+    searchBooks: (q: string) =>
+      HttpClient.get<any>('product-search-api', { q, limit: 8 }),
+  };
   settings = {
     all: (params?: SettingsQueryOptions) =>
       HttpClient.get<Settings>(API_ENDPOINTS.SETTINGS, { ...params }),

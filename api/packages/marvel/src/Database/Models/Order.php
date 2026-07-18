@@ -25,6 +25,10 @@ class Order extends Model
         'billing_address'     => 'json',
         'payment_intent_info' => 'json',
         'ops_meta'            => 'json',
+        // Lifecycle markers, deliberately not order statuses — see the
+        // add_order_lifecycle_columns migration for why.
+        'locked_at'           => 'datetime',   // "সম্পন্ন": return window over, no more edits
+        'archived_at'         => 'datetime',   // out of the working list, not deleted
     ];
 
     protected $hidden = [
@@ -39,6 +43,33 @@ class Order extends Model
         // Order by created_at desc
         static::addGlobalScope('order', function (Builder $builder) {
             $builder->orderBy('created_at', 'desc');
+        });
+
+        /**
+         * A locked ("সম্পন্ন") order is final: delivered, return window served out, closed.
+         *
+         * The guard lives on the model rather than in the board's endpoints because an order can
+         * be written from several directions — the ops endpoints, Marvel's own OrderController,
+         * the refund flow — and a check in only some of them is not a lock. Whatever forgets to
+         * ask, this still refuses.
+         *
+         * Two deliberate escapes: a super admin can still act (they are the ones who unlock a
+         * mistake), and a request with no authenticated user is a system action — the nightly
+         * sweep, a gateway callback settling money — which must not be blocked by a desk rule.
+         */
+        static::updating(function ($order) {
+            if (!$order->getOriginal('locked_at') || $order->isDirty('locked_at')) {
+                return;   // not locked, or this write IS the unlock
+            }
+            $user = auth()->user();
+            if (!$user) {
+                return;
+            }
+            if (!$user->getPermissionNames()->contains(\Marvel\Enums\Permission::SUPER_ADMIN)) {
+                throw new \Marvel\Exceptions\MarvelException(
+                    'এই অর্ডারটি সম্পন্ন হয়ে গেছে — আর পরিবর্তন করা যাবে না।'
+                );
+            }
         });
 
         // Stamp the moment an order is actually delivered — the exchange/return window
@@ -75,6 +106,16 @@ class Order extends Model
 
         // IndoBangla: notify admin (Telegram/WhatsApp) about every new order.
         static::created(function ($order) {
+            // IndoBangla: the customer's order number and the admin URL must be the SAME number.
+            // The admin panel routes by row `id`; the customer sees `tracking_number`. Pinning
+            // tracking_number to `id` makes them identical for every new order. The DB
+            // AUTO_INCREMENT was bumped past the old 25000-sequence so numbers only ever go up.
+            try {
+                $order->tracking_number = (string) $order->id;
+                $order->saveQuietly(); // quiet: no status change -> no notifier, no recursion
+            } catch (\Throwable $e) {
+                // fall back to the creating-hook number; never block order creation
+            }
             try {
                 $total = number_format((float) ($order->total ?? 0), 0);
                 \Marvel\Helpers\AdminNotifier::send(
@@ -95,15 +136,17 @@ class Order extends Model
             }
         });
 
-        // IndoBangla: cancelling / refunding an order releases its books back into stock.
-        // Gated on ops_meta.stock_committed so orders that never reserved stock
+        // IndoBangla: cancelling / refunding / voiding an order releases its books back into
+        // stock. Gated on ops_meta.stock_committed so orders that never reserved stock
         // (e.g. imported history) are never wrongly inflated, and release runs once.
         static::updated(function ($order) {
             try {
                 if (!$order->wasChanged('order_status')) {
                     return;
                 }
-                $cancelled = ['order-cancelled', 'order-refunded'];
+                // Void belongs here for the same reason as cancelled: the books were never
+                // really sold, so the copies have to go back on the shelf.
+                $cancelled = ['order-cancelled', 'order-refunded', 'order-void'];
                 $new = $order->order_status;
                 $old = $order->getOriginal('order_status');
                 if (in_array($new, $cancelled) && !in_array($old, $cancelled)) {
@@ -120,6 +163,26 @@ class Order extends Model
                             }
                         }
                         $ops['stock_released'] = true;
+                        $order->ops_meta = $ops;
+                        $order->saveQuietly();
+                    }
+
+                    // A cancelled pre-order must give its slot back too. stampPreorder only ever
+                    // increments preorder_count, so without this the book's "আর N কপি বাকি"
+                    // (preorder_limit − preorder_count) counted cancelled orders forever and the
+                    // quota could never recover. Gated on ops.advance (only stampPreorder sets
+                    // it) and run once via preorder_released.
+                    if (!empty($ops['advance']) && empty($ops['preorder_released'])) {
+                        $order->loadMissing('products');
+                        foreach ($order->products as $p) {
+                            $qty = (int) ($p->pivot->order_quantity ?? 0);
+                            if ($qty > 0 && $p->is_preorder) {
+                                \Marvel\Database\Models\Product::where('id', $p->id)
+                                    ->where('preorder_count', '>=', $qty)
+                                    ->decrement('preorder_count', $qty);
+                            }
+                        }
+                        $ops['preorder_released'] = true;
                         $order->ops_meta = $ops;
                         $order->saveQuietly();
                     }

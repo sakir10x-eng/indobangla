@@ -53,6 +53,18 @@ class SettingsController extends CoreController
         // Add formatted maintenance data to the existing data
         $data['maintenance'] = $formattedMaintenance;
 
+        // SECURITY: never expose integration secrets through the public settings
+        // endpoint (courier tokens, AI/ReplyGenie API keys, payment credentials,
+        // notify/telegram tokens). Admins manage these via dedicated, permission-
+        // gated endpoints — the shop never needs them.
+        $options = $data['options'] ?? [];
+        if (is_array($options)) {
+            foreach (['couriers', 'replygenie', 'ai_settings', 'payments', 'notify', 'server_info'] as $secretKey) {
+                unset($options[$secretKey]);
+            }
+            $data['options'] = $options;
+        }
+
         return $data;
     }
 

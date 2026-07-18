@@ -29,7 +29,13 @@ class UserCreateRequest extends FormRequest
     {
         return [
             'name'     => ['required', 'string', 'max:255'],
-            'email'    => ['required', 'email', 'unique:users'],
+            // Email is optional, but only because a mobile number can stand in for it: the desk
+            // creates walk-in customers from a phone number alone, while the public sign-up form
+            // still sends an email. One of the two has to be there or the account has no way to
+            // be identified or recovered — `required_without` is what enforces that, not the
+            // nullable in front of it.
+            'email'         => ['nullable', 'required_without:mobile_number', 'email', 'unique:users'],
+            'mobile_number' => ['nullable', 'required_without:email', 'string', 'max:20', 'unique:users'],
             'password' => ['required', 'string'],
             'shop_id' => ['nullable', 'exists:Marvel\Database\Models\Shop,id'],
             'profile'  => ['array'],

@@ -146,7 +146,7 @@ class SettingsSeeder extends Seeder
                 "bankTransfer" => [
                     "enabled"      => true,
                     "bank_name"    => "United Commercial Bank PLC",
-                    "branch"       => "Mirpur Road Branch",
+                    "branch"       => "Mirpur Road",
                     "account_name" => "INDO BANGLA BOOK",
                     "account_no"   => "1202112000004134",
                     "routing_no"   => "245263073",

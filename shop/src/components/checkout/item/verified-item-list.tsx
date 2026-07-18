@@ -12,13 +12,10 @@ import { useAtom } from 'jotai';
 import {
   couponAtom,
   discountAtom,
-  payableAmountAtom,
   verifiedResponseAtom,
-  walletAtom,
 } from '@/store/checkout';
 import ItemCard from '@/components/checkout/item/item-card';
 import { ItemInfoRow } from '@/components/checkout/item/item-info-row';
-import PaymentGrid from '@/components/checkout/payment/payment-grid';
 import { PlaceOrderAction } from '@/components/checkout/place-order-action';
 import Wallet from '@/components/checkout/wallet/wallet';
 import { useSettings } from '@/framework/settings';
@@ -34,8 +31,6 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
   const [verifiedResponse] = useAtom(verifiedResponseAtom);
   const [coupon, setCoupon] = useAtom(couponAtom);
   const [discount] = useAtom(discountAtom);
-  const [payableAmount] = useAtom(payableAmountAtom);
-  const [use_wallet] = useAtom(walletAtom);
   const { settings } = useSettings();
   const freeShippingAmount = settings?.freeShippingAmount;
   const freeShipping = settings?.freeShipping;
@@ -97,8 +92,16 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
       amount: totalPrice,
     }
   );
+  // #1 — everything the shopper saved on this order: the coupon/discount plus the shipping
+  // charge that was waived by free shipping.
+  const totalSave =
+    Number(calculateDiscount || 0) +
+    (freeShippings ? Number(verifiedResponse?.shipping_charge ?? 0) : 0);
+  const { price: totalSavePrice } = usePrice(
+    verifiedResponse && { amount: totalSave },
+  );
   return (
-    <div className={className}>
+    <div className={className ?? 'ib-card'}>
       <div className="flex flex-col pb-2 border-b border-border-200">
         {!isEmptyCart ? (
           items?.map((item) => {
@@ -122,15 +125,24 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
         <ItemInfoRow title={t('text-sub-total')} value={sub_total} />
         <ItemInfoRow title={t('text-tax')} value={tax} />
         <div className="flex justify-between">
-          <p className="text-sm text-body">{t('text-shipping')} <span className='text-xs font-semibold text-accent'>{freeShippings && `(${t('text-free-shipping')})`}</span></p>
-          <span className="text-sm text-body"> {shipping}</span>
+          <p className="text-sm text-body">{t('text-shipping')} <span className='text-xs font-semibold text-emerald-600'>{freeShippings && `(${t('text-free-shipping')})`}</span></p>
+          <span className="text-sm text-body">
+            {freeShippings ? (
+              <>
+                <del className="opacity-60">{shipping}</del>{' '}
+                <span className="font-semibold text-emerald-600">ফ্রি</span>
+              </>
+            ) : (
+              shipping
+            )}
+          </span>
         </div>
         {discount && coupon ? (
           <div className="flex justify-between">
             <p className="flex items-center gap-1 text-sm text-body ltr:mr-2 rtl:ml-2">
-              {t('text-discount')} <span className='-mt-px text-xs font-semibold text-accent'>{coupon?.type === CouponType.FREE_SHIPPING && `(${t('text-free-shipping')})` }</span>
+              {t('text-discount')} <span className='-mt-px text-xs font-semibold text-emerald-600'>{coupon?.type === CouponType.FREE_SHIPPING && `(${t('text-free-shipping')})` }</span>
             </p>
-            <span className="flex items-center text-xs font-semibold text-red-500 ltr:mr-auto rtl:ml-auto">
+            <span className="flex items-center text-xs font-semibold text-emerald-600 ltr:mr-auto rtl:ml-auto">
               ({coupon?.code})
               <button onClick={() => setCoupon(null)}>
                 <CloseIcon className="w-3 h-3 ltr:ml-2 rtl:mr-2 mt-0.5" />
@@ -143,11 +155,22 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
             <Coupon subtotal={base_amount} />
           </div>
         )}
-        <div className="flex justify-between pt-3 border-t-4 border-double border-border-200">
-          <p className="text-base font-semibold text-heading">
+        {totalSave > 0 && (
+          <div className="flex items-center justify-between rounded-lg bg-emerald-50 px-2.5 py-1.5">
+            <p className="text-sm font-semibold text-emerald-700">🎉 সর্বমোট সাশ্রয়</p>
+            <span className="text-sm font-bold text-emerald-700">− {totalSavePrice}</span>
+          </div>
+        )}
+        <div className="mt-1 flex items-baseline justify-between border-t border-[#E4E1DC] pt-3">
+          <p className="text-sm font-semibold text-heading">
             {t('text-total')}
           </p>
-          <span className="text-base font-semibold text-heading">{total}</span>
+          <span
+            className="text-[26px] font-bold text-heading"
+            style={{ fontFamily: "'Playfair Display', Georgia, serif" }}
+          >
+            {total}
+          </span>
         </div>
       </div>
       {verifiedResponse && (
@@ -157,10 +180,25 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
           walletCurrency={verifiedResponse.wallet_currency}
         />
       )}
-      {use_wallet && !Boolean(payableAmount) ? null : (
-        <PaymentGrid className="p-5 mt-10 border border-gray-200 bg-light" />
-      )}
-      <PlaceOrderAction>{t('text-place-order')}</PlaceOrderAction>
+      <PlaceOrderAction>
+        <span className="inline-flex items-center gap-2">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.2}
+            strokeLinecap="round"
+            className="h-[17px] w-[17px]"
+          >
+            <rect x="4" y="11" width="16" height="10" rx="2" />
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+          </svg>
+          অর্ডার কনফার্ম করুন
+        </span>
+      </PlaceOrderAction>
+      <p className="mt-2.5 text-center text-[11.5px] text-[#9A9899]">
+        ৭ দিনে রিটার্ন · নিরাপদ পেমেন্ট · সারাদেশে ডেলিভারি
+      </p>
     </div>
   );
 };

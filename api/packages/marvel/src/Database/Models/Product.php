@@ -226,6 +226,15 @@ class Product extends Model
     }
 
     /**
+     * Admin-managed book awards attached to this product.
+     * @return BelongsToMany
+     */
+    public function awards(): BelongsToMany
+    {
+        return $this->belongsToMany(Award::class, 'award_product');
+    }
+
+    /**
      * @return HasMany
      */
     public function wishlists(): HasMany

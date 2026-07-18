@@ -189,8 +189,10 @@ export default function ProductLandingAnandamela(p: AnandamelaProps) {
         <div className="cloud c1" /><div className="cloud c2" /><div className="cloud c3" />
         <div className="hero-inner">
           <div>
-            <div className={`badge-pub ${inStock ? '' : 'is-preorder'}`}>
-              <span className="dot" /> {inStock ? 'প্রকাশিত — এখন বাংলাদেশে' : 'প্রি-অর্ডার চলছে'}
+            {/* This is a Kolkata edition collected to order, so the badge talks about the
+                pre-order rather than claiming the book is already on our shelf. */}
+            <div className="badge-pub is-preorder">
+              <span className="dot" /> বাংলাদেশে বসে সংগ্রহ করতে চাইলে — প্রি-অর্ডার চলছে
             </div>
             <p className="eyebrow">পূজাবার্ষিকী ১৪৩৩</p>
             <h1 className="masthead">আনন্দমেলা</h1>

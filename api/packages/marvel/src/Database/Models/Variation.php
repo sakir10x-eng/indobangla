@@ -26,8 +26,11 @@ class Variation extends Model
   protected function sku(): Attribute
   {
     return Attribute::make(
-      get: fn (string $value) => $value,
-      set: fn (string $value) => globalSlugify((string)$value, Variation::class, 'sku', '_'),
+      // A variation may have no SKU (null column) — don't crash serialization on it.
+      get: fn (?string $value) => $value,
+      set: fn (?string $value) => $value === null || $value === ''
+        ? null
+        : globalSlugify((string) $value, Variation::class, 'sku', '_'),
     );
   }
 

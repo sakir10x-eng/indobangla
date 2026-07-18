@@ -22,7 +22,8 @@ class Review extends Model
         'positive_feedbacks_count',
         'negative_feedbacks_count',
         'my_feedback',
-        'abusive_reports_count'
+        'abusive_reports_count',
+        'comments_count'
     ];
 
     /**
@@ -52,6 +53,14 @@ class Review extends Model
     public function abusive_reports()
     {
         return $this->morphMany(AbusiveReport::class, 'model');
+    }
+
+    /**
+     * Threaded comments left on this review ("kotojon comment korlo").
+     */
+    public function comments()
+    {
+        return $this->hasMany(ReviewComment::class, 'review_id');
     }
 
     /**
@@ -90,6 +99,15 @@ class Review extends Model
      */
     public function getAbusiveReportsCountAttribute() {
         return $this->abusive_reports()->count();
+    }
+
+    /**
+     * How many comments this review has ("kotojon comment korlo").
+     * @return int
+     */
+    public function getCommentsCountAttribute()
+    {
+        return $this->comments()->count();
     }
 
 }

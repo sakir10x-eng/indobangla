@@ -1959,54 +1959,30 @@ class IntegrationController extends CoreController
                 'has_token' => !empty($cfg['token']) || !empty($cfg['api_key']),
             ];
         }
-        // Everything the courier-status mapping UI needs: the admin's saved overrides,
-        // the built-in defaults it falls back to, and the order statuses to choose from.
-        $out['redx']['status_map']      = (array) ($c['redx']['status_map'] ?? []);
-        $out['redx']['status_defaults'] = self::REDX_STATUS_DEFAULTS;
-        $out['order_statuses'] = OrderStatus::getValues();
         return ['status' => 'success', 'couriers' => $out];
     }
 
     public function updateCourierSettings(Request $request)
     {
         $data = $request->validate([
-            'provider'   => 'required|in:redx,steadfast,paperfly,sundarban,pathao',
-            'enabled'    => 'nullable|boolean',
-            'token'      => 'nullable|string',
-            'api_key'    => 'nullable|string',
-            'secret'     => 'nullable|string',
-            'base_url'   => 'nullable|string',
-            // Admin-configured RedX-status → our-order-status map. Each value is one of
-            // our order_status slugs, or '' to mean "leave our status unchanged".
-            'status_map'          => 'nullable|array',
-            'status_map.*'        => 'nullable|string',
+            'provider' => 'required|in:redx,steadfast,paperfly,sundarban,pathao',
+            'enabled'  => 'nullable|boolean',
+            'token'    => 'nullable|string',
+            'api_key'  => 'nullable|string',
+            'secret'   => 'nullable|string',
+            'base_url' => 'nullable|string',
         ]);
         $settings = Settings::first();
         $options  = $settings->options;
         $couriers = $options['couriers'] ?? [];
         $cur = $couriers[$data['provider']] ?? [];
-        // Keep only recognised values so a bad slug can never wedge an order into a
-        // status that no query/board knows about.
-        $allowedStatuses = array_merge(OrderStatus::getValues(), ['']);
-        $statusMap = $cur['status_map'] ?? [];
-        if (array_key_exists('status_map', $data) && is_array($data['status_map'])) {
-            $statusMap = [];
-            foreach ($data['status_map'] as $redx => $our) {
-                $redx = strtolower(trim((string) $redx));
-                $our  = (string) $our;
-                if ($redx !== '' && in_array($our, $allowedStatuses, true)) {
-                    $statusMap[$redx] = $our;
-                }
-            }
-        }
         $couriers[$data['provider']] = [
             'enabled'  => array_key_exists('enabled', $data) ? (bool) $data['enabled'] : ($cur['enabled'] ?? false),
             'token'    => !empty($data['token']) ? $data['token'] : ($cur['token'] ?? ''),
             'api_key'  => !empty($data['api_key']) ? $data['api_key'] : ($cur['api_key'] ?? ''),
             'secret'   => !empty($data['secret']) ? $data['secret'] : ($cur['secret'] ?? ''),
             'base_url' => $data['base_url'] ?? ($cur['base_url'] ?? ''),
-            'status_map' => $statusMap,
-        ] + array_diff_key($cur, array_flip(['enabled', 'token', 'api_key', 'secret', 'base_url', 'status_map']));
+        ];
         $options['couriers'] = $couriers;
         $settings->update(['options' => $options]);
         return $this->getCourierSettings($request);
@@ -2396,178 +2372,6 @@ class IntegrationController extends CoreController
         } catch (\Throwable $e) {
             throw new MarvelException('Tracking failed: ' . $e->getMessage());
         }
-    }
-
-    /**
-     * RedX parcel status → our OrderStatus. Only `delivered` and `pickup-pending`
-     * are confirmed against live parcels; the rest are RedX's documented slugs,
-     * matched loosely (substring) so a wording variant still lands somewhere sane.
-     * Returns null for "no mapping — leave the order status alone" (holds,
-     * in-progress returns): a status we do not understand must never overwrite ours.
-     */
-    /**
-     * The built-in RedX-status → our-status defaults. A `null` value means
-     * "leave our order status alone". The admin can override any row from
-     * Settings → Couriers (stored in couriers.redx.status_map); those wins.
-     * The new courier statuses (shipped/in-transit/partial-delivered/on-hold)
-     * are non-accounting — see OrderStatus.
-     */
-    public const REDX_STATUS_DEFAULTS = [
-        'pickup-pending'    => OrderStatus::PROCESSING,        // booked & ready to ship
-        'pickup-cancelled'  => null,                           // courier cancel — owner reviews
-        'picked-up'         => OrderStatus::SHIPPED,
-        'pickup-completed'  => OrderStatus::SHIPPED,
-        'in-transit'        => OrderStatus::IN_TRANSIT,
-        'received-at-hub'   => OrderStatus::IN_TRANSIT,
-        'out-for-delivery'  => OrderStatus::OUT_FOR_DELIVERY,
-        'delivered'         => OrderStatus::COMPLETED,
-        'partial-delivered' => OrderStatus::PARTIAL_DELIVERED,
-        'agent-hold'        => OrderStatus::ON_HOLD,
-        'on-hold'           => OrderStatus::ON_HOLD,
-        'return-to-merchant' => OrderStatus::CANCELLED,        // goods came back → no sale
-        'cancelled'         => null,
-    ];
-
-    protected function redxStatusToOrderStatus(?string $redx): ?string
-    {
-        $s = strtolower(trim((string) $redx));
-        if ($s === '') {
-            return null;
-        }
-        // 1) Admin override from Settings → Couriers wins. An empty string in the
-        // map is an explicit "no change" the admin chose, so honour it as null.
-        $override = ($this->options()['couriers'] ?? [])['redx']['status_map'] ?? [];
-        if (is_array($override) && array_key_exists($s, $override)) {
-            $v = $override[$s];
-            return ($v === '' || $v === null) ? null : (string) $v;
-        }
-        // 2) Built-in defaults.
-        if (array_key_exists($s, self::REDX_STATUS_DEFAULTS)) {
-            return self::REDX_STATUS_DEFAULTS[$s];
-        }
-        // 3) Loose fallback on the words RedX uses in its status/track vocabulary.
-        if (str_contains($s, 'hold')) {
-            return OrderStatus::ON_HOLD;
-        }
-        if (str_contains($s, 'pending-return') || str_contains($s, 'cancel')) {
-            return null; // in-progress or courier-cancel — don't touch our status
-        }
-        if (str_contains($s, 'return')) {
-            return OrderStatus::CANCELLED;
-        }
-        if (str_contains($s, 'partial')) {
-            return OrderStatus::PARTIAL_DELIVERED;
-        }
-        if (str_contains($s, 'deliver') && !str_contains($s, 'out') && !str_contains($s, 'on the way')) {
-            return OrderStatus::COMPLETED;
-        }
-        if (str_contains($s, 'out-for') || str_contains($s, 'on the way') || str_contains($s, 'out for')) {
-            return OrderStatus::OUT_FOR_DELIVERY;
-        }
-        if (str_contains($s, 'transit') || str_contains($s, 'hub') || str_contains($s, 'received')) {
-            return OrderStatus::IN_TRANSIT;
-        }
-        if (str_contains($s, 'pick')) {
-            return OrderStatus::SHIPPED;
-        }
-        return null;
-    }
-
-    /**
-     * The "hisab": pull /parcel/info and reduce it to the money RedX bills and the
-     * net it will settle to the merchant account. Returns a normalized array;
-     * throws only on a hard transport failure so the caller can surface it.
-     *
-     *   net_payout = cash_collection_amount − charge − cod_charge
-     *
-     * That is exactly the per-parcel figure on RedX's own settlement invoice; RedX
-     * exposes no merchant-level invoice/balance endpoint, so we compute it ourselves.
-     */
-    protected function redxParcelInfo(string $base, array $headers, string $trackingId): array
-    {
-        $r = Http::withHeaders($headers)->timeout(25)->get($base . '/parcel/info/' . $trackingId);
-        if (!$r->successful()) {
-            throw new MarvelException('RedX /parcel/info returned HTTP ' . $r->status() . ' for ' . $trackingId . '.');
-        }
-        $p = (array) ($r->json('parcel') ?? []);
-        $cod       = (float) ($p['cash_collection_amount'] ?? 0);
-        $charge    = (float) ($p['charge'] ?? 0);
-        $codCharge = (float) ($p['cod_charge'] ?? 0);
-        return [
-            'provider'               => 'redx',
-            'tracking_id'            => (string) ($p['tracking_id'] ?? $trackingId),
-            'merchant_invoice_id'    => (string) ($p['merchant_invoice_id'] ?? ''),
-            'courier_status'         => (string) ($p['status'] ?? ''),
-            'value'                  => (float) ($p['value'] ?? 0),
-            'cod_collected'          => $cod,
-            'delivery_charge'        => $charge,
-            'cod_charge'             => $codCharge,
-            'net_payout'             => round($cod - $charge - $codCharge, 2),
-            'delivery_area'          => (string) ($p['delivery_area'] ?? ''),
-        ];
-    }
-
-    /**
-     * Courier transaction ("hisab") for one order: what RedX billed and what it
-     * will pay back, plus the order-status RedX's status maps to.
-     *   GET courier-transaction/{provider}?order_id=123  (or ?tracking_id=...)
-     *   &apply_status=1  → also advance our order_status to the mapped one (guarded)
-     *
-     * Applying status is OFF by default and deliberately conservative: it never
-     * moves an order OUT of a terminal/accounting state (completed/cancelled/
-     * refunded/void/failed) — that path claws back vendor balance and releases
-     * stock — and never auto-cancels. Those stay a human decision.
-     */
-    public function courierTransaction(Request $request, $provider)
-    {
-        if ($provider !== 'redx') {
-            throw new MarvelException('Transactions for ' . ucfirst($provider) . ' are not wired yet.');
-        }
-        $cfg = ($this->options()['couriers'] ?? [])['redx'] ?? [];
-        $base = $this->redxBase($cfg);
-        $headers = ['API-ACCESS-TOKEN' => 'Bearer ' . ($cfg['token'] ?? '')];
-
-        $order = null;
-        $trackingId = (string) $request->input('tracking_id', '');
-        if ($request->filled('order_id')) {
-            $order = Order::findOrFail($request->input('order_id'));
-            $ops = (array) ($order->ops_meta ?? []);
-            $trackingId = $trackingId ?: (string) ($ops['courier_tracking_id'] ?? '');
-        }
-        if ($trackingId === '') {
-            throw new MarvelException('order_id (with a booked RedX parcel) or tracking_id is required.');
-        }
-
-        $info = $this->redxParcelInfo($base, $headers, $trackingId);
-        $mapped = $this->redxStatusToOrderStatus($info['courier_status']);
-        $info['mapped_order_status'] = $mapped;
-
-        if ($order) {
-            // Persist the hisab so the order board shows it without re-hitting RedX.
-            $ops = (array) ($order->ops_meta ?? []);
-            $ops['courier_txn']    = $info;
-            $ops['courier_status'] = $info['courier_status'];
-            $ops['courier_synced_at'] = now()->toIso8601String();
-
-            $applied = false;
-            $terminal = [
-                OrderStatus::COMPLETED, OrderStatus::CANCELLED, OrderStatus::REFUNDED,
-                OrderStatus::FAILED, 'order-void',
-            ];
-            if ($request->boolean('apply_status') && $mapped
-                && $mapped !== $order->order_status
-                && !in_array($order->order_status, $terminal, true)   // don't leave an accounting state
-                && $mapped !== OrderStatus::CANCELLED) {              // never auto-cancel (stock release)
-                $order->order_status = $mapped;
-                $applied = true;
-            }
-            $order->ops_meta = $ops;
-            $order->save();
-            $info['status_applied'] = $applied;
-            $info['order_status']   = $order->order_status;
-        }
-
-        return ['status' => 'success', 'transaction' => $info];
     }
 
     // --------------------------------------------------------- payment: bKash
@@ -5095,10 +4899,7 @@ class IntegrationController extends CoreController
                 'area_id'    => (int) ($a['id'] ?? 0),
                 'name'       => trim((string) ($a['name'] ?? '')),
                 'district'   => (string) ($a['district_name'] ?? ($a['division_name'] ?? '')),
-                // RedX sends `zone_id` (int), never `zone_name`; keep the name column
-                // for a future provider that supplies one.
                 'zone'       => (string) ($a['zone_name'] ?? ''),
-                'zone_id'    => (int) ($a['zone_id'] ?? 0),
                 'post_code'  => (string) ($a['post_code'] ?? ''),
                 'created_at' => $now,
                 'updated_at' => $now,
@@ -5115,7 +4916,7 @@ class IntegrationController extends CoreController
             \Marvel\Database\Models\CourierArea::upsert(
                 $chunk->all(),
                 ['provider', 'area_id'],
-                ['name', 'district', 'zone', 'zone_id', 'post_code', 'updated_at']
+                ['name', 'district', 'zone', 'post_code', 'updated_at']
             );
         }
         return $rows->count();
@@ -5998,11 +5799,9 @@ class IntegrationController extends CoreController
      */
     private const BOARD_BUCKETS = [
         'ready'     => ['order-processing', 'order-at-local-facility'],
-        'shipped'   => ['order-out-for-delivery', 'order-shipped'],
-        'transit'   => ['order-in-transit'],
-        'hold'      => ['order-on-hold'],
+        'shipped'   => ['order-out-for-delivery'],
+        'transit'   => [],   // nothing maps here — TO_BUCKET has no transit status either
         'delivered' => ['order-completed'],
-        'partial'   => ['order-partial-delivered'],
         'returned'  => ['order-cancelled', 'order-refunded'],
         'void'      => ['order-void'],
     ];
@@ -6021,7 +5820,7 @@ class IntegrationController extends CoreController
      * what you had voided. Both tabs therefore ignore the archived filter; the other tabs still
      * partition the working list exactly.
      */
-    private const BOARD_TABS = ['all', 'attention', 'printstuck', 'pending', 'ready', 'shipped', 'transit', 'hold', 'delivered', 'partial', 'returned', 'void', 'archived'];
+    private const BOARD_TABS = ['all', 'attention', 'printstuck', 'pending', 'ready', 'shipped', 'transit', 'delivered', 'returned', 'void', 'archived'];
 
     /** Tabs that deliberately look past the "hide archived" default. */
     private const BOARD_TABS_INCLUDING_ARCHIVED = ['void', 'archived'];
@@ -6141,9 +5940,7 @@ class IntegrationController extends CoreController
             case 'ready':
             case 'shipped':
             case 'transit':
-            case 'hold':
             case 'delivered':
-            case 'partial':
             case 'returned':
             case 'void':
                 return $q->whereIn('orders.order_status', self::BOARD_BUCKETS[$tab]);
@@ -6412,6 +6209,54 @@ class IntegrationController extends CoreController
     }
 
 
+
+    /**
+     * Void pre-orders whose advance was never paid, after a grace period.
+     *
+     * Targets only stampPreorder orders (`ops_meta.advance.status = pending_advance`) still
+     * pending with nothing paid — never a COD order, never a partial payment, never a
+     * bank-transfer awaiting verification. Goes through save() (not a bulk UPDATE) on purpose:
+     * the Order model's `updated` hook is what puts the reserved books back and hands the
+     * pre-order slot back; a plain UPDATE would skip it.
+     */
+    public function voidAbandonedPreorders(int $hours = 24, int $limit = 200): int
+    {
+        $orders = Order::whereNull('deleted_at')
+            ->where('order_status', 'order-pending')
+            ->where('payment_status', 'payment-pending')
+            ->where(function ($q) {
+                $q->whereNull('paid_total')->orWhere('paid_total', '<=', 0);
+            })
+            ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.advance.status')) = 'pending_advance'")
+            ->where('created_at', '<=', now()->subHours(max(1, $hours)))
+            ->orderBy('id')
+            ->limit(max(1, $limit))
+            ->get();
+
+        $voided = 0;
+        foreach ($orders as $order) {
+            try {
+                if ($order->order_status === OrderStatus::VOID) {
+                    continue;
+                }
+                $ops = (array) ($order->ops_meta ?? []);
+                $ops['void'] = [
+                    'from'   => $order->order_status,
+                    'by'     => 'system (auto)',
+                    'at'     => now()->toIso8601String(),
+                    'reason' => "pre-order advance unpaid > {$hours}h",
+                ];
+                $order->ops_meta = $ops;
+                $order->order_status = OrderStatus::VOID;
+                $order->archived_at = now();
+                $order->save(); // saved, not saveQuietly: the updated hook releases stock + slot
+                $voided++;
+            } catch (\Throwable $e) {
+                // one bad order must not stop the sweep
+            }
+        }
+        return $voided;
+    }
 
     /** Admin: which books are open for pre-order, and how they're tracking. */
     public function preorderProducts(Request $request)
@@ -8216,50 +8061,174 @@ class IntegrationController extends CoreController
     }
 
     /**
-     * Void pre-orders whose advance was never paid, after a grace period.
-     *
-     * Targets only stampPreorder orders (`ops_meta.advance.status = pending_advance`) still
-     * pending with nothing paid — never a COD order, never a partial payment, never a
-     * bank-transfer awaiting verification. Goes through save() (not a bulk UPDATE) on purpose:
-     * the Order model's `updated` hook is what puts the reserved books back and hands the
-     * pre-order slot back; a plain UPDATE would skip it.
+     * RedX parcel status → our OrderStatus. Only `delivered` and `pickup-pending`
+     * are confirmed against live parcels; the rest are RedX's documented slugs,
+     * matched loosely (substring) so a wording variant still lands somewhere sane.
+     * Returns null for "no mapping — leave the order status alone" (holds,
+     * in-progress returns): a status we do not understand must never overwrite ours.
      */
-    public function voidAbandonedPreorders(int $hours = 24, int $limit = 200): int
-    {
-        $orders = Order::whereNull('deleted_at')
-            ->where('order_status', 'order-pending')
-            ->where('payment_status', 'payment-pending')
-            ->where(function ($q) {
-                $q->whereNull('paid_total')->orWhere('paid_total', '<=', 0);
-            })
-            ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.advance.status')) = 'pending_advance'")
-            ->where('created_at', '<=', now()->subHours(max(1, $hours)))
-            ->orderBy('id')
-            ->limit(max(1, $limit))
-            ->get();
+    /**
+     * The built-in RedX-status → our-status defaults. A `null` value means
+     * "leave our order status alone". The admin can override any row from
+     * Settings → Couriers (stored in couriers.redx.status_map); those wins.
+     * The new courier statuses (shipped/in-transit/partial-delivered/on-hold)
+     * are non-accounting — see OrderStatus.
+     */
+    public const REDX_STATUS_DEFAULTS = [
+        'pickup-pending'    => OrderStatus::PROCESSING,        // booked & ready to ship
+        'pickup-cancelled'  => null,                           // courier cancel — owner reviews
+        'picked-up'         => OrderStatus::SHIPPED,
+        'pickup-completed'  => OrderStatus::SHIPPED,
+        'in-transit'        => OrderStatus::IN_TRANSIT,
+        'received-at-hub'   => OrderStatus::IN_TRANSIT,
+        'out-for-delivery'  => OrderStatus::OUT_FOR_DELIVERY,
+        'delivered'         => OrderStatus::COMPLETED,
+        'partial-delivered' => OrderStatus::PARTIAL_DELIVERED,
+        'agent-hold'        => OrderStatus::ON_HOLD,
+        'on-hold'           => OrderStatus::ON_HOLD,
+        'return-to-merchant' => OrderStatus::CANCELLED,        // goods came back → no sale
+        'cancelled'         => null,
+    ];
 
-        $voided = 0;
-        foreach ($orders as $order) {
-            try {
-                if ($order->order_status === OrderStatus::VOID) {
-                    continue;
-                }
-                $ops = (array) ($order->ops_meta ?? []);
-                $ops['void'] = [
-                    'from'   => $order->order_status,
-                    'by'     => 'system (auto)',
-                    'at'     => now()->toIso8601String(),
-                    'reason' => "pre-order advance unpaid > {$hours}h",
-                ];
-                $order->ops_meta = $ops;
-                $order->order_status = OrderStatus::VOID;
-                $order->archived_at = now();
-                $order->save(); // saved, not saveQuietly: the updated hook releases stock + slot
-                $voided++;
-            } catch (\Throwable $e) {
-                // one bad order must not stop the sweep
-            }
+    protected function redxStatusToOrderStatus(?string $redx): ?string
+    {
+        $s = strtolower(trim((string) $redx));
+        if ($s === '') {
+            return null;
         }
-        return $voided;
+        // 1) Admin override from Settings → Couriers wins. An empty string in the
+        // map is an explicit "no change" the admin chose, so honour it as null.
+        $override = ($this->options()['couriers'] ?? [])['redx']['status_map'] ?? [];
+        if (is_array($override) && array_key_exists($s, $override)) {
+            $v = $override[$s];
+            return ($v === '' || $v === null) ? null : (string) $v;
+        }
+        // 2) Built-in defaults.
+        if (array_key_exists($s, self::REDX_STATUS_DEFAULTS)) {
+            return self::REDX_STATUS_DEFAULTS[$s];
+        }
+        // 3) Loose fallback on the words RedX uses in its status/track vocabulary.
+        if (str_contains($s, 'hold')) {
+            return OrderStatus::ON_HOLD;
+        }
+        if (str_contains($s, 'pending-return') || str_contains($s, 'cancel')) {
+            return null; // in-progress or courier-cancel — don't touch our status
+        }
+        if (str_contains($s, 'return')) {
+            return OrderStatus::CANCELLED;
+        }
+        if (str_contains($s, 'partial')) {
+            return OrderStatus::PARTIAL_DELIVERED;
+        }
+        if (str_contains($s, 'deliver') && !str_contains($s, 'out') && !str_contains($s, 'on the way')) {
+            return OrderStatus::COMPLETED;
+        }
+        if (str_contains($s, 'out-for') || str_contains($s, 'on the way') || str_contains($s, 'out for')) {
+            return OrderStatus::OUT_FOR_DELIVERY;
+        }
+        if (str_contains($s, 'transit') || str_contains($s, 'hub') || str_contains($s, 'received')) {
+            return OrderStatus::IN_TRANSIT;
+        }
+        if (str_contains($s, 'pick')) {
+            return OrderStatus::SHIPPED;
+        }
+        return null;
+    }
+
+    /**
+     * The "hisab": pull /parcel/info and reduce it to the money RedX bills and the
+     * net it will settle to the merchant account. Returns a normalized array;
+     * throws only on a hard transport failure so the caller can surface it.
+     *
+     *   net_payout = cash_collection_amount − charge − cod_charge
+     *
+     * That is exactly the per-parcel figure on RedX's own settlement invoice; RedX
+     * exposes no merchant-level invoice/balance endpoint, so we compute it ourselves.
+     */
+    protected function redxParcelInfo(string $base, array $headers, string $trackingId): array
+    {
+        $r = Http::withHeaders($headers)->timeout(25)->get($base . '/parcel/info/' . $trackingId);
+        if (!$r->successful()) {
+            throw new MarvelException('RedX /parcel/info returned HTTP ' . $r->status() . ' for ' . $trackingId . '.');
+        }
+        $p = (array) ($r->json('parcel') ?? []);
+        $cod       = (float) ($p['cash_collection_amount'] ?? 0);
+        $charge    = (float) ($p['charge'] ?? 0);
+        $codCharge = (float) ($p['cod_charge'] ?? 0);
+        return [
+            'provider'               => 'redx',
+            'tracking_id'            => (string) ($p['tracking_id'] ?? $trackingId),
+            'merchant_invoice_id'    => (string) ($p['merchant_invoice_id'] ?? ''),
+            'courier_status'         => (string) ($p['status'] ?? ''),
+            'value'                  => (float) ($p['value'] ?? 0),
+            'cod_collected'          => $cod,
+            'delivery_charge'        => $charge,
+            'cod_charge'             => $codCharge,
+            'net_payout'             => round($cod - $charge - $codCharge, 2),
+            'delivery_area'          => (string) ($p['delivery_area'] ?? ''),
+        ];
+    }
+
+    /**
+     * Courier transaction ("hisab") for one order: what RedX billed and what it
+     * will pay back, plus the order-status RedX's status maps to.
+     *   GET courier-transaction/{provider}?order_id=123  (or ?tracking_id=...)
+     *   &apply_status=1  → also advance our order_status to the mapped one (guarded)
+     *
+     * Applying status is OFF by default and deliberately conservative: it never
+     * moves an order OUT of a terminal/accounting state (completed/cancelled/
+     * refunded/void/failed) — that path claws back vendor balance and releases
+     * stock — and never auto-cancels. Those stay a human decision.
+     */
+    public function courierTransaction(Request $request, $provider)
+    {
+        if ($provider !== 'redx') {
+            throw new MarvelException('Transactions for ' . ucfirst($provider) . ' are not wired yet.');
+        }
+        $cfg = ($this->options()['couriers'] ?? [])['redx'] ?? [];
+        $base = $this->redxBase($cfg);
+        $headers = ['API-ACCESS-TOKEN' => 'Bearer ' . ($cfg['token'] ?? '')];
+
+        $order = null;
+        $trackingId = (string) $request->input('tracking_id', '');
+        if ($request->filled('order_id')) {
+            $order = Order::findOrFail($request->input('order_id'));
+            $ops = (array) ($order->ops_meta ?? []);
+            $trackingId = $trackingId ?: (string) ($ops['courier_tracking_id'] ?? '');
+        }
+        if ($trackingId === '') {
+            throw new MarvelException('order_id (with a booked RedX parcel) or tracking_id is required.');
+        }
+
+        $info = $this->redxParcelInfo($base, $headers, $trackingId);
+        $mapped = $this->redxStatusToOrderStatus($info['courier_status']);
+        $info['mapped_order_status'] = $mapped;
+
+        if ($order) {
+            // Persist the hisab so the order board shows it without re-hitting RedX.
+            $ops = (array) ($order->ops_meta ?? []);
+            $ops['courier_txn']    = $info;
+            $ops['courier_status'] = $info['courier_status'];
+            $ops['courier_synced_at'] = now()->toIso8601String();
+
+            $applied = false;
+            $terminal = [
+                OrderStatus::COMPLETED, OrderStatus::CANCELLED, OrderStatus::REFUNDED,
+                OrderStatus::FAILED, 'order-void',
+            ];
+            if ($request->boolean('apply_status') && $mapped
+                && $mapped !== $order->order_status
+                && !in_array($order->order_status, $terminal, true)   // don't leave an accounting state
+                && $mapped !== OrderStatus::CANCELLED) {              // never auto-cancel (stock release)
+                $order->order_status = $mapped;
+                $applied = true;
+            }
+            $order->ops_meta = $ops;
+            $order->save();
+            $info['status_applied'] = $applied;
+            $info['order_status']   = $order->order_status;
+        }
+
+        return ['status' => 'success', 'transaction' => $info];
     }
 }

@@ -46,7 +46,7 @@ export default function IndoFooter() {
             ভারতীয় অরিজিনাল ও বাংলাদেশের সেরা বই — ঘরে বসে অর্ডার করুন। ১২,০০০+ বই ডেলিভারি হয়েছে।
           </p>
           <div className="mt-3 flex gap-3 text-sm">
-            <a href="https://wa.me/8801556436147" target="_blank" rel="noreferrer" className="font-semibold text-green-600 hover:underline">WhatsApp</a>
+            <a href="https://wa.me/8801990906688" target="_blank" rel="noreferrer" className="font-semibold text-green-600 hover:underline">WhatsApp</a>
             <a href="https://facebook.com" target="_blank" rel="noreferrer" className="font-semibold text-blue-600 hover:underline">Facebook</a>
           </div>
         </div>
@@ -82,7 +82,7 @@ export default function IndoFooter() {
           <ul className="space-y-2 text-sm text-body">
             <li>📍 ধানমন্ডি, ঢাকা ১২০৫</li>
             <li>📞 <a href="tel:01556436147" className="hover:text-accent">01556 436147</a></li>
-            <li>✉️ <a href="mailto:hello@indobangla.tech" className="hover:text-accent">hello@indobangla.tech</a></li>
+            <li>✉️ <a href="mailto:indobanglabook@gmail.com" className="hover:text-accent">indobanglabook@gmail.com</a></li>
           </ul>
         </div>
       </div>

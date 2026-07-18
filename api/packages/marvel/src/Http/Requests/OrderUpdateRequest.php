@@ -27,6 +27,9 @@ class OrderUpdateRequest extends FormRequest
             'paid_total'      => 'numeric',
             'total'           => 'numeric',
             'order_status'    => ['required', Rule::in([
+                OrderStatus::PENDING,
+                OrderStatus::CONFIRMED,
+                OrderStatus::PLACED,
                 OrderStatus::PROCESSING,
                 OrderStatus::COMPLETED,
                 OrderStatus::AT_LOCAL_FACILITY,

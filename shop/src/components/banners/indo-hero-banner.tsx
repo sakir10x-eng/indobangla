@@ -1,7 +1,7 @@
 import Link from '@/components/ui/link';
 import { HttpClient } from '@/framework/client/http-client';
 import { useQuery } from 'react-query';
-import { sessionSeed } from '@/lib/session-seed';
+import { useState } from 'react';
 import { useFeaturedBooks } from '@/lib/use-featured-books';
 
 /**
@@ -10,13 +10,22 @@ import { useFeaturedBooks } from '@/lib/use-featured-books';
  * real book covers, and a clear CTA. Covers are pulled live from books-listing.
  */
 export default function IndoHeroBanner() {
-  const seed = sessionSeed();
+  // A fresh seed per mount: covers stay stable during a single view (no reshuffle/flicker while
+  // the page is open), but navigating away and back remounts the banner and reshuffles the books.
+  const [seed] = useState(() => Math.floor(Math.random() * 100000) + 1);
   const { data } = useQuery(['hero-banner-books', seed], () =>
     HttpClient.get<any>('books-listing', { limit: 5, seed }),
+    // Stable cache so the banner never re-fetches on focus/mount and re-shuffles the
+    // covers mid-view (which reloaded the images and bounced the scroll).
+    { staleTime: 5 * 60 * 1000, keepPreviousData: true, refetchOnWindowFocus: false },
   );
   // #2 — admin-curated banner books override the auto (random) selection.
   const { banner } = useFeaturedBooks();
-  const books: any[] = (banner.length ? banner : ((data as any)?.data ?? [])).slice(0, 5);
+  const source: any[] = (banner.length ? banner : ((data as any)?.data ?? [])).slice(0, 5);
+  // Always render exactly 5 slots (placeholders until the covers arrive) so the cover-fan
+  // reserves its full height from first paint — no layout shift, so the page never jumps
+  // to the top while the books are still loading.
+  const books: any[] = Array.from({ length: 5 }, (_, i) => source[i] ?? { id: `ph-${i}`, placeholder: true });
 
   const rot = ['-8deg', '-4deg', '0deg', '4deg', '8deg'];
   const ty = [14, 5, 0, 5, 14];
@@ -55,17 +64,30 @@ export default function IndoHeroBanner() {
 
         {/* book cover fan */}
         <div className="relative z-10 flex origin-center scale-[.68] items-end justify-center pr-2 xs:scale-[.8] sm:scale-100 sm:pr-2">
-          {books.map((b, i) => (
-            <Link
-              key={b.id}
-              href={`/products/${b.slug}`}
-              className="block shrink-0 overflow-hidden rounded-[3px_6px_6px_3px] shadow-2xl transition-transform hover:-translate-y-2"
-              style={{ width: 108, height: 162, marginLeft: i ? -30 : 0, transform: `rotate(${rot[i]}) translateY(${ty[i]}px)`, zIndex: i === 2 ? 5 : 5 - Math.abs(2 - i) }}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={b.image?.original || '/product-placeholder.svg'} alt={b.name} className="h-full w-full object-cover" />
-            </Link>
-          ))}
+          {books.map((b, i) => {
+            const boxStyle = { width: 108, height: 162, marginLeft: i ? -30 : 0, transform: `rotate(${rot[i]}) translateY(${ty[i]}px)`, zIndex: i === 2 ? 5 : 5 - Math.abs(2 - i) } as const;
+            if (b.placeholder) {
+              return (
+                <div
+                  key={b.id}
+                  aria-hidden="true"
+                  className="block shrink-0 overflow-hidden rounded-[3px_6px_6px_3px] shadow-2xl"
+                  style={{ ...boxStyle, background: 'rgba(90,69,38,.14)' }}
+                />
+              );
+            }
+            return (
+              <Link
+                key={b.id}
+                href={`/products/${b.slug}`}
+                className="block shrink-0 overflow-hidden rounded-[3px_6px_6px_3px] shadow-2xl transition-transform hover:-translate-y-2"
+                style={boxStyle}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={b.image?.original || '/product-placeholder.svg'} alt={b.name} className="h-full w-full object-cover" />
+              </Link>
+            );
+          })}
         </div>
       </div>
     </section>

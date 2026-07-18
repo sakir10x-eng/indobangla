@@ -125,6 +125,10 @@ class OrderRepository extends BaseRepository
         $ops['pay_token']   = 'pl_' . Str::random(24);
         $order->ops_meta = $ops;
         $order->order_status = OrderStatus::PENDING;
+        // The advance has NOT been collected yet — see the note in stampPayLink. Leaving
+        // storeOrder's `paid_total = total` here made /pay/{token} tell the customer their
+        // pre-order was already paid and hide every payment button.
+        $order->paid_total = 0;
         $order->saveQuietly();
 
         foreach ($products as $line) {
@@ -152,6 +156,13 @@ class OrderRepository extends BaseRepository
         $ops['pay_purpose'] = 'full';
         $ops['pay_token']   = 'pl_' . Str::random(24);
         $order->ops_meta = $ops;
+        // Nothing has been collected yet — this link is the ASK. storeOrder seeds
+        // `paid_total = total` (Pickbazar means "total payable" by it), but every custom
+        // pay-link reader treats it as "money received": payInfo does
+        // `paid = paid_total >= total`, so an unpaid link announced "পেমেন্ট সম্পন্ন" and
+        // never even rendered the method buttons. Zero it here, and settlePayment credits it
+        // back as the money actually arrives.
+        $order->paid_total = 0;
         $order->saveQuietly();
     }
 
@@ -170,8 +181,8 @@ class OrderRepository extends BaseRepository
     /**
      * Resolve the priced item behind a cart line, exactly as calculateSubtotal does.
      *
-     * Gift pricing and the subtotal must read the same figure off the same row, or the
-     * gift discount stops cancelling the gift line and the customer is charged.
+     * Gift pricing and the subtotal must read the same figure off the same row, or the gift
+     * discount stops cancelling the gift line and the customer is charged.
      *
      * @param array $line
      * @return Variation|Product|null
@@ -226,14 +237,21 @@ class OrderRepository extends BaseRepository
 
             if ($valid) {
                 // A gift is priced like any other line — it is cancelled out by an equal
-                // discount in storeOrder, so the invoice shows what the gift is worth
-                // instead of a bare ৳0 while the customer still pays nothing for it.
+                // discount in storeOrder, so the invoice shows what the gift is worth instead
+                // of a bare ৳0 while the customer still pays nothing for it.
                 $priced = $this->resolveLineItem($line) ?: $gp;
                 $line['unit_price'] = (float) ($priced->sale_price ?: $priced->price);
                 $line['subtotal']   = $this->calculateEachItemTotal($priced, $qty);
             } else {
-                // Not a legitimate gift → drop the flag so it is priced normally.
+                // Not a legitimate gift → drop the flag AND re-price it from the database.
+                // The client sends gift lines at price 0, so merely unsetting the flag would
+                // hand the book over free (e.g. by removing the main book that earned it).
                 unset($line['is_gift']);
+                if ($gp) {
+                    $real = (float) ($gp->sale_price > 0 ? $gp->sale_price : $gp->price);
+                    $line['unit_price'] = $real;
+                    $line['subtotal']   = $real * $qty;
+                }
             }
         }
         unset($line);
@@ -308,10 +326,9 @@ class OrderRepository extends BaseRepository
         $request['amount'] = $this->calculateSubtotal($request['products']);
 
         // Gifts are charged in the subtotal above and handed straight back as an equal
-        // discount further down, so the paperwork shows the real value of the gift while
-        // the payable total is unchanged. Must be computed before `is_gift` is stripped
-        // below. It is applied last, after every rounding step, so the two figures cancel
-        // to the taka.
+        // discount further down, so the paperwork shows the real value of the gift while the
+        // payable total is unchanged. Must be computed before `is_gift` is stripped below. It
+        // is applied last, after every rounding step, so the two figures cancel to the taka.
         $giftValue = 0;
         foreach ($request['products'] as $line) {
             if (empty($line['is_gift'])) {
@@ -385,10 +402,23 @@ class OrderRepository extends BaseRepository
                 if (!empty($coupon->user_id) && (int) $coupon->user_id !== (int) ($request->user()->id ?? 0)) {
                     throw new MarvelException('This membership card belongs to another customer.');
                 }
+                // Re-validate the coupon against the ACTUAL recalculated cart amount. The shopper
+                // may have removed books after applying it, and an unapproved/expired coupon (or
+                // one under its minimum) must not keep discounting the order.
+                $now = now();
+                $notStarted = !empty($coupon->active_from) && $now->lt(\Illuminate\Support\Carbon::parse($coupon->active_from));
+                $expired    = !empty($coupon->expire_at)   && $now->gt(\Illuminate\Support\Carbon::parse($coupon->expire_at));
+                if (empty($coupon->is_approve) || $notStarted || $expired) {
+                    throw new MarvelException('এই কুপনটি এখন আর প্রযোজ্য নয়।');
+                }
+                $minCart = (float) ($coupon->minimum_cart_amount ?? 0);
+                if ($minCart > 0 && (float) $request['amount'] < $minCart) {
+                    throw new MarvelException('এই কুপন ব্যবহার করতে অন্তত ৳' . round($minCart) . ' এর বই লাগবে।');
+                }
                 // `+=`, not `=`: a coupon stacks on top of the gift and full-pay discounts
                 // instead of wiping them out (which would charge the customer for the gift).
-                // The coupon is calculated on the paid goods only, so a gift can never
-                // inflate a percentage coupon.
+                // The coupon is calculated on the paid goods only, so a gift can never inflate
+                // a percentage coupon.
                 $request['discount'] += $this->calculateDiscount($coupon, $request['amount'] - $giftValue);
             } catch (Exception $th) {
                 throw $th;
