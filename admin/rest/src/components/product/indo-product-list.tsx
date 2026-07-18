@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { useQuery } from 'react-query';
+import { useQuery, useQueryClient } from 'react-query';
 import { HttpClient } from '@/data/client/http-client';
 import Link from '@/components/ui/link';
 import {
   Search, Pencil, Eye, Heart, TrendingUp, TrendingDown, Minus, Star,
   Percent, PackageX, AlertTriangle, ArrowUpDown, ChevronDown, Package,
-  ShoppingBag, Megaphone, Rocket, Copy, ArrowRightLeft, X, Sparkles,
+  ShoppingBag, Megaphone, Rocket, Copy, ArrowRightLeft, X, Sparkles, Trash2,
 } from 'lucide-react';
 import {
   useLandingSettingsQuery,
@@ -13,6 +13,7 @@ import {
   useProductCopyMutation,
   useProductMoveMutation,
 } from '@/data/integrations';
+import { useDeleteProductMutation } from '@/data/product';
 import LandingEditorModal from '@/components/product/landing-editor-modal';
 
 const C = {
@@ -81,6 +82,18 @@ export default function IndoProductList() {
   const rows: any[] = (data as any)?.data ?? [];
   const total = (data as any)?.total ?? 0;
   const lastPage = (data as any)?.last_page ?? 1;
+
+  const queryClient = useQueryClient();
+  const { mutate: deleteProduct } = useDeleteProductMutation();
+  function handleDelete(p: any) {
+    // Deleting a product is destructive, so confirm first. The mutation only
+    // invalidates the generic 'products' key, so also refetch this admin list.
+    if (typeof window !== 'undefined' && !window.confirm(`Delete “${p.title}”? This cannot be undone.`)) return;
+    deleteProduct(
+      { id: p.id },
+      { onSuccess: () => queryClient.invalidateQueries(['product-admin-list']) },
+    );
+  }
 
   const chips = [
     { id: 'all', label: 'All products' },
@@ -215,6 +228,7 @@ export default function IndoProductList() {
                         <button type="button" onClick={() => setShopModal({ product: p, mode: 'copy' })} title="Copy to a shop" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, cursor: 'pointer' }}><Copy size={15} color={C.sub} /></button>
                         <button type="button" onClick={() => setShopModal({ product: p, mode: 'move' })} title="Move to another shop" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, cursor: 'pointer' }}><ArrowRightLeft size={15} color={C.sub} /></button>
                         <a href={`https://indobangla.tech/products/${p.slug}`} target="_blank" rel="noreferrer" title="View" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}` }}><Eye size={15} color={C.sub} /></a>
+                        <button type="button" onClick={() => handleDelete(p)} title="Delete product" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.redSoft}`, background: C.redSoft, cursor: 'pointer' }}><Trash2 size={15} color={C.red} /></button>
                       </div>
                     </div>
                   </td>
