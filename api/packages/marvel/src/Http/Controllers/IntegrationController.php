@@ -907,6 +907,14 @@ class IntegrationController extends CoreController
         $amount  = $request->filled('amount_bdt') ? (float) $request->input('amount_bdt')
             : ($request->filled('amount') ? (float) $request->input('amount') : null);
         $purpose = (string) ($request->input('purpose') ?: $request->input('type') ?: 'full');
+        // COD / cash / pending orders carry paid_total = total by Pickbazar convention even
+        // though nothing was collected, which makes a pay-link's due zero and bKash reject it
+        // with "Invalid amount". Mirror the online-gateway stampPayLink path and zero it so the
+        // link can collect the real outstanding amount (settlePayment credits it back on pay).
+        if ((float) $order->paid_total >= (float) $order->total
+            && in_array($order->payment_status, ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'], true)) {
+            $order->paid_total = 0;
+        }
         $due = round((float) $order->total - (float) $order->paid_total);
         if ($amount !== null) {
             if ($amount > $due + 0.5) {

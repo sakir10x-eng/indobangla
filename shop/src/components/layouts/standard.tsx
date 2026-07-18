@@ -119,10 +119,7 @@ export default function Standard({ variables }: HomePageProps) {
         <AllBooksGrid />
       </LazyOnView>
 
-      <LazyOnView minHeight={200}>
-        {/* Buy-more-save-more moved to the end */}
-        <BuyMoreSaveMore />
-      </LazyOnView>
+      {/* Buy more, save more — hidden from the home page per request. */}
     </>
   );
 }
