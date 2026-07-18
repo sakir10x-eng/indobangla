@@ -22,6 +22,18 @@ import { useRouter } from 'next/router';
 import { AlignType } from 'rc-table/lib/interface';
 import { useState } from 'react';
 
+// Public per-parcel tracking pages, so a courier tracking id in the list links straight to the
+// courier's panel. Only couriers with a real track-by-id URL get a link; others show plain text.
+function courierTrackUrl(courier?: string, tid?: string): string | null {
+  if (!tid) return null;
+  const c = String(courier || '').toLowerCase();
+  const id = encodeURIComponent(tid);
+  if (c.includes('redx')) return `https://redx.com.bd/track-global-parcel/?trackingId=${id}`;
+  if (c.includes('steadfast')) return `https://steadfast.com.bd/t/${id}`;
+  if (c.includes('pathao')) return `https://merchant.pathao.com/tracking?consignment_id=${id}`;
+  return null;
+}
+
 type IProps = {
   orders: Order[] | undefined;
   paginatorInfo: MappedPaginatorInfo | null;
@@ -241,6 +253,31 @@ const OrderList = ({
         ) : (
           <span className="text-[11px] text-gray-400">Website</span>
         ),
+    },
+    {
+      title: 'Courier',
+      dataIndex: 'ops_meta',
+      key: 'courier_tracking',
+      align: 'center' as AlignType,
+      width: 160,
+      render: (ops: any) => {
+        const tid = ops?.courier_tracking_id;
+        if (!tid) return <span className="text-[11px] text-gray-400">—</span>;
+        const url = courierTrackUrl(ops?.courier, tid);
+        return url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            title="Track on the courier panel"
+            className="whitespace-nowrap font-mono text-[11px] font-semibold text-accent underline hover:text-accent-hover"
+          >
+            🔗 {tid}
+          </a>
+        ) : (
+          <span className="whitespace-nowrap font-mono text-[11px] text-gray-600">{tid}</span>
+        );
+      },
     },
     {
       title: t('table:table-item-status'),
