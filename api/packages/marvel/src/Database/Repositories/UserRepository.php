@@ -27,6 +27,7 @@ class UserRepository extends BaseRepository
     protected $fieldSearchable = [
         'name' => 'like',
         'email' => 'like',
+        'mobile_number' => 'like',
     ];
 
     /**
