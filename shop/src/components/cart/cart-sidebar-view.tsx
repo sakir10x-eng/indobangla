@@ -15,6 +15,7 @@ import { formatString } from '@/lib/format-string';
 import { useTranslation } from 'next-i18next';
 import { useAtom } from 'jotai';
 import { drawerAtom } from '@/store/drawer-atom';
+import { toast } from 'react-toastify';
 
 const CartSidebarView = () => {
   const { t } = useTranslation('common');
@@ -34,6 +35,26 @@ const CartSidebarView = () => {
     }
 
     closeSidebar({ display: false, view: '' });
+  }
+
+  // Build a self-contained share link — base64url(JSON [[slug, qty], …]) — so anyone opening it
+  // sees exactly these books and can add them / check out. No server-side cart storage needed.
+  function shareCart() {
+    if (!items.length) return;
+    const payload = items.map((it: any) => [it.slug, it.quantity]);
+    const code = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    const url = `${window.location.origin}/shared-cart?c=${code}`;
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(
+        () => toast.success('কার্ট শেয়ার লিংক কপি হয়েছে'),
+        () => window.prompt('লিংকটি কপি করুন:', url),
+      );
+    } else {
+      window.prompt('লিংকটি কপি করুন:', url);
+    }
   }
 
   const { price: totalPrice } = usePrice({
@@ -58,7 +79,7 @@ const CartSidebarView = () => {
       </header>
       {/* End of cart header */}
 
-      <motion.div layout className="grow pt-16 pb-20">
+      <motion.div layout className="grow pt-16 pb-36">
         {items.length > 0 ? (
           <>
             <CartPriceAlert />
@@ -85,6 +106,14 @@ const CartSidebarView = () => {
       {/* End of cart items */}
 
       <footer className="fixed bottom-0 z-10 w-full max-w-md bg-light px-6 py-5">
+        {items.length > 0 && (
+          <button
+            className="mb-2.5 flex h-11 w-full items-center justify-center gap-2 rounded-full border border-accent bg-light text-sm font-bold text-accent transition-colors hover:bg-accent hover:text-light"
+            onClick={shareCart}
+          >
+            🔗 কার্ট শেয়ার করুন
+          </button>
+        )}
         <button
           className="flex h-12 w-full justify-between rounded-full bg-accent p-1 text-sm font-bold shadow-700 transition-colors hover:bg-accent-hover focus:bg-accent-hover focus:outline-0 md:h-14"
           onClick={handleCheckout}
