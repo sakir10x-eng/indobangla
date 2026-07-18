@@ -140,8 +140,19 @@ class OrderController extends CoreController
             // }
 
             return DB::transaction(fn() => $this->repository->storeOrder($request, $this->settings));
-        } catch (MarvelException $th) {
-            throw new MarvelException(SOMETHING_WENT_WRONG, $th->getMessage());
+        } catch (\Throwable $th) {
+            // Order create used to swallow the real cause into a bare
+            // SOMETHING_WENT_WRONG, so failures were undiagnosable. Log the true
+            // reason server-side (all throwables, incl. DB/constraint errors),
+            // and surface a safe reason to the client — the business message for
+            // a MarvelException, generic otherwise so raw SQL never leaks.
+            \Illuminate\Support\Facades\Log::warning('order.store failed', [
+                'reason' => $th->getMessage(),
+                'type'   => get_class($th),
+                'at'     => $th->getFile() . ':' . $th->getLine(),
+            ]);
+            $reason = $th instanceof MarvelException ? $th->getMessage() : SOMETHING_WENT_WRONG;
+            throw new MarvelException(SOMETHING_WENT_WRONG, $reason);
         }
     }
 
