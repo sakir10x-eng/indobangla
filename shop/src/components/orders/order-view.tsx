@@ -97,11 +97,18 @@ function NextReads({ order }: { order: any }) {
     { staleTime: 5 * 60 * 1000, enabled: true },
   );
 
+  // Lead with books from the same category the reader just bought, then
+  // recommendations, then same-author — so suggestions match the genre.
+  const byCategory = ((data as any)?.by_category ?? []) as any[];
+  const catName =
+    firstProduct?.categories?.[0]?.name ??
+    byCategory?.[0]?.categories?.[0]?.name ??
+    null;
   const pool: any[] = firstId
     ? [
-        ...(((data as any)?.by_author ?? []) as any[]),
-        ...(((data as any)?.by_category ?? []) as any[]),
+        ...byCategory,
         ...(((data as any)?.recommended ?? []) as any[]),
+        ...(((data as any)?.by_author ?? []) as any[]),
       ]
     : ((data as any)?.data ?? []);
 
@@ -150,7 +157,9 @@ function NextReads({ order }: { order: any }) {
               পরের বইটা বেছে রাখুন
             </h2>
             <p className="sm muted">
-              যারা এই বইটি নিয়েছেন, তারা সাধারণত এগুলোও নেন।
+              {catName
+                ? `‘${catName}’ ঘরানার আরও বই — আপনার পছন্দের সাথে মিলিয়ে বাছাই`
+                : 'আপনি যে ধরনের বই নিয়েছেন, সেই ঘরানা থেকে বাছাই করা'}
             </p>
           </div>
           <div className="offers">
@@ -165,13 +174,6 @@ function NextReads({ order }: { order: any }) {
                   className={`offer card ${i === 0 ? 'featured' : ''}`}
                   key={p.id}
                 >
-                  {i === 0 ? (
-                    <span className="pill pill-red">সবচেয়ে জনপ্রিয়</span>
-                  ) : onSale ? (
-                    <span className="pill pill-ok">🏷 {off}% ছাড়</span>
-                  ) : (
-                    <span className="pill pill-warn">একই ধরনের</span>
-                  )}
                   <Link href={Routes.product(p.slug)} className="offer-cover">
                     {p.image?.original ? (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -179,21 +181,31 @@ function NextReads({ order }: { order: any }) {
                     ) : (
                       <span className="ocover-ph">📚</span>
                     )}
+                    {i === 0 ? (
+                      <span className="pill pill-red">জনপ্রিয়</span>
+                    ) : onSale ? (
+                      <span className="pill pill-ok">{off}% ছাড়</span>
+                    ) : null}
                   </Link>
-                  <Link href={Routes.product(p.slug)} className="offer-name">
-                    {p.name}
-                  </Link>
-                  <div className="offer-price">
-                    {bdt(onSale ? p.sale_price : p.price)}
-                    {onSale && <span className="was">{bdt(p.price)}</span>}
+                  <div className="offer-body">
+                    <Link
+                      href={Routes.product(p.slug)}
+                      className="offer-name"
+                    >
+                      {p.name}
+                    </Link>
+                    <div className="offer-price">
+                      {bdt(onSale ? p.sale_price : p.price)}
+                      {onSale && <span className="was">{bdt(p.price)}</span>}
+                    </div>
+                    <button
+                      className={`btn ${i === 0 ? 'btn-red' : ''}`}
+                      onClick={() => add(p)}
+                      disabled={inCart}
+                    >
+                      {inCart ? '✓ কার্টে আছে' : '🛒 কার্টে যোগ'}
+                    </button>
                   </div>
-                  <button
-                    className={`btn ${i === 0 ? 'btn-red' : ''}`}
-                    onClick={() => add(p)}
-                    disabled={inCart}
-                  >
-                    {inCart ? '✓ কার্টে আছে' : '🛒 কার্টে যোগ করুন'}
-                  </button>
                 </div>
               );
             })}
@@ -282,31 +294,56 @@ function NextReads({ order }: { order: any }) {
         }
         .offers {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-          gap: 14px;
+          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+          gap: 12px;
         }
         .offer {
           margin: 0;
           display: flex;
-          flex-direction: column;
-          padding: 14px;
+          flex-direction: row;
+          align-items: stretch;
+          gap: 14px;
+          padding: 12px;
+          transition: box-shadow 0.2s ease, transform 0.2s ease,
+            border-color 0.2s ease;
+        }
+        .offer:hover {
+          box-shadow: 0 8px 22px rgba(40, 30, 20, 0.1);
+          transform: translateY(-2px);
         }
         .offer.featured {
-          border: 2px solid var(--red);
+          border-color: var(--red);
+          box-shadow: inset 3px 0 0 var(--red);
         }
         .offer-cover {
-          height: 120px;
-          margin: 12px 0;
-          border-radius: 6px;
+          position: relative;
+          flex: 0 0 84px;
+          width: 84px;
+          height: 116px;
+          border-radius: 8px;
           background: linear-gradient(150deg, #f3efe8, #e6ded2);
           display: flex;
           align-items: center;
           justify-content: center;
           overflow: hidden;
         }
+        .offer-cover .pill {
+          position: absolute;
+          top: 6px;
+          left: 6px;
+          font-size: 10.5px;
+          padding: 2px 7px;
+          box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+        }
+        .offer-body {
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+          flex: 1;
+        }
         .offer-name {
-          font-size: 13.5px;
-          font-weight: 500;
+          font-size: 14px;
+          font-weight: 600;
           line-height: 1.4;
           color: var(--ink);
           text-decoration: none;
@@ -320,9 +357,9 @@ function NextReads({ order }: { order: any }) {
         }
         .offer-price {
           margin-top: auto;
-          padding-top: 10px;
+          padding-top: 8px;
           font-family: 'Playfair Display', Georgia, serif;
-          font-size: 16px;
+          font-size: 17px;
           font-weight: 700;
         }
         .offer-price .was {
@@ -334,7 +371,9 @@ function NextReads({ order }: { order: any }) {
           font-family: 'Hind Siliguri', sans-serif;
         }
         .offer .btn {
-          margin-top: 10px;
+          margin-top: 8px;
+          padding: 7px 10px;
+          font-size: 12.5px;
         }
         .browse {
           display: grid;

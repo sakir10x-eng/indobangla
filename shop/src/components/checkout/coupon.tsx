@@ -42,6 +42,18 @@ const Coupon = ({ theme, subtotal }: { theme?: 'dark'; subtotal: number }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subtotal]);
 
+  // Keep an applied coupon honest. When the cart changes — items removed or
+  // quantities lowered — re-check the coupon against the new subtotal. If the
+  // cart no longer meets its minimum, the API returns is_valid:false with no
+  // coupon, and useVerifyCoupon's applyCoupon() drops the discount. Without
+  // this, a discount earned with (say) BULK3 stuck around after the qualifying
+  // items were deleted.
+  useEffect(() => {
+    if (!coupon?.code || !subtotal) return;
+    verifyCoupon({ code: coupon.code, sub_total: subtotal, item: items });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subtotal, items?.length]);
+
   if (!hasCoupon && !coupon) {
     return (
       <p
