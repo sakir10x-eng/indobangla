@@ -934,16 +934,31 @@ class IntegrationController extends CoreController
         // pay_amount and force pay_purpose='full' — which silently turned a 50% pre-order
         // advance into a full-price bKash bill, because bkashCreate falls back to
         // $order->total when pay_amount is gone.
+        // bKash service charge: when the desk opts to pass the gateway fee on to the buyer,
+        // add bKash's standard 1.85% to what the link collects and record the split so
+        // /pay/{token} can show an itemised bill (book amount + bKash charge).
+        $payBase = (float) ($ops['pay_amount'] ?? $due);
+        if ($request->boolean('bkash_charge') && $payBase > 0) {
+            $charge = (int) round($payBase * 1.85 / 100);
+            $ops['bkash_charge'] = $charge;
+            $ops['bkash_charge_base'] = (int) round($payBase);
+            $ops['pay_amount'] = (int) round($payBase + $charge);
+        } else {
+            unset($ops['bkash_charge'], $ops['bkash_charge_base']);
+        }
+
         $order->ops_meta = $ops;
         $order->saveQuietly();
 
         $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
         return [
-            'status'     => 'success',
-            'token'      => $ops['pay_token'],
-            'pay_link'   => $base . '/pay/' . $ops['pay_token'],
-            'amount_bdt' => $ops['pay_amount'] ?? $due,
-            'purpose'    => $ops['pay_purpose'],
+            'status'       => 'success',
+            'token'        => $ops['pay_token'],
+            'pay_link'     => $base . '/pay/' . $ops['pay_token'],
+            'amount_bdt'   => $ops['pay_amount'] ?? $due,
+            'bkash_charge' => $ops['bkash_charge'] ?? 0,
+            'base_bdt'     => $ops['bkash_charge_base'] ?? ($ops['pay_amount'] ?? $due),
+            'purpose'      => $ops['pay_purpose'],
         ];
     }
 
@@ -997,6 +1012,8 @@ class IntegrationController extends CoreController
                 'customer_name'   => $order->customer_name,
                 'total'           => (float) $order->total,
                 'pay_amount'      => $payAmount,
+                'bkash_charge'      => (int) ($ops['bkash_charge'] ?? 0),
+                'bkash_charge_base' => isset($ops['bkash_charge_base']) ? (int) $ops['bkash_charge_base'] : null,
                 'pay_purpose'     => $isAdvance ? 'advance' : 'full',
                 'already_paid'    => (float) $order->paid_total,
                 'due'             => round((float) $order->total - (float) $order->paid_total),
@@ -2966,6 +2983,7 @@ class IntegrationController extends CoreController
         // Aggregate order figures grouped by coupon_id in a single query.
         $stats = Order::query()
             ->whereNotNull('coupon_id')
+            ->where('order_status', '!=', \Marvel\Enums\OrderStatus::VOID) // void = test/dead, out of coupon stats
             ->selectRaw('coupon_id, COUNT(*) as uses, COALESCE(SUM(total),0) as sales, COALESCE(SUM(discount),0) as discount_given')
             ->groupBy('coupon_id')
             ->get()
@@ -6151,9 +6169,11 @@ class IntegrationController extends CoreController
                     'reason' => $data['reason'] ?? null,
                 ];
                 $order->ops_meta = $ops;
-                // Void = cancel the order (per request): status becomes order-cancelled — which
-                // (like void/refunded) releases the committed stock via the model's updated hook.
-                $order->order_status = OrderStatus::CANCELLED;
+                // Void = a test/dead order: keep the dedicated order-void status so every
+                // statistics query (which already excludes VOID) leaves it out, while the board
+                // labels it "Canceled" for the desk. VOID releases the committed stock via the
+                // model's updated hook, same as cancelled/refunded.
+                $order->order_status = OrderStatus::VOID;
                 // Voiding is the desk saying "this was never a real order", so it leaves the
                 // working list at the same moment — that is what auto-archive means here.
                 $order->archived_at = now();

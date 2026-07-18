@@ -103,7 +103,7 @@ class AnalyticsController extends CoreController
             }
 
             // total orders
-            $totalOrdersQuery = DB::table('orders')->whereDate('created_at', '<=', Carbon::now());
+            $totalOrdersQuery = DB::table('orders')->whereDate('created_at', '<=', Carbon::now())->where('order_status', '!=', 'order-void');
             if ($user && $user->hasPermissionTo(Permission::SUPER_ADMIN)) {
                 $totalOrders = $totalOrdersQuery->where('parent_id', null)->count();
             } else {
@@ -199,6 +199,7 @@ class AnalyticsController extends CoreController
                 $query =  DB::table('orders as A')
                     ->where('A.parent_id', '=', null)
                     ->whereDate('A.created_at', '>', Carbon::now()->subDays($days))
+                    ->where('A.order_status', '!=', 'order-void')
                     ->select(
                         'A.order_status',
                         DB::raw('count(*) as order_count')
@@ -212,6 +213,7 @@ class AnalyticsController extends CoreController
                 $query =  DB::table('orders as A')
                     ->where('A.parent_id', '!=', null)
                     ->whereDate('A.created_at', '>', Carbon::now()->subDays($days))
+                    ->where('A.order_status', '!=', 'order-void')
                     ->whereIn('A.shop_id', $shops)
                     ->select(
                         'A.order_status',
@@ -226,6 +228,7 @@ class AnalyticsController extends CoreController
                 $query =  DB::table('orders as A')
                     ->where('A.parent_id', '!=', null)
                     ->whereDate('A.created_at', '>', Carbon::now()->subDays($days))
+                    ->where('A.order_status', '!=', 'order-void')
                     ->where('A.shop_id', '=', $shop)
                     ->select(
                         'A.order_status',
