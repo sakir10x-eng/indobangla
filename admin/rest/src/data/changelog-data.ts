@@ -13,6 +13,24 @@ export type Release = {
 
 export const RELEASES: Release[] = [
   {
+    version: '2026.07.18',
+    date: '18 Jul 2026',
+    title: 'OTP login, pay & invoice links, courier tracking, order fixes',
+    items: [
+      { type: 'added', text: 'Admin login is now protected by a two-step SMS OTP with a 3-day session — pick the primary or backup number to receive the code' },
+      { type: 'added', text: 'Order board: copy the online-payment (bKash) link straight from a card, with an optional bKash 1.85% service-charge box' },
+      { type: 'added', text: 'Shareable invoice link — send the customer a link to view / print their invoice (🧾 button on the board and order view, and a new /invoice page)' },
+      { type: 'added', text: 'Order list: the courier tracking id is now a clickable link that opens the parcel status on the courier panel (RedX etc.)' },
+      { type: 'added', text: 'Invoice print now shows each book’s publisher/manufacturer, and for an advance order an “Advance Paid / Due on Delivery” split' },
+      { type: 'added', text: 'Weight charge field is back in the order’s Payment adjustment box' },
+      { type: 'improved', text: 'New orders start as Pending; Void now marks an order as a dead/test order and excludes it from every statistic' },
+      { type: 'improved', text: 'POS Create-order opens fresh every time (no leftover customer or cart); cart items gained a Refresh and Edit-in-new-tab button' },
+      { type: 'improved', text: 'The /pay link now shows any advance already paid and the real remaining amount due' },
+      { type: 'fixed', text: 'An advance / partial payment no longer shows the order as “fully paid” — the advance is respected and the rest stays due' },
+      { type: 'fixed', text: 'Stock was being deducted twice per order — it now decrements exactly once, and Void fully restores it' },
+    ],
+  },
+  {
     version: '2026.07.15',
     date: '15 Jul 2026',
     title: 'Product tools, landing pages, security & speed',
