@@ -56,7 +56,7 @@ export default function CategoryTypeFilter({
   });
 
   const { authors, loading: authorLoading } = useAuthorsQuery({
-    limit: 999,
+    limit: 100000,
     language: locale,
   });
 

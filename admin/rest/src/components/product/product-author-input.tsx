@@ -15,7 +15,7 @@ const ProductAuthorInput = ({ control }: Props) => {
   const { t } = useTranslation();
 
   const { authors, loading } = useAuthorsQuery({
-    limit: 1000,
+    limit: 100000,
     is_approved: true,
     language: locale,
   });
