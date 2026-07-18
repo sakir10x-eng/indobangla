@@ -90,10 +90,13 @@ export const userClient = {
 
   fetchUsers: ({ name, ...params }: Partial<UserQueryOptions>) => {
     return HttpClient.get<UserPaginator>(API_ENDPOINTS.USERS, {
-      searchJoin: 'and',
+      // The users search box is used for both names and phone numbers, so match
+      // name OR mobile_number (searchJoin 'or') using the same term. Without this
+      // only `name` was searched, so a phone number never found anyone.
+      searchJoin: 'or',
       with: 'wallet',
       ...params,
-      search: HttpClient.formatSearchParams({ name }),
+      search: HttpClient.formatSearchParams({ name, mobile_number: name }),
     });
   },
   fetchAdmins: ({ ...params }: Partial<UserQueryOptions>) => {
