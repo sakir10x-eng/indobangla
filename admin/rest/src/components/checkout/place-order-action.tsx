@@ -94,6 +94,9 @@ export const PlaceOrderAction: React.FC<{
       coupon_id: Number(coupon?.id),
       discount: finalDiscount,
       paid_total: paidTotal,
+      // Explicit advance signal for the backend — it collects only this now and leaves the rest
+      // due, instead of forcing paid_total to the full total (COD convention).
+      advance_paid: Number(advancePaid) > 0 ? Number(advancePaid) : undefined,
       sales_tax: verified_response?.total_tax,
       delivery_fee: verified_response?.shipping_charge,
       total,

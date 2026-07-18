@@ -198,6 +198,8 @@ Route::delete('products/{id}/force', [IntegrationController::class, 'forceDelete
 // Pay-by-link: public info + confirm (token-authed), admin link generation
 Route::get('pay-info', [IntegrationController::class, 'payInfo']);
 Route::post('pay-confirm', [IntegrationController::class, 'payConfirm']);
+// Public read-only invoice behind /invoice/{token}. Guarded by a stable per-order token.
+Route::get('invoice-info', [IntegrationController::class, 'invoiceInfo']);
 // Manual bank transfer: buyer uploads the counter slip. Public but pay-token guarded, and
 // it only parks the file for review — an admin credits the payment via order-ops.
 Route::post('pay-bank-proof', [IntegrationController::class, 'payBankProof']);
@@ -334,6 +336,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('order-adjust', [IntegrationController::class, 'adjustOrder'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // IndoBangla pay-by-link generation (admin).
     Route::post('order-pay-link', [IntegrationController::class, 'orderPayLink'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    // IndoBangla shareable invoice-link generation (admin).
+    Route::post('order-invoice-link', [IntegrationController::class, 'orderInvoiceLink'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // Reader's Club settings (fee / discount %) — super-admin.
     Route::get('club-settings', [IntegrationController::class, 'clubSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('club-settings', [IntegrationController::class, 'clubSettings'])->middleware('can:' . Permission::SUPER_ADMIN);

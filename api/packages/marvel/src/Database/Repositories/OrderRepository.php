@@ -434,8 +434,19 @@ class OrderRepository extends BaseRepository
         // Hand the gift back, unrounded, so it cancels the gift line in `amount` exactly.
         $request['discount'] += $giftValue;
 
-        $request['paid_total'] = $request['amount'] + $request['sales_tax'] + $request['delivery_fee'] -  $request['discount'];
-        $request['total'] = $request['paid_total'];
+        // The total is computed server-side so the client can't understate the bill.
+        $computedTotal = round($request['amount'] + $request['sales_tax'] + $request['delivery_fee'] - $request['discount'], 2);
+        $request['total'] = $computedTotal;
+        // #B — respect a partial advance. The POS/admin can collect only part of the bill up
+        // front; that smaller figure is the real paid_total and the rest stays due. The advance
+        // is signalled explicitly with `advance_paid` (never inferred from paid_total, which for
+        // a normal order equals the total and would misfire on a manual adjustment). Otherwise
+        // fall back to the full total — Pickbazar's settled-COD convention, so an ordinary order
+        // isn't flagged as owing money.
+        $advance = isset($request['advance_paid']) ? round((float) $request['advance_paid'], 2) : null;
+        $request['paid_total'] = ($advance !== null && $advance > 0 && $advance < $computedTotal)
+            ? $advance
+            : $computedTotal;
         if (($useWalletPoints || $request->isFullWalletPayment) && $user) {
             $wallet = $user->wallet;
             $amount = null;

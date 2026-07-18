@@ -228,7 +228,7 @@ class Order extends Model
     // off it — anything printing or collecting money needs both numbers to know what is
     // actually owed in cash. The order list only eager-loads `children`, so without this the
     // printed slip would silently ask for the full amount.
-    protected $with = ['customer', 'products.variation_options', 'wallet_point'];
+    protected $with = ['customer', 'products.variation_options', 'products.manufacturer', 'wallet_point'];
 
     /**
      * @return belongsToMany

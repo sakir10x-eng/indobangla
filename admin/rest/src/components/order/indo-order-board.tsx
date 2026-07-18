@@ -304,6 +304,27 @@ function OrderCard({ o, act, busy, coupon }: any) {
       setLinking(false);
     }
   }
+  // Mint + copy the shareable invoice link — the buyer opens it to view their invoice without
+  // the order being touched. The token is stable, so a sent link keeps working.
+  const [invLinking, setInvLinking] = useState(false);
+  async function copyInvoiceLink() {
+    setInvLinking(true);
+    try {
+      const r: any = await HttpClient.post('order-invoice-link', { order_id: o._id });
+      if (r?.invoice_link) {
+        try {
+          await navigator.clipboard.writeText(r.invoice_link);
+        } catch {}
+        toast.success('Invoice link copied.');
+      } else {
+        toast.error('Could not create the invoice link.');
+      }
+    } catch {
+      toast.error('Could not create the invoice link.');
+    } finally {
+      setInvLinking(false);
+    }
+  }
   const ag = aging(o);
   const st = STATUS[o.bucket];
   const attn = needsAttention(o);
@@ -671,6 +692,14 @@ function OrderCard({ o, act, busy, coupon }: any) {
                   title="Create & copy the online payment (bKash) link for this order"
                 >
                   🔗 {linking ? '…' : 'Pay link'}
+                </button>
+                <button
+                  onClick={copyInvoiceLink}
+                  disabled={invLinking}
+                  className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-60"
+                  title="Create & copy a shareable invoice link the buyer can open to view their invoice"
+                >
+                  🧾 {invLinking ? '…' : 'Invoice'}
                 </button>
               </div>
             </div>

@@ -276,6 +276,19 @@ export default function OrderDetailsPage() {
     }
   };
 
+  // Generate + copy a shareable invoice link — the buyer opens it to view their invoice.
+  const copyInvoiceLink = async () => {
+    try {
+      const r: any = await HttpClient.post('order-invoice-link', { order_id: order.id });
+      if (r?.invoice_link) {
+        try { await navigator.clipboard.writeText(r.invoice_link); } catch {}
+        toast.success('Invoice link copied: ' + r.invoice_link);
+      }
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'Could not create invoice link');
+    }
+  };
+
   // Generate the styled invoice in a print window (fixes blank download + full-page print).
   const openInvoice = () => {
     const addr: any = order.shipping_address || {};
@@ -286,12 +299,14 @@ export default function OrderDetailsPage() {
       address: [addr.street_address, addr.city, addr.state].filter(Boolean).join(', '),
       items: (products || []).map((p: any) => ({
         title: p.name,
+        manufacturer: p?.manufacturer?.name || '',
         qty: p?.pivot?.order_quantity || 1,
         price: Number(p?.pivot?.subtotal ?? p?.pivot?.unit_price ?? p.price) || 0,
       })),
       delivery: Number(order.delivery_fee) || 0,
       discount: Number(order.discount) || 0,
       total: Number(order.total) || 0,
+      paidTotal: Number(order.paid_total) || 0,
       walletPoints: Number((order as any).wallet_point?.amount) || 0,
       paid: order.payment_status === 'payment-success' || Number(order.paid_total) >= Number(order.total),
       createdAt: order.created_at,
@@ -758,6 +773,9 @@ export default function OrderDetailsPage() {
               </button>
               <button onClick={copyPayLink} className="col-span-2 flex items-center justify-center gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-[11px] font-semibold text-emerald-700 hover:border-emerald-400">
                 <span className="text-lg">🔗</span>Copy online-payment link
+              </button>
+              <button onClick={copyInvoiceLink} className="col-span-2 flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] font-semibold text-slate-700 hover:border-slate-400">
+                <span className="text-lg">🧾</span>Copy invoice link
               </button>
             </div>
           </div>

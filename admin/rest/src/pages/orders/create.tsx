@@ -35,6 +35,7 @@ import {
   adjustmentAtom,
   advancePaidAtom,
   orderNoteAtom,
+  clearCheckoutAtom,
 } from '@/contexts/checkout';
 
 const tk = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-US');
@@ -106,6 +107,19 @@ export default function CreateOrderPage() {
   const [adjustment, setAdjustment] = useAtom(adjustmentAtom);
   const [advancePaid, setAdvancePaid] = useAtom(advancePaidAtom);
   const [note, setNote] = useAtom(orderNoteAtom);
+  const [, clearCheckout] = useAtom(clearCheckoutAtom);
+
+  // Start every visit to the POS with a clean slate. The checkout state is persisted in
+  // localStorage, so without this the previous buyer's name / contact / address / advance
+  // (and a stale cart) would linger into the next order. Runs once per mount.
+  const didReset = useRef(false);
+  useEffect(() => {
+    if (didReset.current) return;
+    didReset.current = true;
+    clearCheckout();
+    resetCart();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- local UI state ----
   const [custQ, setCustQ] = useState('');

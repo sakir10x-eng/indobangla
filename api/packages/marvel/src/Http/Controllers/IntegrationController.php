@@ -970,6 +970,85 @@ class IntegrationController extends CoreController
         return Order::whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.pay_token')) = ?", [$token])->first();
     }
 
+    /**
+     * Admin: mint (once) a stable, non-expiring invoice link the desk can send so the buyer can
+     * view their invoice without opening the order. Unlike the pay token this never rotates, so
+     * a link shared today keeps working.
+     */
+    public function orderInvoiceLink(Request $request)
+    {
+        $order = Order::findOrFail($request->order_id);
+        $ops = (array) ($order->ops_meta ?? []);
+        if (empty($ops['invoice_token'])) {
+            $ops['invoice_token'] = 'inv_' . Str::random(24);
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+        }
+        $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.bd', '/');
+        return [
+            'status'        => 'success',
+            'invoice_token' => $ops['invoice_token'],
+            'invoice_link'  => $base . '/invoice/' . $ops['invoice_token'],
+        ];
+    }
+
+    /** Public: the read-only invoice behind /invoice/{token}. Always viewable — paid or not. */
+    public function invoiceInfo(Request $request)
+    {
+        $token = (string) $request->input('token', '');
+        $order = $token === ''
+            ? null
+            : Order::whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.invoice_token')) = ?", [$token])->first();
+        if (!$order) {
+            throw new MarvelException('Invoice not found.');
+        }
+        $order->loadMissing('products');
+        $ops = (array) ($order->ops_meta ?? []);
+        $paid = $order->payment_status === 'payment-success' || (float) $order->paid_total >= (float) $order->total;
+        // Surface a live pay link only while one is genuinely payable (unpaid + not expired), so
+        // the invoice can carry a "Pay now" button for a due amount without ever reviving a dead
+        // link.
+        $payLink = null;
+        if (!$paid && !empty($ops['pay_token'])) {
+            $expired = !empty($ops['pay_expires_at']) && now()->gt(Carbon::parse($ops['pay_expires_at']));
+            if (!$expired) {
+                $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.bd', '/');
+                $payLink = $base . '/pay/' . $ops['pay_token'];
+            }
+        }
+        $opts = (array) (Settings::getData()->options ?? []);
+        return [
+            'status'  => 'success',
+            'invoice' => [
+                'tracking_number' => $order->tracking_number,
+                'customer_name'   => $order->customer_name,
+                'customer_contact' => $order->customer_contact,
+                'shipping_address' => $order->shipping_address,
+                'placed_at'       => optional($order->created_at)->format('j M Y'),
+                'order_status'    => $order->order_status,
+                'payment_status'  => $order->payment_status,
+                'paid'            => $paid,
+                'subtotal'        => (float) $order->amount,
+                'delivery_fee'    => (float) $order->delivery_fee,
+                'discount'        => (float) $order->discount,
+                'total'           => (float) $order->total,
+                'paid_total'      => (float) $order->paid_total,
+                'due'             => round((float) $order->total - (float) $order->paid_total),
+                'pay_method'      => $ops['pay_method'] ?? null,
+                'pay_link'        => $payLink,
+                'items'           => $order->products->map(fn ($p) => [
+                    'name'         => $p->name,
+                    'manufacturer' => optional($p->manufacturer)->name,
+                    'quantity'     => (int) ($p->pivot->order_quantity ?? 0),
+                    'price'        => (float) ($p->pivot->subtotal ?? $p->pivot->unit_price ?? 0),
+                ]),
+            ],
+            'shop' => [
+                'name' => $opts['siteTitle'] ?? 'IndoBangla',
+            ],
+        ];
+    }
+
     /** Public: order summary + payment methods + current payment state for the pay page. */
     public function payInfo(Request $request)
     {

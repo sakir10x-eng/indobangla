@@ -37,6 +37,12 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   const payable = Math.max(0, total - walletPaid);
   const qtyTotal = items.reduce((s, it) => s + (Number(it.qty) || 0), 0);
   const paid = !!o.paid;
+  // An advance collected up front: the courier then only collects the remainder. Only treat it
+  // as an advance when it is a genuine partial (0 < paid < payable), so a fully-paid or plain
+  // COD slip is unaffected.
+  const advancePaid = Number(o.paidTotal) || 0;
+  const isPartial = !paid && advancePaid > 0 && advancePaid < payable - 0.5;
+  const dueNow = Math.max(0, payable - advancePaid);
   const placed = o.createdAt
     ? new Date(o.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
     : '';
@@ -54,7 +60,7 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
       (it, i) => `
       <tr>
         <td class="c-idx">${i + 1}</td>
-        <td class="c-book"><b>${esc(it.title)}</b></td>
+        <td class="c-book"><b>${esc(it.title)}</b>${it.manufacturer ? `<div class="c-mfr">${esc(it.manufacturer)}</div>` : ''}</td>
         <td class="c-qty">${esc(it.qty)}</td>
         <td class="c-total">${bdt(it.price)}</td>
       </tr>`,
@@ -97,6 +103,7 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   thead th{background:var(--parchment);color:var(--ink-soft);text-align:left;font-size:9px;text-transform:uppercase;letter-spacing:.5px;padding:2.5mm 3mm;border-bottom:2px solid var(--red);}
   tbody td{padding:2.6mm 3mm;border-bottom:1px solid var(--line);vertical-align:top;}
   .c-idx{width:8mm;color:var(--ink-soft);}.c-qty{width:14mm;text-align:center;}.c-total{width:26mm;text-align:right;font-weight:700;}
+  .c-mfr{margin-top:.6mm;font-size:8.5px;color:var(--ink-soft);font-weight:600;}
   .badges{display:flex;gap:4mm;margin-top:3mm;font-size:8.5px;color:var(--green);font-weight:600;}
   .quote{margin-top:3mm;font-style:italic;font-size:9px;color:var(--gold);}
   .totals{margin-top:4mm;margin-left:auto;width:70mm;font-size:10.5px;}
@@ -129,7 +136,9 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
     <div class="meta">
       <div class="order-no">Order #<span>${esc(o.id)}</span></div>
       <div>Invoice Date: ${today}</div>
-      <div class="pay-pill ${paid ? 'pay-paid' : 'pay-cod'}">${paid ? '● PAID' : '● CASH ON DELIVERY'}</div>
+      ${isPartial
+        ? `<div class="pay-pill pay-cod">● ADVANCE PAID · ${bdt(dueNow)} DUE</div>`
+        : `<div class="pay-pill ${paid ? 'pay-paid' : 'pay-cod'}">${paid ? '● PAID' : '● CASH ON DELIVERY'}</div>`}
     </div>
   </div>
   <div class="divider"></div>
@@ -162,7 +171,11 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
     ${discount ? `<div class="row">Discount <b>- ${bdt(discount)}</b></div>` : ''}
     <div class="row">Delivery Fee <b>${bdt(delivery)}</b></div>
     ${walletPaid ? `<div class="row">Wallet Points Used <b>- ${bdt(walletPaid)}</b></div>` : ''}
-    <div class="row grand"><span>Total Payable</span><span>${bdt(payable)}</span></div>
+    ${isPartial
+      ? `<div class="row">Total <b>${bdt(payable)}</b></div>
+    <div class="row">Advance Paid <b style="color:var(--green);">- ${bdt(advancePaid)}</b></div>
+    <div class="row grand"><span>Due on Delivery</span><span>${bdt(dueNow)}</span></div>`
+      : `<div class="row grand"><span>Total Payable</span><span>${bdt(payable)}</span></div>`}
   </div>
   <div style="margin-top:2mm;display:flex;gap:5mm;align-items:center;">
     <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=https%3A%2F%2Findobangla.tech%2Forders" alt="QR" style="width:20mm;height:20mm;flex-shrink:0;" />
