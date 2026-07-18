@@ -106,6 +106,12 @@ export default function PayPage() {
   const advanceOption = Number(order?.advance_option) || 0;
   const isAdvanceLink = advanceOption > 0 && advanceOption < Number(dueAmount);
   const payNow = isAdvanceLink && !payFull ? advanceOption : dueAmount;
+  // bKash service charge: the desk can pass bKash's 1.85% on to the buyer. It only applies when
+  // paying by bKash, and is recomputed off whatever the buyer picks (advance/full) so it matches
+  // what the gateway will actually collect (payConfirm re-stamps the same figure server-side).
+  const bkashChargeOn = (Number(order?.bkash_charge) || 0) > 0;
+  const bkashChargeNow = bkashChargeOn && method === 'bkash' ? Math.round(Number(payNow) * 1.85 / 100) : 0;
+  const payTotal = Number(payNow) + bkashChargeNow;
   const bank = info?.bank ?? null;
   const bankProofPending = order?.bank_proof?.status === 'pending_review' || proofSubmitted;
   const bankProofRejected = order?.bank_proof?.status === 'rejected' && !proofSubmitted;
@@ -301,9 +307,21 @@ export default function PayPage() {
                       </div>
                     )
                   ) : (
-                    <button onClick={pay} disabled={paying} style={{ width: '100%', marginTop: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: 'linear-gradient(135deg,#d43a2b,#b02a1e)', color: '#fff', fontWeight: 700, fontSize: 17, padding: 16, borderRadius: 14, boxShadow: '0 10px 24px rgba(212,58,43,.30)', opacity: paying ? 0.7 : 1 }}>
-                      {paying ? 'প্রসেস হচ্ছে…' : `${methodName}ে ${bdt(payNow)} ${order.pay_purpose === 'advance' ? 'অগ্রিম ' : ''}পরিশোধ করুন`}
-                    </button>
+                    <>
+                      {bkashChargeNow > 0 && (
+                        <div style={{ marginTop: 16, borderRadius: 12, background: '#fff7ed', border: '1px solid #f2d79a', padding: '10px 14px' }}>
+                          <Row label={isAdvanceLink && !payFull ? 'অগ্রিম' : 'বই / অর্ডার'} value={bdt(payNow)} />
+                          <Row label="বিকাশ চার্জ (১.৮৫%)" value={'+ ' + bdt(bkashChargeNow)} />
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px dashed #f2d79a', marginTop: 6, paddingTop: 8 }}>
+                            <span style={{ fontSize: 13.5, fontWeight: 800, color: '#9a3412' }}>বিকাশে দিতে হবে</span>
+                            <span style={{ fontSize: 18, fontWeight: 800, color: '#9a3412' }}>{bdt(payTotal)}</span>
+                          </div>
+                        </div>
+                      )}
+                      <button onClick={pay} disabled={paying} style={{ width: '100%', marginTop: bkashChargeNow > 0 ? 12 : 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: 'linear-gradient(135deg,#d43a2b,#b02a1e)', color: '#fff', fontWeight: 700, fontSize: 17, padding: 16, borderRadius: 14, boxShadow: '0 10px 24px rgba(212,58,43,.30)', opacity: paying ? 0.7 : 1 }}>
+                        {paying ? 'প্রসেস হচ্ছে…' : `${methodName}ে ${bdt(payTotal)} ${order.pay_purpose === 'advance' ? 'অগ্রিম ' : ''}পরিশোধ করুন`}
+                      </button>
+                    </>
                   )}
                   <div style={{ textAlign: 'center', color: '#7a6f66', fontSize: 12.5, marginTop: 14 }}>
                     🔒 নিরাপদ পেমেন্ট · IndoBangla · ১০০% অরিজিনাল বইয়ের নিশ্চয়তা

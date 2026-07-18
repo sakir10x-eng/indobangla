@@ -60,7 +60,32 @@ export default function CreateOrderPage() {
     addItemToCart,
     removeItemFromCart,
     clearItemFromCart,
+    resetCart,
   } = useCart() as any;
+  const [refreshing, setRefreshing] = useState(false);
+  // Re-pull each cart line's live product (price / stock / name) so an edit made in
+  // another tab shows up here without rebuilding the order. Quantities are preserved.
+  async function refreshItems() {
+    if (!items?.length || refreshing) return;
+    setRefreshing(true);
+    try {
+      const fresh: { item: any; qty: number }[] = [];
+      for (const it of items) {
+        try {
+          const p: any = await HttpClient.get(`products/${it.slug}`, {
+            language: locale,
+          });
+          fresh.push({ item: generateCartItem(p, {} as any), qty: it.quantity });
+        } catch {
+          fresh.push({ item: it, qty: it.quantity });
+        }
+      }
+      resetCart();
+      fresh.forEach((f) => addItemToCart(f.item, f.qty));
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   // ---- checkout atoms (feed the tested PlaceOrderAction payload) ----
   const [customer, setCustomer] = useAtom(customerAtom);
@@ -474,6 +499,18 @@ export default function CreateOrderPage() {
               <div className="card-hd">
                 <span className="ico">▤</span>
                 <h2>Items</h2>
+                {items?.length ? (
+                  <button
+                    type="button"
+                    className="refresh-btn"
+                    onClick={refreshItems}
+                    disabled={refreshing}
+                    title="Refresh prices & stock from the products"
+                  >
+                    <span className={refreshing ? 'spin' : ''}>↻</span>{' '}
+                    {refreshing ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                ) : null}
                 <span className="hd-note">Search to add</span>
               </div>
               <div className="search">
@@ -557,6 +594,16 @@ export default function CreateOrderPage() {
                       <span className="line-total">
                         {tk(i.price * i.quantity)}
                       </span>
+                      <a
+                        className="edit-item"
+                        href={`/products/${i.slug}/edit`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Edit this product (opens in a new tab)"
+                        aria-label="Edit product"
+                      >
+                        ✎
+                      </a>
                       <button
                         className="del"
                         onClick={() => clearItemFromCart(i.id)}
@@ -1201,6 +1248,48 @@ export default function CreateOrderPage() {
         .del:hover {
           color: var(--red);
           background: var(--red-tint);
+        }
+        .edit-item {
+          border: none;
+          background: none;
+          color: var(--ink-3);
+          cursor: pointer;
+          font-size: 14px;
+          padding: 2px 4px;
+          border-radius: 4px;
+          text-decoration: none;
+          line-height: 1;
+        }
+        .edit-item:hover {
+          color: var(--red);
+          background: var(--paper);
+        }
+        .refresh-btn {
+          margin-left: 10px;
+          border: 1px solid var(--line);
+          background: var(--card);
+          color: var(--red);
+          cursor: pointer;
+          font-size: 12px;
+          font-weight: 700;
+          padding: 3px 10px;
+          border-radius: 999px;
+        }
+        .refresh-btn:hover:not(:disabled) {
+          background: var(--paper);
+        }
+        .refresh-btn:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
+        .refresh-btn .spin {
+          display: inline-block;
+          animation: ib-spin 0.8s linear infinite;
+        }
+        @keyframes ib-spin {
+          to {
+            transform: rotate(360deg);
+          }
         }
         .empty {
           text-align: center;

@@ -7,6 +7,8 @@ import {
   useOrderLifecycleMutation,
 } from '@/data/order-ops';
 import Link from '@/components/ui/link';
+import { toast } from 'react-toastify';
+import { HttpClient } from '@/data/client/http-client';
 import { printInvoice, type InvoiceCoupon } from './print-invoice';
 import { useCreateShipmentMutation } from '@/data/courier-order';
 import { useSettingsQuery, useUpdateSettingsMutation } from '@/data/settings';
@@ -273,6 +275,35 @@ function OrderCard({ o, act, busy, coupon }: any) {
   const [open, setOpen] = useState(false);
   const [showAttn, setShowAttn] = useState(false);
   const [draft, setDraft] = useState('');
+  const [bkashCharge, setBkashCharge] = useState(false);
+  const [linking, setLinking] = useState(false);
+  // Create + copy the online (bKash) pay link straight from the board, so it can be sent
+  // without opening the order. bKash charge box adds the 1.85% gateway fee to the bill.
+  async function copyPayLink() {
+    setLinking(true);
+    try {
+      const r: any = await HttpClient.post('order-pay-link', {
+        order_id: o._id,
+        bkash_charge: bkashCharge,
+      });
+      if (r?.pay_link) {
+        try {
+          await navigator.clipboard.writeText(r.pay_link);
+        } catch {}
+        toast.success(
+          bkashCharge
+            ? `Pay link copied — ৳${r.amount_bdt} (incl. ৳${r.bkash_charge} bKash charge)`
+            : `Pay link copied — ৳${r.amount_bdt}`,
+        );
+      } else {
+        toast.error('Could not create the pay link.');
+      }
+    } catch {
+      toast.error('Could not create the pay link.');
+    } finally {
+      setLinking(false);
+    }
+  }
   const ag = aging(o);
   const st = STATUS[o.bucket];
   const attn = needsAttention(o);
@@ -619,6 +650,29 @@ function OrderCard({ o, act, busy, coupon }: any) {
                   </button>
                 </>
               )}
+              {/* online pay link — copy/send it without opening the order, with an optional bKash charge */}
+              <div className="ml-auto flex items-center gap-2">
+                <label
+                  className="flex cursor-pointer items-center gap-1 text-[10.5px] font-medium text-slate-500"
+                  title="Add bKash's 1.85% service charge to the amount the link collects"
+                >
+                  <input
+                    type="checkbox"
+                    checked={bkashCharge}
+                    onChange={(e) => setBkashCharge(e.target.checked)}
+                    className="h-3 w-3"
+                  />
+                  bKash charge
+                </label>
+                <button
+                  onClick={copyPayLink}
+                  disabled={linking}
+                  className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-indigo-600 ring-1 ring-indigo-200 hover:bg-indigo-50 disabled:opacity-60"
+                  title="Create & copy the online payment (bKash) link for this order"
+                >
+                  🔗 {linking ? '…' : 'Pay link'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

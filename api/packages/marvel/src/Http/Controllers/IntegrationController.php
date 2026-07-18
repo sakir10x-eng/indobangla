@@ -1256,14 +1256,29 @@ class IntegrationController extends CoreController
         // the whole order. Switching back to 'advance' now restores the stamped advance.
         $wanted = (string) $request->input('purpose', '');
         $advanceBdt = isset($meta['advance']['advance_bdt']) ? round((float) $meta['advance']['advance_bdt']) : null;
+        // A link created with the desk's "bKash charge" box carries bkash_charge in meta. The
+        // full/advance re-stamp below recomputes pay_amount from the order, so re-apply the
+        // 1.85% on the new base — otherwise picking 100%/advance silently drops the charge.
+        $chargeOn = (int) ($meta['bkash_charge'] ?? 0) > 0;
+        $restamp = function (array $m, float $base) use ($chargeOn) {
+            if ($chargeOn && $base > 0) {
+                $charge = (int) round($base * 1.85 / 100);
+                $m['bkash_charge']      = $charge;
+                $m['bkash_charge_base'] = (int) round($base);
+                $m['pay_amount']        = (int) round($base + $charge);
+            } else {
+                $m['pay_amount'] = round($base);
+            }
+            return $m;
+        };
         if ($wanted === 'full') {
             $meta['pay_purpose'] = 'full';
-            $meta['pay_amount'] = round((float) $order->total - (float) $order->paid_total);
+            $meta = $restamp($meta, (float) $order->total - (float) $order->paid_total);
             $order->ops_meta = $meta;
             $order->saveQuietly();
         } elseif ($wanted === 'advance' && $advanceBdt !== null) {
             $meta['pay_purpose'] = 'advance';
-            $meta['pay_amount'] = $advanceBdt;
+            $meta = $restamp($meta, (float) $advanceBdt);
             $order->ops_meta = $meta;
             $order->saveQuietly();
         }
