@@ -33,8 +33,8 @@ export const userClient = {
   login: (variables: LoginInput) => {
     return HttpClient.post<AuthResponse>(API_ENDPOINTS.TOKEN, variables);
   },
-  // Admin 2FA: (re)send the login OTP (phone only needed while enrolling) and verify it.
-  adminOtpRequest: (variables: { ticket: string; phone?: string }) => {
+  // Admin 2FA: send the login OTP to a chosen number (index) or a newly entered phone, and verify.
+  adminOtpRequest: (variables: { ticket: string; phone?: string; index?: number }) => {
     return HttpClient.post<{ success: boolean; destination?: string; message?: string }>(
       API_ENDPOINTS.ADMIN_OTP_REQUEST,
       variables,

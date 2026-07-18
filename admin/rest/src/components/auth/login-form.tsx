@@ -26,16 +26,18 @@ const loginFormSchema = yup.object().shape({
   password: yup.string().required('form:error-password-required'),
 });
 
-type Step = 'password' | 'enroll' | 'otp';
+type Step = 'password' | 'choose' | 'enroll' | 'otp';
+type Choice = { index: number; label: string };
 
 const LoginForm = () => {
   const { t } = useTranslation();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const { mutate: login, isLoading } = useLogin();
 
-  // Admin 2FA state — a login can pause on the OTP step before a token is issued.
+  // Admin 2FA state — a login can pause on the OTP steps before a token is issued.
   const [step, setStep] = useState<Step>('password');
   const [ticket, setTicket] = useState('');
+  const [choices, setChoices] = useState<Choice[]>([]);
   const [destination, setDestination] = useState('');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
@@ -65,12 +67,11 @@ const LoginForm = () => {
           // Admin accounts pause here until an SMS OTP is cleared.
           if (data?.otp_required) {
             setTicket(data.ticket);
-            if (data.enroll) {
-              setStep('enroll');
+            if (data.choices?.length) {
+              setChoices(data.choices);
+              setStep('choose');
             } else {
-              setDestination(data.destination || '');
-              setStep('otp');
-              if (data.sent === false && data.message) setErrorMessage(data.message);
+              setStep('enroll');
             }
             return;
           }
@@ -87,16 +88,13 @@ const LoginForm = () => {
     );
   }
 
-  async function sendCode(forPhone?: string) {
+  async function sendCode(opts: { phone?: string; index?: number }) {
     setBusy(true);
     setErrorMessage(null);
     try {
-      const r: any = await userClient.adminOtpRequest({
-        ticket,
-        ...(forPhone ? { phone: forPhone } : {}),
-      });
+      const r: any = await userClient.adminOtpRequest({ ticket, ...opts });
       if (r?.success) {
-        setDestination(r.destination || destination);
+        setDestination(r.destination || '');
         setStep('otp');
       } else {
         setErrorMessage(r?.message || 'OTP পাঠানো যায়নি।');
@@ -130,6 +128,7 @@ const LoginForm = () => {
   function resetToPassword() {
     setStep('password');
     setTicket('');
+    setChoices([]);
     setCode('');
     setPhone('');
     setDestination('');
@@ -184,12 +183,46 @@ const LoginForm = () => {
         </Form>
       )}
 
+      {step === 'choose' && (
+        <div>
+          <p className="mb-1 text-base font-semibold text-heading">দুই-ধাপ যাচাই</p>
+          <p className="mb-4 text-sm text-body">কোন নম্বরে OTP কোড পাঠাব?</p>
+          <div className="space-y-2">
+            {choices.map((c) => (
+              <button
+                key={c.index}
+                type="button"
+                disabled={busy}
+                onClick={() => sendCode({ index: c.index })}
+                className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-medium text-heading transition hover:border-accent hover:bg-accent/5 disabled:opacity-60"
+              >
+                <span>📱 {c.label}</span>
+                <span className="text-xs font-semibold text-accent">কোড পাঠান →</span>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setStep('enroll')}
+            className="mt-4 w-full text-center text-sm text-body underline hover:text-accent"
+          >
+            অন্য নম্বরে পাঠাতে চাই
+          </button>
+          <button
+            type="button"
+            onClick={resetToPassword}
+            className="mt-2 w-full text-center text-sm text-body underline hover:text-accent"
+          >
+            ← ফিরে যান
+          </button>
+        </div>
+      )}
+
       {step === 'enroll' && (
         <div>
           <p className="mb-1 text-base font-semibold text-heading">দুই-ধাপ যাচাই</p>
           <p className="mb-5 text-sm text-body">
-            নিরাপত্তার জন্য আপনার মোবাইল নম্বর যোগ করুন — এই নম্বরে একটি OTP কোড পাঠানো হবে। পরের বার
-            থেকে লগইনে এই নম্বরেই কোড আসবে।
+            যে মোবাইল নম্বরে OTP কোড পেতে চান সেটি দিন। এই নম্বরে একটি কোড পাঠানো হবে।
           </p>
           <Input
             label="মোবাইল নম্বর"
@@ -206,13 +239,13 @@ const LoginForm = () => {
             className="w-full"
             loading={busy}
             disabled={busy || !phone.trim()}
-            onClick={() => sendCode(phone.trim())}
+            onClick={() => sendCode({ phone: phone.trim() })}
           >
             কোড পাঠান
           </Button>
           <button
             type="button"
-            onClick={resetToPassword}
+            onClick={() => (choices.length ? setStep('choose') : resetToPassword())}
             className="mt-4 w-full text-center text-sm text-body underline hover:text-accent"
           >
             ← ফিরে যান
@@ -256,15 +289,15 @@ const LoginForm = () => {
           <div className="mt-4 flex items-center justify-between text-sm">
             <button
               type="button"
-              onClick={resetToPassword}
+              onClick={() => (choices.length ? setStep('choose') : setStep('enroll'))}
               className="text-body underline hover:text-accent"
             >
-              ← ফিরে যান
+              ← নম্বর বদলান
             </button>
             <button
               type="button"
               disabled={busy}
-              onClick={() => sendCode()}
+              onClick={() => sendCode({})}
               className="font-semibold text-accent underline hover:text-accent-hover disabled:opacity-50"
             >
               কোড আবার পাঠান

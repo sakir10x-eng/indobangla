@@ -215,7 +215,7 @@ export default function OrderDetailsPage() {
 
   const [status, setStatus] = useState('');
   const [pay, setPay] = useState('');
-  const [adj, setAdj] = useState({ discount: 0, delivery_fee: 0, adjustment: 0, note: '' });
+  const [adj, setAdj] = useState({ discount: 0, delivery_fee: 0, weight_charge: 0, adjustment: 0, note: '' });
   const [q, setQ] = useState('');
   const [courier, setCourier] = useState('redx');
   const [trackNo, setTrackNo] = useState('');
@@ -230,6 +230,7 @@ export default function OrderDetailsPage() {
       setAdj({
         discount: order.discount ?? 0,
         delivery_fee: order.delivery_fee ?? 0,
+        weight_charge: (order.ops_meta as any)?.weight_charge ?? 0,
         adjustment: 0,
         note: order.note ?? '',
       });
@@ -257,6 +258,7 @@ export default function OrderDetailsPage() {
         order_id: order.id,
         discount: Number(adj.discount) || 0,
         delivery_fee: Number(adj.delivery_fee) || 0,
+        weight_charge: Number(adj.weight_charge) || 0,
         adjustment: Number(adj.adjustment) || 0,
         note: adj.note ?? '',
       },
@@ -812,6 +814,7 @@ export default function OrderDetailsPage() {
               {([
                 ['Discount', 'discount'],
                 ['Delivery charge', 'delivery_fee'],
+                ['Weight charge', 'weight_charge'],
                 ['Advanced / adjustment (+/−)', 'adjustment'],
               ] as const).map(([l, k]) => (
                 <div key={k}>

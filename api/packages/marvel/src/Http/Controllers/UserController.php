@@ -322,6 +322,25 @@ class UserController extends CoreController
         return substr($d, 0, 3) . str_repeat('•', strlen($d) - 5) . substr($d, -2);
     }
 
+    /** sms.net.bd wants a 8801XXXXXXXXX msisdn — turn a local 01… (or +880…) into that. */
+    private function normalizeBdPhone($p): string
+    {
+        $d = preg_replace('/\D/', '', (string) $p);
+        if ($d === '') {
+            return '';
+        }
+        if (str_starts_with($d, '880')) {
+            return $d;
+        }
+        if (str_starts_with($d, '0')) {
+            return '880' . substr($d, 1);
+        }
+        if (strlen($d) === 10 && str_starts_with($d, '1')) {
+            return '880' . $d;
+        }
+        return $d;
+    }
+
     /**
      * Start the admin OTP challenge once the password checks out. A short-lived ticket (10 min,
      * cache) stands in for the half-finished login. If the admin already has a phone on file the
@@ -330,31 +349,38 @@ class UserController extends CoreController
      */
     private function beginAdminOtp($user)
     {
-        $ticket  = 'alt_' . bin2hex(random_bytes(16));
-        $phone   = trim((string) $user->mobile_number);
-        $payload = ['user_id' => $user->id, 'phone' => $phone, 'otp_id' => null];
-
-        if ($phone !== '') {
-            try {
-                $res = $this->getOtpGateway()->startVerification($phone);
-                if ($res->isValid()) {
-                    $payload['otp_id'] = $res->getId();
-                    Cache::put("admin_login:$ticket", $payload, now()->addMinutes(10));
-                    return ['otp_required' => true, 'ticket' => $ticket, 'enroll' => false, 'sent' => true, 'destination' => $this->maskPhone($phone)];
-                }
-            } catch (\Throwable $e) {
-                // fall through and let the buyer resend
+        $ticket = 'alt_' . bin2hex(random_bytes(16));
+        // OTP destinations: the desk's configured primary + backup numbers, then the admin's own
+        // saved number. No code is texted yet — the admin first picks where it should go.
+        $opts = (array) (optional(Settings::getData())->options ?? []);
+        $cfg  = (array) ($opts['adminOtpNumbers'] ?? []);
+        $numbers = [];
+        foreach (['primary', 'backup'] as $k) {
+            $n = $this->normalizeBdPhone($cfg[$k] ?? '');
+            if ($n !== '' && !in_array($n, $numbers, true)) {
+                $numbers[] = $n;
             }
-            Cache::put("admin_login:$ticket", $payload, now()->addMinutes(10));
-            return ['otp_required' => true, 'ticket' => $ticket, 'enroll' => false, 'sent' => false, 'destination' => $this->maskPhone($phone), 'message' => 'OTP পাঠানো যায়নি, আবার চেষ্টা করুন।'];
         }
-
-        // No phone on file — enrol one on the next step.
+        $personal = $this->normalizeBdPhone($user->mobile_number);
+        if ($personal !== '' && !in_array($personal, $numbers, true)) {
+            $numbers[] = $personal;
+        }
+        $payload = ['user_id' => $user->id, 'numbers' => $numbers, 'otp_id' => null, 'otp_phone' => null, 'enrolled' => false];
         Cache::put("admin_login:$ticket", $payload, now()->addMinutes(10));
-        return ['otp_required' => true, 'ticket' => $ticket, 'enroll' => true, 'sent' => false];
+
+        // Nothing configured anywhere — enrol a number on the next step.
+        if (empty($numbers)) {
+            return ['otp_required' => true, 'ticket' => $ticket, 'enroll' => true, 'choices' => []];
+        }
+        return [
+            'otp_required' => true,
+            'ticket'       => $ticket,
+            'enroll'       => false,
+            'choices'      => array_map(fn ($i) => ['index' => $i, 'label' => $this->maskPhone($numbers[$i])], array_keys($numbers)),
+        ];
     }
 
-    /** Public: (re)send the admin login OTP. `phone` is required only during enrolment. */
+    /** Public: send the admin login OTP to a chosen number (`index`) or a newly entered `phone`. */
     public function adminOtpRequest(Request $request)
     {
         $ticket = (string) $request->input('ticket', '');
@@ -362,7 +388,15 @@ class UserController extends CoreController
         if (!$data) {
             throw new MarvelException('লগইন সেশন শেষ হয়ে গেছে। আবার লগইন করুন।');
         }
-        $phone = trim((string) ($request->input('phone') ?: $data['phone']));
+        $enrolled = false;
+        if ($request->filled('phone')) {
+            $phone = $this->normalizeBdPhone($request->input('phone'));
+            $enrolled = true;
+        } elseif ($request->filled('index')) {
+            $phone = (string) ($data['numbers'][(int) $request->input('index')] ?? '');
+        } else {
+            $phone = (string) ($data['otp_phone'] ?: ($data['numbers'][0] ?? ''));
+        }
         if ($phone === '') {
             throw new MarvelException('মোবাইল নম্বর দিন।');
         }
@@ -374,8 +408,9 @@ class UserController extends CoreController
         if (!$res->isValid()) {
             return ['success' => false, 'message' => 'OTP পাঠানো যায়নি। নম্বরটি ঠিক আছে কিনা দেখুন।'];
         }
-        $data['phone']  = $phone;
-        $data['otp_id'] = $res->getId();
+        $data['otp_id']    = $res->getId();
+        $data['otp_phone'] = $phone;
+        $data['enrolled']  = $enrolled;
         Cache::put("admin_login:$ticket", $data, now()->addMinutes(10));
         return ['success' => true, 'destination' => $this->maskPhone($phone)];
     }
@@ -394,7 +429,7 @@ class UserController extends CoreController
         }
         $ok = false;
         try {
-            $ok = $this->getOtpGateway()->checkVerification($data['otp_id'], $code, $data['phone'])->isValid();
+            $ok = $this->getOtpGateway()->checkVerification($data['otp_id'], $code, $data['otp_phone'])->isValid();
         } catch (\Throwable $e) {
             $ok = false;
         }
@@ -405,9 +440,10 @@ class UserController extends CoreController
         if (!$user || !$user->is_active) {
             throw new MarvelException('অ্যাকাউন্ট পাওয়া যায়নি।');
         }
-        // First-time enrolment saves the verified phone for next time.
-        if (trim((string) $user->mobile_number) === '' && !empty($data['phone'])) {
-            $user->mobile_number = $data['phone'];
+        // A newly entered personal number is saved for next time — never overwrite the admin's
+        // own number with a shared desk number.
+        if (!empty($data['enrolled']) && trim((string) $user->mobile_number) === '' && !empty($data['otp_phone'])) {
+            $user->mobile_number = $data['otp_phone'];
             $user->saveQuietly();
         }
         Cache::forget("admin_login:$ticket");
