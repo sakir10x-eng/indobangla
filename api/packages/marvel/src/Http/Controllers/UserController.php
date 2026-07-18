@@ -270,11 +270,152 @@ class UserController extends CoreController
             return ["token" => null, "permissions" => []];
         }
         $email_verified = $user->hasVerifiedEmail();
+
+        // Admin 2FA: a non-customer login must clear an SMS OTP before a token is issued. Gated by
+        // the `adminOtpEnabled` setting (default off) so it can be rolled out — and killed — from
+        // the DB without a redeploy. Customers logging into the shop are never challenged.
+        if ($this->adminOtpEnabled() && $this->isAdminUser($user)) {
+            return $this->beginAdminOtp($user);
+        }
+
         event(new ProcessUserData());
         return [
-            "token" => $user->createToken('auth_token')->plainTextToken,
+            "token" => $user->createToken('auth_token', ['*'], $this->authTokenExpiry($user))->plainTextToken,
             "permissions" => $user->getPermissionNames(),
             "email_verified" => $email_verified,
+            "role" => $user->getRoleNames()->first(),
+            "admin_role_id" => $user->admin_role_id,
+            "managed_sections" => $this->resolveManagedSections($user),
+        ];
+    }
+
+    /** Non-customer accounts (super admin / store owner / staff) get the OTP step. */
+    private function isAdminUser($user): bool
+    {
+        $names = $user->getPermissionNames()->toArray();
+        return (bool) array_intersect($names, [
+            Permission::SUPER_ADMIN,
+            Permission::STORE_OWNER,
+            Permission::STAFF,
+        ]);
+    }
+
+    /** Kill switch, read from settings so OTP can be turned off from the DB without a redeploy. */
+    private function adminOtpEnabled(): bool
+    {
+        $opts = (array) (optional(Settings::getData())->options ?? []);
+        return (bool) ($opts['adminOtpEnabled'] ?? false);
+    }
+
+    /** Admin sessions last 3 days; customer tokens keep their existing (non-expiring) behaviour. */
+    private function authTokenExpiry($user)
+    {
+        return $this->isAdminUser($user) ? now()->addDays(3) : null;
+    }
+
+    private function maskPhone($p): string
+    {
+        $d = preg_replace('/[^\d]/', '', (string) $p);
+        if (strlen($d) < 5) {
+            return str_repeat('•', max(1, strlen($d)));
+        }
+        return substr($d, 0, 3) . str_repeat('•', strlen($d) - 5) . substr($d, -2);
+    }
+
+    /**
+     * Start the admin OTP challenge once the password checks out. A short-lived ticket (10 min,
+     * cache) stands in for the half-finished login. If the admin already has a phone on file the
+     * code is texted immediately; otherwise they enrol one on the next step. No auth token is
+     * issued until the code is verified — so a leaked password alone can't get in.
+     */
+    private function beginAdminOtp($user)
+    {
+        $ticket  = 'alt_' . bin2hex(random_bytes(16));
+        $phone   = trim((string) $user->mobile_number);
+        $payload = ['user_id' => $user->id, 'phone' => $phone, 'otp_id' => null];
+
+        if ($phone !== '') {
+            try {
+                $res = $this->getOtpGateway()->startVerification($phone);
+                if ($res->isValid()) {
+                    $payload['otp_id'] = $res->getId();
+                    Cache::put("admin_login:$ticket", $payload, now()->addMinutes(10));
+                    return ['otp_required' => true, 'ticket' => $ticket, 'enroll' => false, 'sent' => true, 'destination' => $this->maskPhone($phone)];
+                }
+            } catch (\Throwable $e) {
+                // fall through and let the buyer resend
+            }
+            Cache::put("admin_login:$ticket", $payload, now()->addMinutes(10));
+            return ['otp_required' => true, 'ticket' => $ticket, 'enroll' => false, 'sent' => false, 'destination' => $this->maskPhone($phone), 'message' => 'OTP পাঠানো যায়নি, আবার চেষ্টা করুন।'];
+        }
+
+        // No phone on file — enrol one on the next step.
+        Cache::put("admin_login:$ticket", $payload, now()->addMinutes(10));
+        return ['otp_required' => true, 'ticket' => $ticket, 'enroll' => true, 'sent' => false];
+    }
+
+    /** Public: (re)send the admin login OTP. `phone` is required only during enrolment. */
+    public function adminOtpRequest(Request $request)
+    {
+        $ticket = (string) $request->input('ticket', '');
+        $data   = Cache::get("admin_login:$ticket");
+        if (!$data) {
+            throw new MarvelException('লগইন সেশন শেষ হয়ে গেছে। আবার লগইন করুন।');
+        }
+        $phone = trim((string) ($request->input('phone') ?: $data['phone']));
+        if ($phone === '') {
+            throw new MarvelException('মোবাইল নম্বর দিন।');
+        }
+        try {
+            $res = $this->getOtpGateway()->startVerification($phone);
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => 'OTP পাঠানো যায়নি। একটু পরে আবার চেষ্টা করুন।'];
+        }
+        if (!$res->isValid()) {
+            return ['success' => false, 'message' => 'OTP পাঠানো যায়নি। নম্বরটি ঠিক আছে কিনা দেখুন।'];
+        }
+        $data['phone']  = $phone;
+        $data['otp_id'] = $res->getId();
+        Cache::put("admin_login:$ticket", $data, now()->addMinutes(10));
+        return ['success' => true, 'destination' => $this->maskPhone($phone)];
+    }
+
+    /** Public: verify the admin login OTP and, on success, issue the 3-day session token. */
+    public function adminOtpVerify(Request $request)
+    {
+        $ticket = (string) $request->input('ticket', '');
+        $code   = (string) $request->input('code', '');
+        $data   = Cache::get("admin_login:$ticket");
+        if (!$data) {
+            throw new MarvelException('লগইন সেশন শেষ হয়ে গেছে। আবার লগইন করুন।');
+        }
+        if (empty($data['otp_id'])) {
+            throw new MarvelException('আগে OTP নিন।');
+        }
+        $ok = false;
+        try {
+            $ok = $this->getOtpGateway()->checkVerification($data['otp_id'], $code, $data['phone'])->isValid();
+        } catch (\Throwable $e) {
+            $ok = false;
+        }
+        if (!$ok) {
+            throw new MarvelException('OTP সঠিক নয় বা মেয়াদ শেষ হয়ে গেছে।');
+        }
+        $user = User::find($data['user_id']);
+        if (!$user || !$user->is_active) {
+            throw new MarvelException('অ্যাকাউন্ট পাওয়া যায়নি।');
+        }
+        // First-time enrolment saves the verified phone for next time.
+        if (trim((string) $user->mobile_number) === '' && !empty($data['phone'])) {
+            $user->mobile_number = $data['phone'];
+            $user->saveQuietly();
+        }
+        Cache::forget("admin_login:$ticket");
+        event(new ProcessUserData());
+        return [
+            "token" => $user->createToken('auth_token', ['*'], now()->addDays(3))->plainTextToken,
+            "permissions" => $user->getPermissionNames(),
+            "email_verified" => $user->hasVerifiedEmail(),
             "role" => $user->getRoleNames()->first(),
             "admin_role_id" => $user->admin_role_id,
             "managed_sections" => $this->resolveManagedSections($user),

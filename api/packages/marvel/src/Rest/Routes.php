@@ -72,6 +72,10 @@ Route::get('/email/verify/{id}/{hash}', [UserController::class, 'verifyEmail'])-
 
 Route::post('/register', [UserController::class, 'register']);
 Route::post('/token', [UserController::class, 'token']);
+// Admin login 2FA: (re)send + verify the SMS OTP for a half-finished admin login. Public but
+// guarded by a short-lived server-side ticket, and throttled so the code can't be brute-forced.
+Route::post('/admin-login-otp/request', [UserController::class, 'adminOtpRequest'])->middleware('throttle:8,1');
+Route::post('/admin-login-otp/verify', [UserController::class, 'adminOtpVerify'])->middleware('throttle:15,1');
 Route::post('/logout', [UserController::class, 'logout']);
 Route::post('/forget-password', [UserController::class, 'forgetPassword']);
 Route::post('/verify-forget-password-token', [UserController::class, 'verifyForgetPasswordToken']);

@@ -23,6 +23,8 @@ export const API_ENDPOINTS = {
   LOGOUT: 'logout',
   ME: 'me',
   TOKEN: 'token',
+  ADMIN_OTP_REQUEST: 'admin-login-otp/request',
+  ADMIN_OTP_VERIFY: 'admin-login-otp/verify',
   BLOCK_USER: 'users/block-user',
   UNBLOCK_USER: 'users/unblock-user',
   CHANGE_PASSWORD: 'change-password',

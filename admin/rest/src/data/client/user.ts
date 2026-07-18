@@ -33,6 +33,16 @@ export const userClient = {
   login: (variables: LoginInput) => {
     return HttpClient.post<AuthResponse>(API_ENDPOINTS.TOKEN, variables);
   },
+  // Admin 2FA: (re)send the login OTP (phone only needed while enrolling) and verify it.
+  adminOtpRequest: (variables: { ticket: string; phone?: string }) => {
+    return HttpClient.post<{ success: boolean; destination?: string; message?: string }>(
+      API_ENDPOINTS.ADMIN_OTP_REQUEST,
+      variables,
+    );
+  },
+  adminOtpVerify: (variables: { ticket: string; code: string }) => {
+    return HttpClient.post<AuthResponse>(API_ENDPOINTS.ADMIN_OTP_VERIFY, variables);
+  },
   logout: () => {
     return HttpClient.post<any>(API_ENDPOINTS.LOGOUT, {});
   },
