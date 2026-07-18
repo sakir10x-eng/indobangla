@@ -70,12 +70,14 @@ const PRINT: Record<string, any> = {
   confirmed: { label: 'Slip printed ✓', chip: 'ring-emerald-300 bg-emerald-50 text-emerald-700' },
 };
 const STATUS: Record<string, any> = {
-  pending: { label: 'Pending', chip: 'bg-rose-50 text-rose-700 ring-rose-200', dot: 'bg-rose-500' },
-  ready: { label: 'Ready to ship', chip: 'bg-amber-50 text-amber-700 ring-amber-200', dot: 'bg-amber-500' },
-  shipped: { label: 'Shipped', chip: 'bg-emerald-50 text-emerald-700 ring-emerald-200', dot: 'bg-emerald-500' },
-  transit: { label: 'In transit', chip: 'bg-teal-50 text-teal-700 ring-teal-200', dot: 'bg-teal-500' },
-  delivered: { label: 'Delivered', chip: 'bg-emerald-600 text-white ring-emerald-600', dot: 'bg-white' },
-  returned: { label: 'Returned', chip: 'bg-slate-100 text-slate-600 ring-slate-200', dot: 'bg-slate-400' },
+  // `bar` drives the card's left border so a card's status is readable at a glance:
+  // pending = red, ready = amber, shipped = blue, transit = teal, delivered = green.
+  pending: { label: 'Pending', chip: 'bg-rose-50 text-rose-700 ring-rose-200', dot: 'bg-rose-500', bar: 'border-l-rose-500' },
+  ready: { label: 'Ready to ship', chip: 'bg-amber-50 text-amber-700 ring-amber-200', dot: 'bg-amber-500', bar: 'border-l-amber-500' },
+  shipped: { label: 'Shipped', chip: 'bg-emerald-50 text-emerald-700 ring-emerald-200', dot: 'bg-emerald-500', bar: 'border-l-sky-500' },
+  transit: { label: 'In transit', chip: 'bg-teal-50 text-teal-700 ring-teal-200', dot: 'bg-teal-500', bar: 'border-l-teal-500' },
+  delivered: { label: 'Delivered', chip: 'bg-emerald-600 text-white ring-emerald-600', dot: 'bg-white', bar: 'border-l-emerald-500' },
+  returned: { label: 'Returned', chip: 'bg-slate-100 text-slate-600 ring-slate-200', dot: 'bg-slate-400', bar: 'border-l-slate-400' },
 };
 const CALL: Record<string, any> = {
   none: { label: 'Not called', emoji: '📞', chip: 'ring-slate-200 bg-white text-slate-400' },
@@ -276,7 +278,7 @@ function OrderCard({ o, act, busy, coupon }: any) {
   const p = PRINT[o.print];
 
   return (
-    <div className={`overflow-hidden rounded-2xl border-l-4 bg-white shadow-sm ring-1 ring-slate-200 transition-all hover:shadow-md ${ag.accent}`}>
+    <div className={`overflow-hidden rounded-2xl border-l-4 bg-white shadow-sm ring-1 ring-slate-200 transition-all hover:shadow-md ${st?.bar || ag.accent}`}>
       {/* header */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-100 px-4 py-2.5">
         <div className={`flex items-baseline gap-1 rounded-lg px-2 py-0.5 font-bold ${ag.pill}`}>
