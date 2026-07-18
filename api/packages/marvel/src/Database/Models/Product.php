@@ -42,6 +42,22 @@ class Product extends Model
         'gift_per_copy' => 'boolean',
     ];
 
+    // gift_max is NOT NULL DEFAULT 0, but the admin create form can submit an
+    // explicit null (gift feature off). An explicit null bypasses the column
+    // default and violates the NOT NULL constraint, so product create/import
+    // fails. Coerce null to 0 here so every write path stays valid.
+    public function setGiftMaxAttribute($value)
+    {
+        $this->attributes['gift_max'] = $value ?? 0;
+    }
+
+    // Same guard for gift_per_copy (NOT NULL DEFAULT 1). The boolean cast does
+    // not turn an explicit null into 0/1, so coerce it here.
+    public function setGiftPerCopyAttribute($value)
+    {
+        $this->attributes['gift_per_copy'] = is_null($value) ? 1 : (int) (bool) $value;
+    }
+
     protected $appends = [
         'ratings',
         'total_reviews',
