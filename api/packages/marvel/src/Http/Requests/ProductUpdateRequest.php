@@ -59,7 +59,7 @@ class ProductUpdateRequest extends FormRequest
             'unit'                         => ['string'],
             'description'                  => ['nullable', 'string', 'max:10000'],
             'quantity'                     => ['nullable', 'integer'],
-            'sku'                          => ['string', Rule::unique('variation_options')->where(fn ($query) => $query->whereSku($this->sku))],
+            'sku'                          => ['nullable', 'string', Rule::unique('variation_options')->where(fn ($query) => $query->whereSku($this->sku))],
             'image'                        => ['array'],
             'gallery'                      => ['array'],
             'video'                        => ['array'],
