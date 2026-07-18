@@ -191,6 +191,17 @@ export default function PayPage() {
                   <span style={{ fontSize: 16.5, fontWeight: 700 }}>মোট</span>
                   <span style={{ fontSize: 27, fontWeight: 700, color: '#2e6b5a', letterSpacing: '-.5px' }}>{bdt(order.total)}</span>
                 </div>
+                {/* An advance / partial payment was already collected on this order — show it and
+                    the real remaining, so the buyer understands why the amount to pay is less than the total. */}
+                {Number(order.already_paid) > 0 && Number(order.already_paid) < Number(order.total) && (
+                  <>
+                    <Row label="ইতিমধ্যে পরিশোধিত (অগ্রিম)" value={'− ' + bdt(order.already_paid)} green />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px dashed #d7e9df', marginTop: 6, paddingTop: 10 }}>
+                      <span style={{ fontSize: 15, fontWeight: 800, color: '#9a3412' }}>বাকি</span>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: '#9a3412' }}>{bdt(order.due)}</span>
+                    </div>
+                  </>
+                )}
                 {isAdvanceLink && !(done || order.paid) ? (
                   <div style={{ marginTop: 14 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: '#7a6f66', marginBottom: 8 }}>কত টাকা এখন দেবেন?</div>
@@ -310,7 +321,7 @@ export default function PayPage() {
                     <>
                       {bkashChargeNow > 0 && (
                         <div style={{ marginTop: 16, borderRadius: 12, background: '#fff7ed', border: '1px solid #f2d79a', padding: '10px 14px' }}>
-                          <Row label={isAdvanceLink && !payFull ? 'অগ্রিম' : 'বই / অর্ডার'} value={bdt(payNow)} />
+                          <Row label={Number(order.already_paid) > 0 && Number(order.already_paid) < Number(order.total) ? 'বাকি' : (isAdvanceLink && !payFull ? 'অগ্রিম' : 'বই / অর্ডার')} value={bdt(payNow)} />
                           <Row label="বিকাশ চার্জ (১.৮৫%)" value={'+ ' + bdt(bkashChargeNow)} />
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px dashed #f2d79a', marginTop: 6, paddingTop: 8 }}>
                             <span style={{ fontSize: 13.5, fontWeight: 800, color: '#9a3412' }}>বিকাশে দিতে হবে</span>
