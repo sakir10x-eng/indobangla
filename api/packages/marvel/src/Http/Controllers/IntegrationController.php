@@ -6139,8 +6139,8 @@ class IntegrationController extends CoreController
 
         switch ($data['action']) {
             case 'void':
-                if ($order->order_status === OrderStatus::VOID) {
-                    return ['status' => 'success', 'message' => 'Already void.'];
+                if (!empty($ops['void'])) {
+                    return ['status' => 'success', 'message' => 'Already voided.'];
                 }
                 // Remember where it came from: unvoid has to put it back, and there is no other
                 // record of the status once it is overwritten.
@@ -6151,7 +6151,9 @@ class IntegrationController extends CoreController
                     'reason' => $data['reason'] ?? null,
                 ];
                 $order->ops_meta = $ops;
-                $order->order_status = OrderStatus::VOID;
+                // Void = cancel the order (per request): status becomes order-cancelled — which
+                // (like void/refunded) releases the committed stock via the model's updated hook.
+                $order->order_status = OrderStatus::CANCELLED;
                 // Voiding is the desk saying "this was never a real order", so it leaves the
                 // working list at the same moment — that is what auto-archive means here.
                 $order->archived_at = now();
@@ -6159,7 +6161,7 @@ class IntegrationController extends CoreController
                 break;
 
             case 'unvoid':
-                if ($order->order_status !== OrderStatus::VOID) {
+                if (empty($ops['void'])) {
                     throw new MarvelException('This order is not void.');
                 }
                 if (!$isSuperAdmin) {

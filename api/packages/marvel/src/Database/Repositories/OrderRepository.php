@@ -857,7 +857,9 @@ class OrderRepository extends BaseRepository
 
             $order = $this->create($orderInput);
             $order->products()->attach($this->processProducts($cartProduct,  $request['customer_id'],  $order));
-            Order::commitStock($order); // IndoBangla: reserve book stock on placement
+            // Stock is already reserved on the PARENT order in createOrder(); committing again
+            // for each child re-decremented the same books, so every order dropped stock twice
+            // while a void only released the parent's share. Parent commit is the single source.
             event(new OrderReceived($order));
         }
     }

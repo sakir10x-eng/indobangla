@@ -81,6 +81,7 @@ const STATUS: Record<string, any> = {
   delivered: { label: 'Delivered', chip: 'bg-emerald-600 text-white ring-emerald-600', dot: 'bg-white', bar: 'border-l-emerald-500' },
   partial: { label: 'Partial Delivered', chip: 'bg-lime-50 text-lime-700 ring-lime-200', dot: 'bg-lime-500', bar: 'border-l-lime-500' },
   returned: { label: 'Returned', chip: 'bg-slate-100 text-slate-600 ring-slate-200', dot: 'bg-slate-400', bar: 'border-l-slate-400' },
+  void: { label: 'Canceled', chip: 'bg-rose-50 text-rose-700 ring-rose-200', dot: 'bg-rose-500', bar: 'border-l-rose-500' },
 };
 const CALL: Record<string, any> = {
   none: { label: 'Not called', emoji: '📞', chip: 'ring-slate-200 bg-white text-slate-400' },
@@ -147,7 +148,7 @@ function mapOrder(o: any, stats: any) {
     by: o.order_created_by_name ? 'by admin' : 'by customer',
     source: ops.created_by || null,          // 'ReplyGenie' etc. — set by the agent/API
     sourceKey: (ops.source || '').toLowerCase(),
-    bucket: TO_BUCKET[o.order_status] || 'pending',
+    bucket: ops.void ? 'void' : (TO_BUCKET[o.order_status] || 'pending'),
     order_status: o.order_status,
     paid: o.payment_status === 'payment-success' || (Number(o.paid_total) >= Number(o.total) && Number(o.total) > 0),
     paidTotal: Number(o.paid_total) || 0,
