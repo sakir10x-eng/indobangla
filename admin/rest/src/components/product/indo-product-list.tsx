@@ -5,7 +5,7 @@ import Link from '@/components/ui/link';
 import {
   Search, Pencil, Eye, Heart, TrendingUp, TrendingDown, Minus, Star,
   Percent, PackageX, AlertTriangle, ArrowUpDown, ChevronDown, Package,
-  ShoppingBag, Megaphone, Rocket, Copy, ArrowRightLeft, X, Sparkles, Trash2,
+  ShoppingBag, Megaphone, Rocket, Copy, ArrowRightLeft, X, Sparkles, Trash2, RotateCcw,
 } from 'lucide-react';
 import {
   useLandingSettingsQuery,
@@ -76,23 +76,28 @@ export default function IndoProductList() {
 
   const { data, isLoading } = useQuery(
     ['product-admin-list', q, chip, sort, page],
-    () => HttpClient.get<any>('product-admin-list', { search: q, chip, sort, page, limit: 20 }),
+    () => HttpClient.get<any>('product-admin-list', { search: q, chip, sort, page, limit: 20, trashed: chip === 'trash' ? 1 : undefined }),
     { keepPreviousData: true },
   );
   const rows: any[] = (data as any)?.data ?? [];
   const total = (data as any)?.total ?? 0;
   const lastPage = (data as any)?.last_page ?? 1;
+  const inTrash = chip === 'trash';
 
   const queryClient = useQueryClient();
   const { mutate: deleteProduct } = useDeleteProductMutation();
+  const refetchList = () => queryClient.invalidateQueries(['product-admin-list']);
   function handleDelete(p: any) {
-    // Deleting a product is destructive, so confirm first. The mutation only
-    // invalidates the generic 'products' key, so also refetch this admin list.
-    if (typeof window !== 'undefined' && !window.confirm(`Delete “${p.title}”? This cannot be undone.`)) return;
-    deleteProduct(
-      { id: p.id },
-      { onSuccess: () => queryClient.invalidateQueries(['product-admin-list']) },
-    );
+    // Soft delete -> recycle bin (restorable for 30 days, then auto-purged).
+    if (typeof window !== 'undefined' && !window.confirm(`Move “${p.title}” to the recycle bin? You can restore it within 30 days.`)) return;
+    deleteProduct({ id: p.id }, { onSuccess: refetchList });
+  }
+  function handleRestore(p: any) {
+    HttpClient.post(`products/${p.id}/restore`, {}).then(refetchList).catch(() => {});
+  }
+  function handleForceDelete(p: any) {
+    if (typeof window !== 'undefined' && !window.confirm(`Permanently delete “${p.title}”? This CANNOT be undone.`)) return;
+    HttpClient.delete(`products/${p.id}/force`).then(refetchList).catch(() => {});
   }
 
   const chips = [
@@ -101,6 +106,7 @@ export default function IndoProductList() {
     { id: 'restock', label: 'Low stock', icon: AlertTriangle },
     { id: 'out', label: 'Out of stock', icon: PackageX },
     { id: 'draft', label: 'Drafts', icon: Megaphone },
+    { id: 'trash', label: 'Recycle bin', icon: Trash2 },
   ];
 
   const th: any = { padding: '11px 14px', fontSize: 11, fontWeight: 700, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.4, textAlign: 'left', whiteSpace: 'nowrap' };
@@ -210,7 +216,17 @@ export default function IndoProductList() {
                             : <Pill text="Landing" icon={Rocket} fg="#7c3aed" bg="#f0eafd" />
                         )}
                       </div>
-                      <div style={{ display: 'flex', gap: 4 }}>
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        {inTrash ? (
+                          <>
+                            <span style={{ fontSize: 11.5, fontWeight: 700, color: (p.days_left ?? 0) <= 3 ? C.red : C.sub, marginRight: 2 }}>
+                              {p.days_left ?? 0}d left
+                            </span>
+                            <button type="button" onClick={() => handleRestore(p)} title="Restore from recycle bin" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.greenSoft, color: C.green, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}><RotateCcw size={14} /> Restore</button>
+                            <button type="button" onClick={() => handleForceDelete(p)} title="Delete forever" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.redSoft}`, background: C.redSoft, cursor: 'pointer' }}><Trash2 size={15} color={C.red} /></button>
+                          </>
+                        ) : (
+                          <>
                         {(() => {
                           const sp = specialLandingLabel(p);
                           const on = p.has_landing;
@@ -229,6 +245,8 @@ export default function IndoProductList() {
                         <button type="button" onClick={() => setShopModal({ product: p, mode: 'move' })} title="Move to another shop" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, cursor: 'pointer' }}><ArrowRightLeft size={15} color={C.sub} /></button>
                         <a href={`https://indobangla.tech/products/${p.slug}`} target="_blank" rel="noreferrer" title="View" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.line}` }}><Eye size={15} color={C.sub} /></a>
                         <button type="button" onClick={() => handleDelete(p)} title="Delete product" style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.redSoft}`, background: C.redSoft, cursor: 'pointer' }}><Trash2 size={15} color={C.red} /></button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </td>

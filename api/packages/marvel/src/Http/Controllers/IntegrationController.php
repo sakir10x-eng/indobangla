@@ -83,6 +83,23 @@ class IntegrationController extends CoreController
      * Admin product list with derived metrics (sold, wishlist, sell-through,
      * 7/30-day velocity) — powers the redesigned Products page.
      */
+    // Recycle bin: restore a soft-deleted product, or purge it for good.
+    public function restoreTrashedProduct(Request $request, $id)
+    {
+        $p = Product::onlyTrashed()->where('type_id', 8)->findOrFail($id);
+        $p->restore();
+        return ['success' => true, 'id' => (int) $id];
+    }
+
+    public function forceDeleteProduct(Request $request, $id)
+    {
+        $p = Product::onlyTrashed()->where('type_id', 8)->findOrFail($id);
+        $p->categories()->detach();
+        $p->tags()->detach();
+        $p->forceDelete();
+        return ['success' => true, 'id' => (int) $id];
+    }
+
     public function productAdminList(Request $request)
     {
         $search = trim((string) $request->input('search', ''));
@@ -90,6 +107,7 @@ class IntegrationController extends CoreController
         $sort   = (string) $request->input('sort', 'sold');
         $page   = max(1, (int) $request->input('page', 1));
         $limit  = min(60, max(1, (int) $request->input('limit', 20)));
+        $trashed = $request->boolean('trashed'); // recycle-bin view
 
         $paidStatuses = "'order-completed','order-processing','order-out-for-delivery','order-at-local-facility'";
         $soldSub = "COALESCE((SELECT SUM(op.order_quantity) FROM order_product op JOIN orders o ON o.id=op.order_id WHERE op.product_id=products.id AND o.order_status IN ($paidStatuses)),0)";
@@ -103,6 +121,9 @@ class IntegrationController extends CoreController
             ->selectRaw("$wishSub AS wishlist_count")
             ->selectRaw("$sold30 AS units_30d")
             ->selectRaw("$sold7 AS units_7d");
+        if ($trashed) {
+            $q->onlyTrashed();
+        }
 
         if ($search !== '') {
             $like = '%' . $search . '%';
@@ -128,6 +149,9 @@ class IntegrationController extends CoreController
 
         if ($chip === 'bestseller') {
             $q->having('units_30d', '>=', 5);
+        }
+        if ($trashed) {
+            $q->reorder()->orderByDesc('deleted_at');
         }
 
         $p = $q->paginate($limit, ['*'], 'page', $page);
@@ -166,6 +190,8 @@ class IntegrationController extends CoreController
                 // 'default' when the generic template is used, or the bespoke template id
                 // (e.g. 'anandamela') so the admin list can flag single-product designs.
                 'landing_template' => (string) (($landingMap[(string) $x->id]['template'] ?? 'default')),
+                'deleted_at'  => optional($x->deleted_at)->toIso8601String(),
+                'days_left'   => $x->deleted_at ? max(0, 30 - (int) $x->deleted_at->diffInDays(now())) : null,
             ];
         });
         return [

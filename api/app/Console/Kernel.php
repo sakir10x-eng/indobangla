@@ -47,6 +47,13 @@ class Kernel extends ConsoleKernel
             ->hourly()
             ->withoutOverlapping()
             ->runInBackground();
+
+        // Recycle bin retention: permanently delete products that have been in the
+        // recycle bin for more than 30 days. Once a day is plenty.
+        $schedule->command('products:purge-trashed')
+            ->dailyAt('04:10')
+            ->withoutOverlapping()
+            ->runInBackground();
     }
 
     /**

@@ -192,6 +192,9 @@ Route::get('product-search-api', [IntegrationController::class, 'productSearch']
 Route::get('price-check', [IntegrationController::class, 'priceCheck']);
 // Admin product list with derived metrics (sold / wishlist / velocity)
 Route::get('product-admin-list', [IntegrationController::class, 'productAdminList']);
+// Recycle bin: restore / permanently delete a soft-deleted product (super-admin).
+Route::post('products/{id}/restore', [IntegrationController::class, 'restoreTrashedProduct'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+Route::delete('products/{id}/force', [IntegrationController::class, 'forceDeleteProduct'])->middleware('permission:' . Permission::SUPER_ADMIN);
 // Pay-by-link: public info + confirm (token-authed), admin link generation
 Route::get('pay-info', [IntegrationController::class, 'payInfo']);
 Route::post('pay-confirm', [IntegrationController::class, 'payConfirm']);
