@@ -204,6 +204,8 @@ Route::get('pay-info', [IntegrationController::class, 'payInfo']);
 Route::post('pay-confirm', [IntegrationController::class, 'payConfirm']);
 // Public read-only invoice behind /invoice/{token}. Guarded by a stable per-order token.
 Route::get('invoice-info', [IntegrationController::class, 'invoiceInfo']);
+// Public: resolve a shareable cart link's product ids into displayable products.
+Route::get('share-cart', [IntegrationController::class, 'shareCartItems']);
 // Manual bank transfer: buyer uploads the counter slip. Public but pay-token guarded, and
 // it only parks the file for review — an admin credits the payment via order-ops.
 Route::post('pay-bank-proof', [IntegrationController::class, 'payBankProof']);

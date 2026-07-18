@@ -37,16 +37,19 @@ const CartSidebarView = () => {
     closeSidebar({ display: false, view: '' });
   }
 
-  // Build a self-contained share link — base64url(JSON [[slug, qty], …]) — so anyone opening it
-  // sees exactly these books and can add them / check out. No server-side cart storage needed.
+  // Build a short, self-contained share link — /shared-cart?i=id.qty-id.qty — so anyone opening
+  // it sees exactly these books and can add them / check out. Product ids keep the URL short; no
+  // server-side cart storage needed.
   function shareCart() {
     if (!items.length) return;
-    const payload = items.map((it: any) => [it.slug, it.quantity]);
-    const code = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
-    const url = `${window.location.origin}/shared-cart?c=${code}`;
+    const code = items
+      .map((it: any) => {
+        const id = it.productId ?? it.id;
+        const q = Number(it.quantity) || 1;
+        return q > 1 ? `${id}.${q}` : `${id}`;
+      })
+      .join('-');
+    const url = `${window.location.origin}/shared-cart?i=${code}`;
     if (navigator?.clipboard?.writeText) {
       navigator.clipboard.writeText(url).then(
         () => toast.success('কার্ট শেয়ার লিংক কপি হয়েছে'),

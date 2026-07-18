@@ -28,34 +28,49 @@ export default function SharedCartPage() {
   const router = useRouter();
   const { addItemToCart, isInCart } = useCart() as any;
   const [products, setProducts] = useState<any[]>([]);
-  const [lines, setLines] = useState<Line[]>([]);
   const [loading, setLoading] = useState(true);
   const [, force] = useState(0);
 
   useEffect(() => {
-    const code = (router.query.c as string) || '';
     if (!router.isReady) return;
-    const parsed = decodeCode(code);
-    setLines(parsed);
-    if (!parsed.length) {
-      setLoading(false);
-      return;
-    }
+    const idsParam = (router.query.i as string) || '';
+    const codeParam = (router.query.c as string) || '';
     (async () => {
-      const out: any[] = [];
-      for (const l of parsed) {
+      let out: any[] = [];
+      if (idsParam) {
+        // Short link: i=id.qty-id.qty. One batched fetch by product id.
+        const parts = idsParam
+          .split('-')
+          .map((s) => {
+            const [id, q] = s.split('.');
+            return { id: Number(id), qty: Math.max(1, Number(q) || 1) };
+          })
+          .filter((x) => x.id);
+        const qtyById = new Map(parts.map((p) => [p.id, p.qty]));
         try {
-          const p: any = await HttpClient.get(`products/${l.slug}`, { language: router.locale });
-          if (p?.id) out.push({ ...p, _qty: l.qty });
+          const r: any = await HttpClient.get('share-cart', {
+            ids: parts.map((p) => p.id).join(','),
+          });
+          out = (r?.products || []).map((p: any) => ({ ...p, _qty: qtyById.get(p.id) || 1 }));
         } catch {
-          /* dropped product — skip */
+          /* dropped — show empty */
+        }
+      } else if (codeParam) {
+        // Legacy link: c=base64url([[slug, qty], …]). Fetch each by slug.
+        for (const l of decodeCode(codeParam)) {
+          try {
+            const p: any = await HttpClient.get(`products/${l.slug}`, { language: router.locale });
+            if (p?.id) out.push({ ...p, _qty: l.qty });
+          } catch {
+            /* dropped product — skip */
+          }
         }
       }
       setProducts(out);
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.isReady, router.query.c]);
+  }, [router.isReady, router.query.i, router.query.c]);
 
   const priceOf = (p: any) => Number(p?.sale_price ? p.sale_price : p?.price) || 0;
 

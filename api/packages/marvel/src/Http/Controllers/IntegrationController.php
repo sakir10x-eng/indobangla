@@ -1408,6 +1408,40 @@ class IntegrationController extends CoreController
         ];
     }
 
+    /**
+     * Public: resolve a shareable cart's product ids into the fields /shared-cart needs. Keeps the
+     * share link short (ids instead of slugs) and returns products in the requested order.
+     */
+    public function shareCartItems(Request $request)
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', explode(',', (string) $request->input('ids', ''))))));
+        if (empty($ids)) {
+            return ['status' => 'success', 'products' => []];
+        }
+        $byId = Product::with('author')
+            ->whereIn('id', array_slice($ids, 0, 100))
+            ->get()
+            ->keyBy('id');
+        $products = collect($ids)
+            ->map(fn ($id) => $byId->get($id))
+            ->filter()
+            ->map(fn ($p) => [
+                'id'          => $p->id,
+                'slug'        => $p->slug,
+                'name'        => $p->name,
+                'price'       => (float) $p->price,
+                'sale_price'  => (float) $p->sale_price,
+                'quantity'    => (int) $p->quantity,
+                'is_preorder' => (bool) $p->is_preorder,
+                'image'       => $p->image,
+                'shop'        => ['id' => $p->shop_id],
+                'shop_id'     => $p->shop_id,
+                'author'      => $p->author ? ['name' => $p->author->name, 'slug' => $p->author->slug] : null,
+            ])
+            ->values();
+        return ['status' => 'success', 'products' => $products];
+    }
+
     // ---------------------------------------------------------- order create
     /**
      * Create an order from an external bot (ReplyGenie).

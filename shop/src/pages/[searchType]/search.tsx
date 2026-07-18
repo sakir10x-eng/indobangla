@@ -19,12 +19,24 @@ import dynamic from 'next/dynamic';
 import { Product } from '@/types';
 import useLayout from '@/lib/hooks/use-layout';
 import Seo from '@/components/seo/seo';
-import IndoBookSearch from '@/components/search-view/indo-book-search';
+import SearchErrorBoundary from '@/components/search-view/search-error-boundary';
 
 const MobileNavigation = dynamic(
   () => import('@/components/layouts/mobile-navigation'),
   {
     ssr: false,
+  },
+);
+
+// Books-only results render client-side (they fetch from books-listing anyway). Keeping it out
+// of SSR avoids the hydration crash that was white-screening /books/search.
+const IndoBookSearch = dynamic(
+  () => import('@/components/search-view/indo-book-search'),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="w-full py-20 text-center text-body">লোড হচ্ছে…</div>
+    ),
   },
 );
 
@@ -58,7 +70,9 @@ export default function SearchPage() {
     return (
       <div className="w-full">
         <Seo title={'Book Search'} />
-        <IndoBookSearch />
+        <SearchErrorBoundary>
+          <IndoBookSearch />
+        </SearchErrorBoundary>
       </div>
     );
   }
@@ -104,7 +118,9 @@ const GetLayout = (page: React.ReactElement) => {
           <div className="flex w-full min-h-screen px-5 py-10 mx-auto max-w-1920 rtl:space-x-reverse lg:space-x-10 xl:py-14 xl:px-16">
             <div className="hidden w-80 shrink-0 lg:block">
               <StickyBox offsetTop={140} offsetBottom={30}>
-                <SidebarFilter />
+                <SearchErrorBoundary fallback={null}>
+                  <SidebarFilter />
+                </SearchErrorBoundary>
               </StickyBox>
             </div>
             {page}
