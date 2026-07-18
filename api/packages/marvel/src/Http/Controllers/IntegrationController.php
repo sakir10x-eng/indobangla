@@ -1031,6 +1031,7 @@ class IntegrationController extends CoreController
                 'subtotal'        => (float) $order->amount,
                 'delivery_fee'    => (float) $order->delivery_fee,
                 'weight_charge'   => (int) ($ops['weight_charge'] ?? 0),
+                'weight_kg'       => (float) ($ops['weight_kg'] ?? 0),
                 'discount'        => (float) $order->discount,
                 'total'           => (float) $order->total,
                 'paid_total'      => (float) $order->paid_total,
@@ -1880,9 +1881,20 @@ class IntegrationController extends CoreController
             $order->note = $request->note;
         }
         // Extra weight charge for heavy books — persisted so it survives later adjustments.
+        // Computed as rate (৳/kg) × weight (kg); the pieces are kept so the invoice can show the
+        // weight and the desk can re-edit. A bare weight_charge (no kg) is still honoured as a flat
+        // amount for older orders.
         $ops = (array) ($order->ops_meta ?? []);
-        if ($request->filled('weight_charge')) {
+        if ($request->filled('weight_kg') || $request->filled('weight_rate')) {
+            $wKg   = round((float) $request->input('weight_kg', 0), 3);
+            $wRate = round((float) $request->input('weight_rate', 0), 2);
+            $ops['weight_kg']     = $wKg;
+            $ops['weight_rate']   = $wRate;
+            $ops['weight_charge'] = (int) round($wKg * $wRate);
+            $order->ops_meta = $ops;
+        } elseif ($request->filled('weight_charge')) {
             $ops['weight_charge'] = round((float) $request->weight_charge);
+            unset($ops['weight_kg'], $ops['weight_rate']);
             $order->ops_meta = $ops;
         }
         $weightCharge = (float) ($ops['weight_charge'] ?? 0);
@@ -1903,6 +1915,8 @@ class IntegrationController extends CoreController
                 'id' => $order->id, 'total' => $order->total, 'paid_total' => $order->paid_total,
                 'discount' => $order->discount, 'delivery_fee' => $order->delivery_fee, 'note' => $order->note,
                 'weight_charge' => $weightCharge,
+                'weight_kg' => (float) ($ops['weight_kg'] ?? 0),
+                'weight_rate' => (float) ($ops['weight_rate'] ?? 0),
             ],
         ];
     }

@@ -147,7 +147,10 @@ export default function InvoicePage() {
                   {inv.discount > 0 && <Row label="ডিসকাউন্ট" value={'− ' + bdt(inv.discount)} green />}
                   <Row label="ডেলিভারি চার্জ" value={bdt(inv.delivery_fee)} />
                   {Number(inv.weight_charge) > 0 && (
-                    <Row label="ওজন চার্জ" value={bdt(inv.weight_charge)} />
+                    <Row
+                      label={`ওজন চার্জ${Number(inv.weight_kg) > 0 ? ` (${inv.weight_kg} kg)` : ''}`}
+                      value={bdt(inv.weight_charge)}
+                    />
                   )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '2px dashed #d7e9df', marginTop: 8, paddingTop: 14 }}>
                     <span style={{ fontSize: 16.5, fontWeight: 700 }}>মোট</span>

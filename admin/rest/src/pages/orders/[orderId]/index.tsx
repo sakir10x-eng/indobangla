@@ -215,7 +215,7 @@ export default function OrderDetailsPage() {
 
   const [status, setStatus] = useState('');
   const [pay, setPay] = useState('');
-  const [adj, setAdj] = useState({ discount: 0, delivery_fee: 0, weight_charge: 0, adjustment: 0, note: '' });
+  const [adj, setAdj] = useState({ discount: 0, delivery_fee: 0, weight_rate: 0, weight_kg: 0, adjustment: 0, note: '' });
   const [q, setQ] = useState('');
   const [courier, setCourier] = useState('redx');
   const [trackNo, setTrackNo] = useState('');
@@ -230,7 +230,8 @@ export default function OrderDetailsPage() {
       setAdj({
         discount: order.discount ?? 0,
         delivery_fee: order.delivery_fee ?? 0,
-        weight_charge: (order.ops_meta as any)?.weight_charge ?? 0,
+        weight_rate: (order.ops_meta as any)?.weight_rate ?? 0,
+        weight_kg: (order.ops_meta as any)?.weight_kg ?? 0,
         adjustment: 0,
         note: order.note ?? '',
       });
@@ -258,7 +259,8 @@ export default function OrderDetailsPage() {
         order_id: order.id,
         discount: Number(adj.discount) || 0,
         delivery_fee: Number(adj.delivery_fee) || 0,
-        weight_charge: Number(adj.weight_charge) || 0,
+        weight_rate: Number(adj.weight_rate) || 0,
+        weight_kg: Number(adj.weight_kg) || 0,
         adjustment: Number(adj.adjustment) || 0,
         note: adj.note ?? '',
       },
@@ -814,7 +816,6 @@ export default function OrderDetailsPage() {
               {([
                 ['Discount', 'discount'],
                 ['Delivery charge', 'delivery_fee'],
-                ['Weight charge', 'weight_charge'],
                 ['Advanced / adjustment (+/−)', 'adjustment'],
               ] as const).map(([l, k]) => (
                 <div key={k}>
@@ -822,6 +823,17 @@ export default function OrderDetailsPage() {
                   <input type="number" step="any" value={(adj as any)[k]} onChange={(e) => setAdj({ ...adj, [k]: e.target.value })} className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-accent" />
                 </div>
               ))}
+              {/* Weight charge = rate (৳/kg) × weight (kg). The weight is kept so the invoice can show it. */}
+              <div>
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-body">Weight charge</label>
+                <div className="flex items-center gap-1.5">
+                  <input type="number" step="any" placeholder="৳/kg" value={adj.weight_rate} onChange={(e) => setAdj({ ...adj, weight_rate: e.target.value as any })} className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-xs outline-none focus:border-accent" />
+                  <span className="text-xs text-body">×</span>
+                  <input type="number" step="any" placeholder="kg" value={adj.weight_kg} onChange={(e) => setAdj({ ...adj, weight_kg: e.target.value as any })} className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-xs outline-none focus:border-accent" />
+                  <span className="whitespace-nowrap text-xs font-bold text-heading">= ৳{Math.round((Number(adj.weight_rate) || 0) * (Number(adj.weight_kg) || 0))}</span>
+                </div>
+                <div className="mt-1 text-[10px] text-body">রেট (৳/কেজি) × ওজন (কেজি)</div>
+              </div>
               <div>
                 <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-body">Note</label>
                 <textarea value={adj.note} onChange={(e) => setAdj({ ...adj, note: e.target.value })} className="min-h-[52px] w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-accent" />
