@@ -16,13 +16,15 @@ import { toast } from 'react-toastify';
 
 type FormValues = {
   name: string;
-  email: string;
+  email?: string;
+  mobile_number?: string;
   password: string;
   // permission: Permission;
 };
 
 const defaultValues = {
   email: '',
+  mobile_number: '',
   password: '',
 };
 
@@ -42,14 +44,15 @@ const CustomerCreateForm = () => {
     resolver: yupResolver(customerValidationSchema),
   });
 
-  async function onSubmit({ name, email, password }: FormValues) {
+  async function onSubmit({ name, email, mobile_number, password }: FormValues) {
     registerUser(
       {
         name,
-        email,
+        email: email || undefined,
+        mobile_number: mobile_number || undefined,
         password,
         // permission: Permission.StoreOwner,
-      },
+      } as any,
       {
         onError: (error: any) => {
           Object.keys(error?.response?.data).forEach((field: any) => {
@@ -88,13 +91,22 @@ const CustomerCreateForm = () => {
             required
           />
           <Input
-            label={t('form:input-label-email')}
+            label={`${t('form:input-label-email')} (ঐচ্ছিক)`}
             {...register('email')}
             type="email"
             variant="outline"
             className="mb-4"
             error={t(errors.email?.message!)}
-            required
+          />
+          <Input
+            label="মোবাইল নম্বর"
+            {...register('mobile_number')}
+            type="tel"
+            inputMode="tel"
+            placeholder="01XXXXXXXXX"
+            variant="outline"
+            className="mb-4"
+            error={t(errors.mobile_number?.message!)}
           />
           <PasswordInput
             label={t('form:input-label-password')}

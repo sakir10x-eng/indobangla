@@ -484,6 +484,11 @@ class UserController extends CoreController
             'email'    => $request->email,
             'password' => Hash::make($request->password),
         ]);
+        // A walk-in customer may be created from a phone alone (email is optional now).
+        if ($request->filled('mobile_number')) {
+            $user->mobile_number = $request->mobile_number;
+            $user->saveQuietly();
+        }
 
         $user->givePermissionTo($permissions);
         $user->assignRole($role);
