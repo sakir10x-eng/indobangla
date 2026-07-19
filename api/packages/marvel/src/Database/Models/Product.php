@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Marvel\Traits\Excludable;
@@ -31,6 +32,19 @@ class Product extends Model
     // protected $disableFluentMeta = true;
     public $hideMeta = true;
 
+    /**
+     * Any product write through the admin — edit, publish, restock, AI-batch create/update —
+     * bumps the catalog cache version so the change shows up in search + listings at once
+     * instead of waiting out the 5–15 min catalog.cache TTL (see CacheCatalogResponse).
+     * Order stock changes use saveQuietly(), which does NOT fire these events, so checkout
+     * traffic never flushes the cache.
+     */
+    protected static function booted(): void
+    {
+        $bustCatalog = static fn () => Cache::increment('catalog:version');
+        static::saved($bustCatalog);
+        static::deleted($bustCatalog);
+    }
 
     protected $casts = [
         'image' => 'json',

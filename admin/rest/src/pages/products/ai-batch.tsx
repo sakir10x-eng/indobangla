@@ -44,6 +44,8 @@ type Row = {
   updated?: string[];
   /** Slug of the created product, so a published row can link to its live view. */
   publishedSlug?: string;
+  /** DB id of the product this row created (publish) or updated (match), shown in the view. */
+  productId?: number;
 };
 
 const REASON_LABEL: Record<DuplicateMatch['reason'], string> = {
@@ -212,6 +214,7 @@ export default function AiBatchPage() {
                 published: true,
                 publishError: undefined,
                 publishedSlug: res?.slug,
+                productId: res?.id,
               }
             : x
         )
@@ -247,6 +250,7 @@ export default function AiBatchPage() {
                 published: true,
                 updated: res?.updated ?? fields,
                 publishError: undefined,
+                productId: match.id,
               }
             : x
         )
@@ -642,6 +646,7 @@ function BatchRow({
               product={r.product}
               editable={!r.published}
               onProductPatch={onProductPatch}
+              productId={r.productId ?? r.matches?.[0]?.id}
             />
           </td>
         </tr>
@@ -667,10 +672,12 @@ function PreviewPanel({
   product: p,
   editable,
   onProductPatch,
+  productId,
 }: {
   product: any;
   editable: boolean;
   onProductPatch: (patch: Record<string, any>) => void;
+  productId?: number;
 }) {
   const [catInput, setCatInput] = useState('');
   const [catFocus, setCatFocus] = useState(false);
@@ -1040,6 +1047,12 @@ function PreviewPanel({
             <p className="mb-3 text-xs text-body">
               {writer || '—'} · Stock {p.quantity ?? '—'} ·{' '}
               {p.status === 'draft' ? 'Draft' : 'Live'}
+              {productId ? (
+                <>
+                  {' '}
+                  · <span className="font-semibold text-heading">Product ID {productId}</span>
+                </>
+              ) : null}
             </p>
           </>
         )}
