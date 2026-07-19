@@ -401,7 +401,7 @@ export default function OrderDetailsPage() {
               { cap: 'Total items', val: products.length, sub: 'books' },
               { cap: 'Subtotal', val: <Money amount={order.amount} />, sub: 'before charges' },
               { cap: 'Paid', val: <Money amount={order.paid_total} />, sub: partlyPaid ? `advance ${advancePct}%` : fullyPaid ? 'settled' : 'nothing yet', tone: paid > 0 ? '#6cd39b' : '#efc05d' },
-              { cap: partlyPaid ? 'Due' : 'Total payable', val: <Money amount={partlyPaid ? due : total} />, sub: fullyPaid ? 'paid' : 'on delivery', hot: true },
+              { cap: fullyPaid ? 'Remaining due' : partlyPaid ? 'Due' : 'Total payable', val: <Money amount={due} />, sub: fullyPaid ? 'fully paid ✓' : 'on delivery', hot: !fullyPaid, tone: fullyPaid ? '#6cd39b' : undefined },
             ].map((s, i) => (
               <div key={i} className={`rounded-xl p-4 ${s.hot ? 'border border-[#5a2b2f] bg-[#2e1518]' : 'bg-[#141416]'}`}>
                 <div className="text-[10px] uppercase tracking-[0.06em]" style={{ color: s.hot ? '#f2969d' : '#7a7a80' }}>{s.cap}</div>
@@ -620,8 +620,8 @@ export default function OrderDetailsPage() {
               </div>
             </div>
             <div className="mt-2 flex items-center justify-between rounded-lg border border-accent/40 bg-accent/10 px-4 py-2.5">
-              <span className="text-sm font-semibold text-accent">{partlyPaid ? 'Due on delivery' : 'Total payable'}</span>
-              <span className="font-mono text-lg font-semibold text-accent"><Money amount={partlyPaid ? due : total} /></span>
+              <span className="text-sm font-semibold text-accent">{fullyPaid ? 'Remaining due' : partlyPaid ? 'Due on delivery' : 'Total payable'}</span>
+              <span className="font-mono text-lg font-semibold text-accent"><Money amount={due} /></span>
             </div>
           </div>
 
