@@ -181,8 +181,18 @@ trait PaymentTrait
      */
     public function createPaymentIntent(Order $order, Request $request, string $payment_gateway): array
     {
+        // BD pay-link / pre-order orders deliberately zero `paid_total` so the custom
+        // /pay/{token} screen never reads it as "already paid"; the real amount still owed
+        // is stamped in ops_meta.pay_amount. Falling back to paid_total (0) made bKash reject
+        // a 0 amount, so the standard /orders/{tracking}/payment "Pay Now" button threw
+        // SOMETHING_WENT_WRONG_WITH_PAYMENT. Charge the outstanding stamped amount instead.
+        $walletAmt = intval($order?->wallet?->amount);
+        $ops = (array) ($order->ops_meta ?? []);
+        $payable = (!empty($ops["pay_token"]) && isset($ops["pay_amount"]))
+            ? max(0, (float) $ops["pay_amount"] - (float) $order->paid_total)
+            : (float) $order->paid_total;
         $created_intent = [
-            "amount"                => $order->paid_total - intval($order?->wallet?->amount),
+            "amount"                => $payable - $walletAmt,
             "order_tracking_number" => $order->tracking_number,
         ];
         if ($request->user() !== null) {
