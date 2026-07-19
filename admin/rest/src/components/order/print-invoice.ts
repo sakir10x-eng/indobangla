@@ -86,7 +86,15 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   /* Half-A4 tear guide: the slip occupies the top 148mm (half of A4), cut along this line. */
   .cut{margin:5mm -10mm 0;border-top:1px dashed #B7B2AE;position:relative;height:0;}
   .cut span{position:absolute;top:-6px;left:50%;transform:translateX(-50%);background:#fff;padding:0 3mm;font-size:8px;letter-spacing:.5px;color:var(--ink-soft);}
-  @media print{body{background:#fff;}.sheet-wrap{margin:0;width:auto;}.sheet{box-shadow:none;margin:0;}}
+  @media print{
+    body{background:#fff;}
+    .sheet-wrap{margin:0 auto;width:210mm;}
+    .sheet{box-shadow:none;margin:0 auto;}
+    /* "Compact" scales the slip from its TOP-CENTRE, so a smaller print stays centred on the
+       sheet. The browser's own Scale slider anchors to the top-left corner instead — that's why
+       scaling there shoves the slip to one side. Use the Compact button + keep Scale = Default. */
+    body.compact .sheet{transform:scale(.72);transform-origin:top center;}
+  }
   .header{display:flex;justify-content:space-between;align-items:flex-start;gap:6mm;}
   .brand h1{margin:0;font-size:20px;font-weight:800;letter-spacing:.3px;}
   .brand h1 span{color:var(--red);}
@@ -128,6 +136,7 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   <label style="color:#fff;font-size:12px;align-self:center;display:inline-flex;gap:4px;align-items:center;"><input type="checkbox" checked onchange="document.getElementById('bdg-bookmark').style.display=this.checked?'inline-flex':'none';">Free bookmark</label>
   <label style="color:#fff;font-size:12px;align-self:center;display:inline-flex;gap:4px;align-items:center;"><input type="checkbox" checked onchange="document.getElementById('bdg-tamper').style.display=this.checked?'inline-flex':'none';">Tamper-proof</label>
   <label style="color:#fff;font-size:12px;align-self:center;display:inline-flex;gap:4px;align-items:center;"><input type="checkbox" checked onchange="document.getElementById('bdg-replace').style.display=this.checked?'inline-flex':'none';">3-day replacement</label>
+  <label style="color:#fff;font-size:12px;align-self:center;display:inline-flex;gap:4px;align-items:center;" title="Print a smaller slip centred on the page. Keep the browser's Scale on Default — its Scale slider pushes the print to one side."><input type="checkbox" onchange="document.body.classList.toggle('compact', this.checked);">🗜 Compact (center)</label>
   <button class="b1" onclick="document.body.classList.remove('bw');window.print();">🖨️ Print (Colour)</button>
   <button class="b2" onclick="document.body.classList.add('bw');window.print();">⬛ Print B&amp;W</button>
 </div>

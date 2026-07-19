@@ -352,6 +352,21 @@ function OrderCard({ o, act, busy, coupon }: any) {
         <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${st.chip}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} /> {st.label}
         </span>
+        {/* Courier + parcel-state at a glance, so the list shows where each parcel is
+            without opening the card. Status label above = the delivery stage. */}
+        {o.courier ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-200"
+            title={o.courierTrackingId ? `Tracking: ${o.courierTrackingId}` : 'Courier assigned'}
+          >
+            🚚 {o.courier}
+            {o.courierTrackingId ? <span className="font-mono text-[10px] opacity-70">#{o.courierTrackingId}</span> : null}
+          </span>
+        ) : isOpen(o.bucket) ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2.5 py-0.5 text-xs font-semibold text-slate-400 ring-1 ring-slate-200">
+            🚚 No courier
+          </span>
+        ) : null}
         <span className="font-mono text-sm font-bold text-slate-800">#{o.id}</span>
         <span className="hidden text-[11px] text-slate-400 sm:inline">{o.by}</span>
         {attn ? (

@@ -458,6 +458,16 @@ class AiExtractController extends CoreController
             }
         }
 
+        // Beyond the cover, collect any extra product images the page exposes (JSON-LD image
+        // arrays first, then gallery <img> tags) so a publish can import the whole gallery.
+        // Best-effort — returns [] on a JS-only page (e.g. AnandaPub) or a fetch failure.
+        if ($productUrl) {
+            $galleryUrls = $this->fetchGalleryImages($productUrl, $data['image_url'] ?? null);
+            if ($galleryUrls) {
+                $data['gallery_urls'] = $galleryUrls;
+            }
+        }
+
         // AnandaPub's own API is authoritative — the model reliably romanises the Bangla
         // title, guesses a dead cover URL, and even invents prices. When we have their
         // JSON, take name / cover / price / author / description / ISBN straight from it
@@ -852,6 +862,98 @@ class AiExtractController extends CoreController
         return null;
     }
 
+    /**
+     * Best-effort gallery scrape: additional product images from a page, beyond the cover.
+     * Prefers JSON-LD `image` (clean + product-specific); falls back to gallery <img> tags
+     * only when JSON-LD yields nothing (keeps related-product/nav noise out). Filters logos,
+     * icons, placeholders, SVGs and the cover itself; resolves relative URLs; deduped + capped.
+     * Never throws — a miss just means the book imports with its cover only.
+     */
+    private function fetchGalleryImages(?string $url, ?string $cover = null, int $max = 8): array
+    {
+        if (!$url || !preg_match('#^https?://#i', $url)) {
+            return [];
+        }
+        try {
+            $html = Http::timeout(20)->withHeaders([
+                'User-Agent' => 'Mozilla/5.0 (compatible; IndoBanglaBot/1.0)',
+            ])->get($url)->body();
+        } catch (\Throwable $e) {
+            return [];
+        }
+        if (!$html) {
+            return [];
+        }
+
+        $origin    = preg_replace('#^(https?://[^/]+).*#i', '$1', $url);
+        $coverBase = $cover ? strtok(basename($cover), '?') : '';
+        $urls      = [];
+
+        $add = function (?string $raw) use (&$urls, $origin, $coverBase) {
+            if (!is_string($raw)) {
+                return;
+            }
+            $u = html_entity_decode(trim($raw));
+            if ($u === '' || str_starts_with($u, 'data:')) {
+                return;
+            }
+            if (str_starts_with($u, '//')) {
+                $u = 'https:' . $u;
+            } elseif (str_starts_with($u, '/')) {
+                $u = $origin . $u;
+            }
+            if (!preg_match('#^https?://#i', $u)) {
+                return;
+            }
+            if (preg_match('#(logo|icon|sprite|placeholder|no[-_]?image|default[-_]?(cover|image)|avatar|flag|/thumbs?/|thumb_|spacer|blank|1x1|pixel|loading|lazy|banner|/ads?/|/assets/|/static/|/img/(ui|icons?)/|play\.(png|svg|gif)|share\.|cart\.|wishlist)#i', $u)) {
+                return;
+            }
+            if (preg_match('#\.svg(\?|$)#i', $u)) {
+                return;
+            }
+            if ($coverBase !== '' && strtok(basename($u), '?') === $coverBase) {
+                return;
+            }
+            $urls[$u] = true;
+        };
+
+        // 1) JSON-LD image fields (schema.org Product/Book) — the reliable source.
+        if (preg_match_all('#<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>#is', $html, $ld)) {
+            foreach ($ld[1] as $json) {
+                $decoded = json_decode(trim($json), true);
+                if (!is_array($decoded)) {
+                    continue;
+                }
+                if (isset($decoded['image']) && is_array($decoded['image'])) {
+                    foreach ($decoded['image'] as $img) {
+                        if (is_string($img)) {
+                            $add($img);
+                        }
+                    }
+                }
+                array_walk_recursive($decoded, function ($v, $k) use ($add) {
+                    if (($k === 'image' || $k === 'contentUrl') && is_string($v)) {
+                        $add($v);
+                    }
+                    if ($k === 'url' && is_string($v) && preg_match('#\.(jpe?g|png|webp)(\?|$)#i', $v)) {
+                        $add($v);
+                    }
+                });
+            }
+        }
+
+        // 2) Fallback to gallery <img> tags only when JSON-LD gave nothing.
+        if (empty($urls) && preg_match_all('#<img[^>]+(?:data-src|data-original|data-lazy|src)=["\']([^"\']+)["\']#i', $html, $imgs)) {
+            foreach ($imgs[1] as $src) {
+                if (preg_match('#\.(jpe?g|png|webp)(\?|$)#i', $src)) {
+                    $add($src);
+                }
+            }
+        }
+
+        return array_slice(array_keys($urls), 0, $max);
+    }
+
     private function storeImageFromUrl(string $url): array
     {
         $resp = Http::timeout(45)->withHeaders([
@@ -1027,6 +1129,23 @@ class AiExtractController extends CoreController
             }
         }
 
+        // Extra images the extractor found on the source page → the book gallery. Each one is
+        // best-effort: a download that fails is skipped, never failing the whole publish.
+        $gallery = [];
+        foreach ((array) ($p['gallery_urls'] ?? []) as $gu) {
+            if (count($gallery) >= 8) {
+                break;
+            }
+            if (!is_string($gu) || $gu === '' || $gu === ($p['image_url'] ?? null)) {
+                continue;
+            }
+            try {
+                $gallery[] = $this->storeImageFromUrl($gu);
+            } catch (\Throwable $e) {
+                // skip a bad gallery image
+            }
+        }
+
         $price = is_numeric($p['price'] ?? null) ? (float) $p['price'] : 0;
         $product = \Marvel\Database\Models\Product::create([
             'name'            => $p['name'],
@@ -1051,6 +1170,7 @@ class AiExtractController extends CoreController
             'author_id'       => $this->resolveAuthorId($p),
             'manufacturer_id' => $this->resolvePublisherId($p),
             'image'           => $image,
+            'gallery'         => $gallery ?: null,
         ]);
 
         if (!empty($p['categories']) && is_array($p['categories'])) {
