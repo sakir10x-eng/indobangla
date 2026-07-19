@@ -317,9 +317,9 @@ function NextReads({ order }: { order: any }) {
         }
         .offer-cover {
           position: relative;
-          flex: 0 0 84px;
-          width: 84px;
-          height: 116px;
+          flex: 0 0 64px;
+          width: 64px;
+          height: 88px;
           border-radius: 8px;
           background: linear-gradient(150deg, #f3efe8, #e6ded2);
           display: flex;
