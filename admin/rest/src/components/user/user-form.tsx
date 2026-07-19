@@ -113,9 +113,14 @@ const CustomerCreateForm = () => {
             {...register('password')}
             error={t(errors.password?.message!)}
             variant="outline"
-            className="mb-4"
+            className="mb-1.5"
             required
           />
+          {/* Soft suggestion only — the schema enforces just a 6-character minimum. */}
+          <p className="mb-4 text-xs text-amber-600">
+            💡 For a stronger password, use 8+ characters with an upper &amp; lower case letter and
+            a number. Not required — a 6-character password is accepted.
+          </p>
         </Card>
       </div>
       <StickyFooterPanel className="z-0">

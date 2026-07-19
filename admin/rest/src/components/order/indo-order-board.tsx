@@ -965,21 +965,20 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
   }, [mapped]);
 
   const shown = useMemo(() => {
-    // `mapped` already arrives newest-first (created_at desc); keep that order and
-    // only pin attention orders to the top (stable sort preserves recency within groups).
-    return mapped
-      .filter((o) => {
-        // Archived orders (voiding auto-archives) live only in the Void / Archived tabs — every
-        // working tab, including 'All', hides them so the main list stays the live workload.
-        const showsArchived = tab === 'void' || tab === 'archived';
-        if (!showsArchived && o.archived_at) return false;
-        if (tab === 'attention') return needsAttention(o);
-        if (tab === 'printstuck') return o.print === 'sent';
-        if (tab === 'all') return true;
-        if (tab === 'archived') return !!o.archived_at;
-        return o.bucket === tab;
-      })
-      .sort((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)));
+    // `mapped` arrives newest-first (id desc) and we keep exactly that order — the latest order
+    // always sits at the very top. Orders needing action have their own ⚠️ Attention tab, so we
+    // no longer pin them above newer orders here (that reordering broke "newest first").
+    return mapped.filter((o) => {
+      // Archived orders (voiding auto-archives) live only in the Void / Archived tabs — every
+      // working tab, including 'All', hides them so the main list stays the live workload.
+      const showsArchived = tab === 'void' || tab === 'archived';
+      if (!showsArchived && o.archived_at) return false;
+      if (tab === 'attention') return needsAttention(o);
+      if (tab === 'printstuck') return o.print === 'sent';
+      if (tab === 'all') return true;
+      if (tab === 'archived') return !!o.archived_at;
+      return o.bucket === tab;
+    });
   }, [mapped, tab]);
 
   const summary = useMemo(() => ({

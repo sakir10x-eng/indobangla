@@ -10,7 +10,6 @@ import { yupResolver } from '@hookform/resolvers/yup';
 import * as yup from 'yup';
 import { useShopQuery } from '@/data/shop';
 import { useAddStaffMutation } from '@/data/staff';
-import { passwordRules } from '@/utils/constants';
 import StickyFooterPanel from '@/components/ui/sticky-footer-panel';
 
 type FormValues = {
@@ -27,10 +26,8 @@ const staffFormSchema = yup.object().shape({
   password: yup
     .string()
     .required('form:error-password-required')
-    .matches(passwordRules, {
-      message:
-        'Please create a stronger password. hint: Min 8 characters, 1 Upper case letter, 1 Lower case letter, 1 Numeric digit.',
-    }),
+    // 6-char minimum only; the stronger-password rule is a soft notice, not a hard block.
+    .min(6, 'Password must be at least 6 characters.'),
 });
 const AddStaffForm = () => {
   const router = useRouter();
@@ -107,9 +104,14 @@ const AddStaffForm = () => {
             {...register('password')}
             error={t(errors.password?.message!)}
             variant="outline"
-            className="mb-4"
+            className="mb-1.5"
             required
           />
+          {/* Soft suggestion only — the schema enforces just a 6-character minimum. */}
+          <p className="mb-4 text-xs text-amber-600">
+            💡 For a stronger password, use 8+ characters with an upper &amp; lower case letter and
+            a number. Not required — a 6-character password is accepted.
+          </p>
         </Card>
       </div>
 
