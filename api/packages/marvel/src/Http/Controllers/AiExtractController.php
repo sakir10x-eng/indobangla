@@ -765,20 +765,28 @@ class AiExtractController extends CoreController
             if (!empty($jinaKey)) {
                 $headers['Authorization'] = 'Bearer ' . $jinaKey;
             }
-            for ($attempt = 1; $attempt <= 3; $attempt++) {
+            for ($attempt = 1; $attempt <= 4; $attempt++) {
                 try {
                     $resp = Http::withHeaders($headers)->timeout(40)->get($reader);
                     if ($resp->successful()) {
                         $text = trim($resp->body());
-                        if (strlen($text) > 200) {
+                        // A JS-heavy SPA (e.g. anandapub.in) served through a THROTTLED
+                        // reader comes back as a ~700-char bare shell: it passes a naive
+                        // >200 check but has zero book content, so the crawl finds no
+                        // links and an extract returns all-null — the reported "AI fetch
+                        // not working". Demand a substantial page on the early tries and
+                        // retry the throttle; only on the last try accept a thin body so
+                        // a genuinely short page still returns something.
+                        $enough = $attempt >= 3 ? 200 : 1500;
+                        if (strlen($text) > $enough) {
                             return $text;
                         }
                     }
                 } catch (\Throwable $inner) {
                     // this attempt failed — fall through to the backoff below
                 }
-                if ($attempt < 3) {
-                    usleep(900000 * $attempt); // 0.9s, then 1.8s
+                if ($attempt < 4) {
+                    usleep(900000 * $attempt); // 0.9s, 1.8s, 2.7s
                 }
             }
         } catch (\Throwable $e) {
