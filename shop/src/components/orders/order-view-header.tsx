@@ -36,7 +36,7 @@ export default function OrderViewHeader({
   const paymentGateway = settings?.paymentGateway;
   return (
     <div className={cn(`bg-[#F7F8FA] ${wrapperClassName}`)}>
-      <div className="flex flex-col flex-wrap items-center justify-between mb-0 text-base font-bold gap-x-8 text-heading sm:flex-row lg:flex-nowrap">
+      <div className="flex flex-col flex-wrap items-center justify-between mb-0 text-base font-bold gap-x-8 text-heading sm:flex-row">
         <div
           className={`order-2 grid w-full grid-cols-1 gap-6 xs:flex-nowrap sm:order-1 ${
             !isPaymentActionPending
@@ -104,8 +104,10 @@ export default function OrderViewHeader({
         {!isLoading && !isEmpty(paymentGateway) ? (
           <>
             {isPaymentActionPending && (
-              <span className="order-2 w-full max-w-full mt-5 shrink-0 basis-full sm:order-1 lg:mt-0 lg:w-auto lg:max-w-none lg:basis-auto lg:ltr:ml-auto lg:rtl:mr-auto">
-                {/* <PayNowButton trackingNumber={order?.tracking_number} /> */}
+              // Own full-width row under the status line — sharing the row with the
+              // status badges squeezed the "Payment Status" value into "Payme…" and jammed
+              // it against this button. A dedicated row keeps them clearly separated.
+              <span className="order-2 mt-4 w-full max-w-full shrink-0 basis-full sm:order-1">
                 <PayNowButton
                   trackingNumber={order?.tracking_number}
                   order={order}
@@ -114,7 +116,7 @@ export default function OrderViewHeader({
             )}
             {/* @ts-ignore */}
             {paymentGateway?.length > 1 && isPaymentActionPending && (
-              <span className="order-2 w-full max-w-full mt-5 shrink-0 basis-full sm:order-1 lg:mt-0 lg:w-auto lg:max-w-none lg:basis-auto lg:ltr:ml-auto lg:rtl:mr-auto">
+              <span className="order-2 mt-3 w-full max-w-full shrink-0 basis-full sm:order-1">
                 <ChangeGateway order={order} />
               </span>
             )}

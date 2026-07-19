@@ -3,6 +3,8 @@ import dayjs from 'dayjs';
 import cn from 'classnames';
 import { useTranslation } from 'next-i18next';
 import StatusColor from './status-color';
+import PayNowButton from '@/components/payment/pay-now-button';
+import { isPaymentPending } from '@/lib/is-payment-pending';
 
 type OrderCardProps = {
   order: any;
@@ -13,6 +15,17 @@ type OrderCardProps = {
 const OrderCard: React.FC<OrderCardProps> = ({ onClick, order, isActive }) => {
   const { t } = useTranslation('common');
   const { id, order_status, created_at, delivery_time } = order;
+  // Let the buyer pay an unpaid online order straight from the list, not only the detail view.
+  // Require the payment fields to actually be present so a lighter list payload can never
+  // false-positive a Pay Now on a COD/paid order.
+  const showPayNow =
+    Boolean(order?.payment_gateway) &&
+    Boolean(order?.payment_status) &&
+    isPaymentPending(
+      order?.payment_gateway,
+      order?.order_status,
+      order?.payment_status,
+    );
   const { price: amount } = usePrice({
     amount: order?.amount,
   });
@@ -75,6 +88,20 @@ const OrderCard: React.FC<OrderCardProps> = ({ onClick, order, isActive }) => {
           <span className="ltr:mr-auto rtl:ml-auto">:</span>
           <span className="ltr:ml-1 rtl:mr-1">{total}</span>
         </p>
+        {showPayNow && (
+          // stopPropagation so paying doesn't also fire the card's select onClick.
+          <div
+            className="mt-1"
+            role="presentation"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <PayNowButton
+              order={order}
+              trackingNumber={order?.tracking_number}
+              buttonSize="small"
+            />
+          </div>
+        )}
       </div>
     </div>
   );
