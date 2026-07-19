@@ -672,7 +672,7 @@ export default function CreateOrderPage() {
                                 : {}
                               : { opacity: 0.5, cursor: 'not-allowed' }
                           }
-                          onClick={() => b.quantity && addBook(b)}
+                          onClick={() => b.quantity && !inCartQty && addBook(b)}
                         >
                           <div className="rcover">
                             {b.image?.thumbnail ? (
@@ -688,9 +688,28 @@ export default function CreateOrderPage() {
                                 : 'Out of stock'}
                             </div>
                           </div>
-                          {inCartQty > 0 && (
-                            <span className="incart">✓ কার্টে {inCartQty}</span>
-                          )}
+                          {inCartQty > 0 ? (
+                            <div
+                              className="dqty"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => removeItemFromCart(b.id)}
+                                aria-label="Decrease / remove"
+                              >
+                                −
+                              </button>
+                              <span>{inCartQty}</span>
+                              <button
+                                type="button"
+                                onClick={() => addBook(b)}
+                                aria-label="Increase"
+                              >
+                                +
+                              </button>
+                            </div>
+                          ) : null}
                           <span className="rt">{tk(b.sale_price ?? b.price)}</span>
                         </div>
                       );
@@ -1314,17 +1333,37 @@ export default function CreateOrderPage() {
           font-weight: 600;
           white-space: nowrap;
         }
-        .res .incart {
+        .res .dqty {
           margin-left: auto;
-          font-size: 10.5px;
-          font-weight: 700;
-          color: #0f9d68;
-          background: #e4f6ee;
-          border-radius: 999px;
-          padding: 2px 8px;
-          white-space: nowrap;
+          display: flex;
+          align-items: center;
+          gap: 6px;
         }
-        /* When no in-cart badge sits before it, the price pushes itself right. */
+        .res .dqty button {
+          width: 22px;
+          height: 22px;
+          border-radius: 6px;
+          border: 1px solid #cfe0d7;
+          background: #fff;
+          color: #2e6b5a;
+          font-size: 15px;
+          font-weight: 700;
+          line-height: 1;
+          cursor: pointer;
+          display: grid;
+          place-items: center;
+        }
+        .res .dqty button:hover {
+          background: #e4f6ee;
+        }
+        .res .dqty span {
+          min-width: 18px;
+          text-align: center;
+          font-size: 13px;
+          font-weight: 700;
+          color: #2e6b5a;
+        }
+        /* When no stepper sits before it, the price pushes itself right. */
         .res .rt:first-of-type {
           margin-left: auto;
         }
