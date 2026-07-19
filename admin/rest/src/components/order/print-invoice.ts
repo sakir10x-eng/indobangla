@@ -82,7 +82,10 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   @media print{.ib-bar{display:none !important;}}
   @page{size:A4;margin:0;}
   .sheet-wrap{width:210mm;margin:6mm auto;}
-  .sheet{width:210mm;min-height:150mm;background:#fff;padding:8mm 10mm;position:relative;overflow:hidden;box-shadow:0 2px 14px rgba(0,0,0,.14);}
+  .sheet{width:210mm;min-height:148mm;background:#fff;padding:8mm 10mm;position:relative;overflow:hidden;box-shadow:0 2px 14px rgba(0,0,0,.14);}
+  /* Half-A4 tear guide: the slip occupies the top 148mm (half of A4), cut along this line. */
+  .cut{margin:5mm -10mm 0;border-top:1px dashed #B7B2AE;position:relative;height:0;}
+  .cut span{position:absolute;top:-6px;left:50%;transform:translateX(-50%);background:#fff;padding:0 3mm;font-size:8px;letter-spacing:.5px;color:var(--ink-soft);}
   @media print{body{background:#fff;}.sheet-wrap{margin:0;width:auto;}.sheet{box-shadow:none;margin:0;}}
   .header{display:flex;justify-content:space-between;align-items:flex-start;gap:6mm;}
   .brand h1{margin:0;font-size:20px;font-weight:800;letter-spacing:.3px;}
@@ -159,13 +162,6 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
     <thead><tr><th>#</th><th>Book</th><th>Qty</th><th>Total</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
-  <div class="badges">
-    <span id="bdg-bookmark" style="display:inline-flex;">✓ Free bookmark included</span>
-    <span id="bdg-tamper" style="display:inline-flex;">✓ Tamper-proof packaging</span>
-    <span id="bdg-replace" style="display:inline-flex;">✓ 3-day damage replacement</span>
-  </div>
-  <div class="quote">"A room without books is like a body without a soul." — Cicero</div>
-  ${o.note ? `<div class="nb">N.B. ${esc(o.note)}</div>` : ''}
   <div class="totals">
     <div class="row">Sub Total <b>${bdt(subTotal)}</b></div>
     ${discount ? `<div class="row">Discount <b>- ${bdt(discount)}</b></div>` : ''}
@@ -177,7 +173,16 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
     <div class="row grand"><span>Due on Delivery</span><span>${bdt(dueNow)}</span></div>`
       : `<div class="row grand"><span>Total Payable</span><span>${bdt(payable)}</span></div>`}
   </div>
-  <div style="margin-top:2mm;display:flex;gap:5mm;align-items:center;">
+  <div class="badges">
+    <span id="bdg-bookmark" style="display:inline-flex;">✓ Free bookmark included</span>
+    <span id="bdg-tamper" style="display:inline-flex;">✓ Tamper-proof packaging</span>
+    <span id="bdg-replace" style="display:inline-flex;">✓ 3-day damage replacement</span>
+  </div>
+  ${o.note ? `<div class="nb">N.B. ${esc(o.note)}</div>` : ''}
+  <div class="quote">"A room without books is like a body without a soul." — Cicero</div>
+  <!-- QR sits directly under the quote so the essential slip (header→totals→QR) fits the
+       top half of an A4 and can be torn off along the cut guide below. -->
+  <div class="qr-slip" style="margin-top:2mm;display:flex;gap:5mm;align-items:center;">
     <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=https%3A%2F%2Findobangla.tech%2Forders" alt="QR" style="width:20mm;height:20mm;flex-shrink:0;" />
     <div style="flex:1;">
       <div style="font-size:9px;font-weight:800;color:var(--ink);">📱 Track &amp; Reorder</div>
@@ -189,6 +194,7 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   <div class="guarantee" style="margin-top:3mm;"><b>Genuine Book Guarantee.</b> 100% original edition. Damaged or wrong book? Free replacement within 3 days — no questions asked.</div>
 
   <div class="foot">Order Processed By: IndoBangla — Dhanmondi Hub · Thank you for reading with us.</div>
+  <div class="cut"><span>✂ CUT HERE · HALF-A4 SLIP</span></div>
 </div></div>
 <script>window.onload=function(){window.focus();}</script>
 </body></html>`;

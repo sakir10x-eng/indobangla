@@ -23,7 +23,7 @@ export default function Orders() {
     language: locale,
     limit: pageSize,
     page,
-    orderBy: 'created_at',
+    orderBy: 'id',
     sortedBy: SortOrder.Desc,
   });
 
