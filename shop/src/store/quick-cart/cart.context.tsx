@@ -5,6 +5,7 @@ import { useLocalStorage } from '@/lib/use-local-storage';
 import { CART_KEY } from '@/lib/constants';
 import { useAtom } from 'jotai';
 import { verifiedResponseAtom } from '@/store/checkout';
+import { track } from '@/lib/analytics';
 interface CartProviderState extends State {
   addItemsToCart: (items: Item[]) => void;
   addItemToCart: (item: Item, quantity: number) => void;
@@ -52,8 +53,10 @@ export const CartProvider: React.FC<{ children?: React.ReactNode }> = (
 
   const addItemsToCart = (items: Item[]) =>
     dispatch({ type: 'ADD_ITEMS_WITH_QUANTITY', items });
-  const addItemToCart = (item: Item, quantity: number) =>
+  const addItemToCart = (item: Item, quantity: number) => {
+    track('add_to_cart', { product_id: (item as any)?.productId ?? (item as any)?.id });
     dispatch({ type: 'ADD_ITEM_WITH_QUANTITY', item, quantity });
+  };
   const removeItemFromCart = (id: Item['id']) =>
     dispatch({ type: 'REMOVE_ITEM_OR_QUANTITY', id });
   const clearItemFromCart = (id: Item['id']) =>

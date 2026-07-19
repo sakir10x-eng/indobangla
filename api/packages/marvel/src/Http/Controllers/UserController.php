@@ -267,6 +267,11 @@ class UserController extends CoreController
         $user = User::where('email', $request->email)->where('is_active', true)->first();
 
         if (!$user || !Hash::check($request->password, $user->password) || !$this->applicationIsValid) {
+            $exists = User::where('email', $request->email)->first();
+            $reason = !$this->applicationIsValid ? 'app-invalid'
+                : (!$exists ? 'no-account'
+                : (!$exists->is_active ? 'account-inactive-blocked' : 'wrong-password'));
+            \Marvel\Http\Controllers\IntegrationController::logLoginBlocked($request->email, $reason, $request);
             return ["token" => null, "permissions" => []];
         }
         $email_verified = $user->hasVerifiedEmail();

@@ -1442,6 +1442,117 @@ class IntegrationController extends CoreController
         return ['status' => 'success', 'products' => $products];
     }
 
+    // ---------------------------------------------------------- storefront analytics
+
+    /** Log a login block from the auth flow (see UserController). */
+    public static function logLoginBlocked(?string $identifier, string $reason, $request): void
+    {
+        try {
+            DB::table('analytics_events')->insert([
+                'session_id' => 'login',
+                'event'      => 'login_blocked',
+                'path'       => substr((string) $identifier, 0, 512) ?: null,
+                'meta'       => json_encode(['reason' => $reason, 'identifier' => $identifier]),
+                'ip'         => $request ? substr((string) $request->ip(), 0, 64) : null,
+                'user_agent' => $request ? substr((string) $request->userAgent(), 0, 512) : null,
+                'created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // analytics must never break login
+        }
+    }
+
+    /** Public: record a storefront event. Kept fire-and-forget — it must never break a page. */
+    public function track(Request $request)
+    {
+        $sid   = substr((string) $request->input('sid', ''), 0, 64);
+        $event = substr((string) $request->input('event', ''), 0, 32);
+        $allowed = ['page_view', 'product_view', 'product_click', 'add_to_cart', 'checkout_start', 'order_placed'];
+        if ($sid === '' || !in_array($event, $allowed, true)) {
+            return ['status' => 'ok'];
+        }
+        try {
+            DB::table('analytics_events')->insert([
+                'session_id'  => $sid,
+                'user_id'     => optional(auth('sanctum')->user())->id,
+                'event'       => $event,
+                'path'        => substr((string) $request->input('path', ''), 0, 512) ?: null,
+                'product_id'  => $request->filled('product_id') ? (int) $request->input('product_id') : null,
+                'referrer'    => substr((string) $request->input('referrer', ''), 0, 512) ?: null,
+                'duration_ms' => $request->filled('duration_ms') ? (int) $request->input('duration_ms') : null,
+                'meta'        => $request->filled('meta') ? json_encode($request->input('meta')) : null,
+                'ip'          => substr((string) $request->ip(), 0, 64),
+                'user_agent'  => substr((string) $request->userAgent(), 0, 512),
+                'created_at'  => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // swallow — a tracking hiccup must not surface to the shopper
+        }
+        return ['status' => 'ok'];
+    }
+
+    /** Admin: storefront analytics summary for the last N days — visitors, funnel, journeys. */
+    public function analyticsSummary(Request $request)
+    {
+        $days  = max(1, min(90, (int) $request->input('days', 7)));
+        $since = now()->subDays($days);
+        $ev    = fn () => DB::table('analytics_events')->where('created_at', '>=', $since);
+
+        $visitors     = $ev()->where('session_id', '!=', 'login')->distinct()->count('session_id');
+        $pageViews    = $ev()->where('event', 'page_view')->count();
+        $productViews = $ev()->where('event', 'page_view')->where('path', 'like', '/products/%')->count();
+        $cartAdds     = $ev()->where('event', 'add_to_cart')->count();
+        $loginBlocked = $ev()->where('event', 'login_blocked')->count();
+
+        $topPages = $ev()->where('event', 'page_view')
+            ->select('path', DB::raw('count(*) as views'), DB::raw('count(distinct session_id) as visitors'))
+            ->groupBy('path')->orderByDesc('views')->limit(15)->get();
+
+        // Recent sessions with their in-order page journey.
+        $recent = $ev()->where('session_id', '!=', 'login')
+            ->select('session_id', DB::raw('max(created_at) as last_at'), DB::raw('min(created_at) as first_at'), DB::raw('count(*) as events'))
+            ->groupBy('session_id')->orderByDesc('last_at')->limit(30)->get();
+
+        $sessions = $recent->map(function ($s) use ($since) {
+            $evs = DB::table('analytics_events')
+                ->where('session_id', $s->session_id)->where('created_at', '>=', $since)
+                ->orderBy('created_at')->limit(60)->get(['event', 'path', 'created_at', 'user_id']);
+            $uid  = optional($evs->firstWhere('user_id', '!=', null))->user_id;
+            $user = $uid ? DB::table('users')->where('id', $uid)->first(['name', 'email', 'mobile_number']) : null;
+            return [
+                'session'    => substr((string) $s->session_id, 0, 8),
+                'user'       => $user ? ($user->name ?: $user->mobile_number ?: $user->email) : null,
+                'events'     => (int) $s->events,
+                'duration_s' => max(0, strtotime((string) $s->last_at) - strtotime((string) $s->first_at)),
+                'started_at' => $s->first_at,
+                'journey'    => $evs->map(fn ($e) => [
+                    'event' => $e->event,
+                    'path'  => $e->path,
+                    'at'    => $e->created_at,
+                ])->values(),
+            ];
+        });
+
+        $blocks = $ev()->where('event', 'login_blocked')
+            ->orderByDesc('created_at')->limit(25)->get(['path', 'meta', 'ip', 'created_at']);
+
+        return [
+            'status'  => 'success',
+            'days'    => $days,
+            'kpis'    => [
+                'visitors'      => $visitors,
+                'page_views'    => $pageViews,
+                'product_views' => $productViews,
+                'cart_adds'     => $cartAdds,
+                'login_blocked' => $loginBlocked,
+            ],
+            'funnel'        => ['page_views' => $pageViews, 'product_views' => $productViews, 'cart_adds' => $cartAdds],
+            'top_pages'     => $topPages,
+            'sessions'      => $sessions,
+            'login_blocked' => $blocks,
+        ];
+    }
+
     // ---------------------------------------------------------- order create
     /**
      * Create an order from an external bot (ReplyGenie).

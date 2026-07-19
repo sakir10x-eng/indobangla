@@ -92,6 +92,11 @@ export const siteSettings = {
             icon: 'DashboardIcon',
           },
           {
+            href: '/analytics',
+            label: '📊 Analytics',
+            icon: 'DashboardIcon',
+          },
+          {
             href: '/feature-checks',
             label: '🧪 Feature Test Board',
             icon: 'DashboardIcon',

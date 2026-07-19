@@ -206,6 +206,8 @@ Route::post('pay-confirm', [IntegrationController::class, 'payConfirm']);
 Route::get('invoice-info', [IntegrationController::class, 'invoiceInfo']);
 // Public: resolve a shareable cart link's product ids into displayable products.
 Route::get('share-cart', [IntegrationController::class, 'shareCartItems']);
+// Public: storefront analytics beacon (page views, product/cart events). Throttled, fire-and-forget.
+Route::post('track', [IntegrationController::class, 'track'])->middleware('throttle:120,1');
 // Manual bank transfer: buyer uploads the counter slip. Public but pay-token guarded, and
 // it only parks the file for review — an admin credits the payment via order-ops.
 Route::post('pay-bank-proof', [IntegrationController::class, 'payBankProof']);
@@ -423,6 +425,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('order-lifecycle', [IntegrationController::class, 'orderLifecycle'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::get('feature-checks', [IntegrationController::class, 'featureChecks'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::post('feature-check', [IntegrationController::class, 'featureCheckSet'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    // Storefront analytics dashboard data.
+    Route::get('analytics-summary', [IntegrationController::class, 'analyticsSummary'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::match(['get', 'put'], 'pay-link-settings', [IntegrationController::class, 'payLinkSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::get('preorder-products', [IntegrationController::class, 'preorderProducts'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::post('preorder-update', [IntegrationController::class, 'preorderUpdate'])->middleware('can:' . Permission::SUPER_ADMIN);
