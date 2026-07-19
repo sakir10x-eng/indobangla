@@ -292,18 +292,29 @@ function NextReads({ order }: { order: any }) {
         .reads-title {
           font-size: 20px;
         }
+        /* Compact vertical book cards — match the home "All books" grid so the
+           cross-sell row stays small (was oversized horizontal cards). */
         .offers {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+          grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 12px;
+        }
+        @media (min-width: 640px) {
+          .offers {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
+        }
+        @media (min-width: 1024px) {
+          .offers {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+          }
         }
         .offer {
           margin: 0;
           display: flex;
-          flex-direction: row;
-          align-items: stretch;
-          gap: 14px;
-          padding: 12px;
+          flex-direction: column;
+          gap: 10px;
+          padding: 10px;
           transition: box-shadow 0.2s ease, transform 0.2s ease,
             border-color 0.2s ease;
         }
@@ -313,19 +324,23 @@ function NextReads({ order }: { order: any }) {
         }
         .offer.featured {
           border-color: var(--red);
-          box-shadow: inset 3px 0 0 var(--red);
+          box-shadow: inset 0 3px 0 var(--red);
         }
         .offer-cover {
           position: relative;
-          flex: 0 0 64px;
-          width: 64px;
-          height: 88px;
+          width: 100%;
+          aspect-ratio: 2 / 3;
           border-radius: 8px;
           background: linear-gradient(150deg, #f3efe8, #e6ded2);
           display: flex;
           align-items: center;
           justify-content: center;
           overflow: hidden;
+        }
+        .offer-cover img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
         }
         .offer-cover .pill {
           position: absolute;
@@ -342,7 +357,7 @@ function NextReads({ order }: { order: any }) {
           flex: 1;
         }
         .offer-name {
-          font-size: 14px;
+          font-size: 13px;
           font-weight: 600;
           line-height: 1.4;
           color: var(--ink);
@@ -359,13 +374,13 @@ function NextReads({ order }: { order: any }) {
           margin-top: auto;
           padding-top: 8px;
           font-family: 'Playfair Display', Georgia, serif;
-          font-size: 17px;
+          font-size: 15px;
           font-weight: 700;
         }
         .offer-price .was {
           color: var(--muted);
           text-decoration: line-through;
-          font-size: 12px;
+          font-size: 11px;
           font-weight: 400;
           margin-left: 6px;
           font-family: 'Hind Siliguri', sans-serif;
@@ -373,7 +388,7 @@ function NextReads({ order }: { order: any }) {
         .offer .btn {
           margin-top: 8px;
           padding: 7px 10px;
-          font-size: 12.5px;
+          font-size: 12px;
         }
         .browse {
           display: grid;
@@ -440,15 +455,7 @@ function OrderView({ order, settings, loadingStatus }: any) {
     resetCheckout();
   }, [resetCart, resetCheckout]);
 
-  // `Total` is the order's grand total; `paid`/`due` are separate so a fully-paid order
-  // reads Payable = 0 instead of the old code that showed paid_total in the Total row.
-  const { price: total } = usePrice({ amount: order?.total ?? 0 });
-  const { price: paid_amount } = usePrice({ amount: order?.paid_total ?? 0 });
-  const dueRaw = Math.max(
-    0,
-    (Number(order?.total) || 0) - (Number(order?.paid_total) || 0),
-  );
-  const { price: due_amount } = usePrice({ amount: dueRaw });
+  const { price: total } = usePrice({ amount: order?.paid_total ?? 0 });
   const { price: sub_total } = usePrice({ amount: order?.amount ?? 0 });
   const { price: shipping_charge } = usePrice({ amount: order?.delivery_fee ?? 0 });
   const { price: tax } = usePrice({ amount: order?.sales_tax ?? 0 });
@@ -604,16 +611,6 @@ function OrderView({ order, settings, loadingStatus }: any) {
               <div className="line total">
                 <span>Total</span>
                 <span>{total}</span>
-              </div>
-              {(Number(order?.paid_total) || 0) > 0 ? (
-                <div className="line">
-                  <span className="muted">Paid</span>
-                  <span>- {paid_amount}</span>
-                </div>
-              ) : null}
-              <div className="line total">
-                <span>Payable</span>
-                <span>{due_amount}</span>
               </div>
             </div>
           </div>

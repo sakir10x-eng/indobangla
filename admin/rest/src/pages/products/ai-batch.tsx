@@ -804,8 +804,8 @@ function PreviewPanel({
       v !== null &&
       v !== '' &&
       !(label === 'Source MRP' && (p.mrp ?? p.source_price) == null) &&
-      // Print type & Publisher have their own editable inputs above when editing.
-      !(editable && (label === 'Print type' || label === 'Publisher')),
+      // Print type, Publisher & Slug have their own editable inputs above when editing.
+      !(editable && (label === 'Print type' || label === 'Publisher' || label === 'Slug')),
   );
 
   const input =
@@ -854,6 +854,17 @@ function PreviewPanel({
                 className={input}
                 value={p.name ?? ''}
                 onChange={(e) => onProductPatch({ name: e.target.value })}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">
+                Slug <span className="font-normal text-body">(URL — auto-cleaned &amp; made unique on publish)</span>
+              </label>
+              <input
+                className={input}
+                value={p.slug ?? ''}
+                onChange={(e) => onProductPatch({ slug: e.target.value })}
+                placeholder="e.g. amar-priyo-boi"
               />
             </div>
             <div className="relative">
