@@ -20,6 +20,10 @@ const MARK: Record<string, { label: string; chip: string; dot: string }> = {
 const when = (v?: string | null) =>
   v ? new Date(v).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
 
+// Any unknown / null status falls back to "untested" — a stray value must never crash the board
+// (MARK[undefined].chip was the client-side exception).
+const mark = (s?: string | null) => MARK[(s as string) in MARK ? (s as string) : 'untested'];
+
 export default function FeatureChecksPage() {
   const { items, tally, env, loading, error } = useFeatureChecksQuery();
   const { mutate: setCheck, isLoading: saving } = useSetFeatureCheckMutation();
@@ -27,7 +31,7 @@ export default function FeatureChecksPage() {
 
   const shown = useMemo(
     () =>
-      items.filter((i: any) =>
+      (items ?? []).filter((i: any) =>
         only === 'nobody'
           ? i.ai_staging_status === 'untested' && i.ai_live_status === 'untested' && i.human_status === 'untested'
           : only === 'no-human'
@@ -147,10 +151,10 @@ export default function FeatureChecksPage() {
                       <div key={label} className="w-[118px]">
                         <div className="mb-0.5 text-[10px] font-bold uppercase text-slate-400">{label}</div>
                         <span
-                          className={`inline-flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-bold ring-1 ${MARK[status].chip}`}
+                          className={`inline-flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-bold ring-1 ${mark(status).chip}`}
                         >
-                          <span className={`h-1.5 w-1.5 rounded-full ${MARK[status].dot}`} />
-                          {MARK[status].label}
+                          <span className={`h-1.5 w-1.5 rounded-full ${mark(status).dot}`} />
+                          {mark(status).label}
                           {at ? <span className="ml-auto font-normal opacity-60">{when(at)}</span> : null}
                         </span>
                       </div>
@@ -171,11 +175,11 @@ export default function FeatureChecksPage() {
                                 : undefined,
                           })
                         }
-                        className={`inline-flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-bold ring-1 transition hover:brightness-95 ${MARK[i.human_status].chip}`}
+                        className={`inline-flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-bold ring-1 transition hover:brightness-95 ${mark(i.human_status).chip}`}
                         title="চাপ দিন: ✓ → ✕ → —"
                       >
-                        <span className={`h-1.5 w-1.5 rounded-full ${MARK[i.human_status].dot}`} />
-                        {MARK[i.human_status].label}
+                        <span className={`h-1.5 w-1.5 rounded-full ${mark(i.human_status).dot}`} />
+                        {mark(i.human_status).label}
                         {i.human_checked_at ? (
                           <span className="ml-auto font-normal opacity-60">{when(i.human_checked_at)}</span>
                         ) : null}
