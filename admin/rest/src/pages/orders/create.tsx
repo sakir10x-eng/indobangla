@@ -130,6 +130,7 @@ export default function CreateOrderPage() {
 
   const [bookQ, setBookQ] = useState('');
   const [bookOpen, setBookOpen] = useState(false);
+  const [bookLimit, setBookLimit] = useState(20);
 
   const [couponOpen, setCouponOpen] = useState(false);
   const [couponIn, setCouponIn] = useState('');
@@ -161,15 +162,18 @@ export default function CreateOrderPage() {
     } as any);
   }
 
-  const { products: bookHits } = useProductsQuery(
+  const { products: bookHits, paginatorInfo: bookPag } = useProductsQuery(
     {
-      limit: 6,
+      limit: bookLimit,
       language: locale,
       status: ProductStatus.Publish,
       name: bookQ,
     },
     { enabled: bookQ.trim().length > 0 }
   );
+  // Grow the fetch as the dropdown is scrolled, so every matching book is reachable — not just
+  // the first page.
+  const bookHasMore = (bookHits?.length ?? 0) < (Number((bookPag as any)?.total) || 0);
 
   const { mutate: verifyCheckout, isLoading: verifying } =
     useVerifyCheckoutMutation();
@@ -536,11 +540,23 @@ export default function CreateOrderPage() {
                   onChange={(e) => {
                     setBookQ(e.target.value);
                     setBookOpen(true);
+                    setBookLimit(20);
                   }}
                   onFocus={() => bookQ && setBookOpen(true)}
                 />
                 {bookOpen && bookQ.trim() && (
-                  <div className="results">
+                  <div
+                    className="results"
+                    onScroll={(e) => {
+                      const el = e.currentTarget;
+                      if (
+                        bookHasMore &&
+                        el.scrollTop + el.clientHeight >= el.scrollHeight - 48
+                      ) {
+                        setBookLimit((l) => l + 20);
+                      }
+                    }}
+                  >
                     {(bookHits ?? []).length === 0 && (
                       <div className="res">
                         <span className="sb">No book found</span>
@@ -574,6 +590,18 @@ export default function CreateOrderPage() {
                         <span className="rt">{tk(b.sale_price ?? b.price)}</span>
                       </div>
                     ))}
+                    {bookHasMore && (
+                      <div
+                        className="res"
+                        style={{ justifyContent: 'center', cursor: 'default' }}
+                        onClick={() => setBookLimit((l) => l + 20)}
+                      >
+                        <span className="sb">
+                          আরও দেখতে স্ক্রল করুন ({bookHits?.length ?? 0}/
+                          {Number((bookPag as any)?.total) || 0})
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
