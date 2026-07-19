@@ -45,6 +45,7 @@ export default function AnalyticsPage() {
   );
 
   const k = data?.kpis ?? {};
+  const meta = data?.meta ?? {};
   const f = data?.funnel ?? {};
   const sessions: any[] = data?.sessions ?? [];
   const topPages: any[] = data?.top_pages ?? [];
@@ -82,6 +83,25 @@ export default function AnalyticsPage() {
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Names the active window (so a period click always visibly changes something) and, for a
+          fresh store, shows since-when data exists — the honest reason 1/7/30 days can read alike. */}
+      <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-slate-500">
+        <span className="rounded-md bg-slate-100 px-2.5 py-1 font-semibold text-slate-700">
+          {days === 1 ? '📅 আজকের ডেটা' : `📅 শেষ ${num(days)} দিনের ডেটা`}
+        </span>
+        <span>· {num(meta.window_events)} ইভেন্ট</span>
+        {meta.first_event_at ? (
+          <span>
+            · ডেটা সংগ্রহ শুরু{' '}
+            {new Date(String(meta.first_event_at).replace(' ', 'T')).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })}
+          </span>
+        ) : null}
       </div>
 
       {isLoading && !data ? (

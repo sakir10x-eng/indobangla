@@ -636,3 +636,29 @@ export const useFeatureRegistryQuery = () => {
     refetch,
   };
 };
+
+// Feature Test Board (/admin/feature-checks) — checklist + human/ai tick.
+// feature-checks.tsx imported these two before they were ever defined, so the import
+// resolved to undefined and useFeatureChecksQuery() called undefined() → the reported
+// "client-side exception". Defining them (returning items as a guaranteed array) is the fix.
+const FEATURE_CHECKS_KEY = "feature-checks";
+export const useFeatureChecksQuery = () => {
+  const { data, isLoading, error } = useQuery<any>([FEATURE_CHECKS_KEY], () =>
+    HttpClient.get<any>("feature-checks"),
+  );
+  return {
+    items: Array.isArray((data as any)?.items) ? (data as any).items : [],
+    tally: (data as any)?.tally ?? null,
+    env: (data as any)?.env ?? "",
+    loading: isLoading,
+    error: error as any,
+  };
+};
+export const useSetFeatureCheckMutation = () => {
+  const qc = useQueryClient();
+  return useMutation((input: any) => HttpClient.post<any>("feature-check", input), {
+    onSuccess: () => toast.success("সংরক্ষণ হয়েছে"),
+    onError: (e: any) => toast.error(e?.response?.data?.message || "Failed"),
+    onSettled: () => qc.invalidateQueries([FEATURE_CHECKS_KEY]),
+  });
+};

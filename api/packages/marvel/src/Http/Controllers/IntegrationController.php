@@ -1540,6 +1540,13 @@ class IntegrationController extends CoreController
         return [
             'status'  => 'success',
             'days'    => $days,
+            // since-when data exists + events in the chosen window, so a new store
+            // understands why 1/7/30 days can read the same.
+            'meta'    => [
+                'first_event_at' => DB::table('analytics_events')->min('created_at'),
+                'from'           => $since->toDateString(),
+                'window_events'  => $ev()->count(),
+            ],
             'kpis'    => [
                 'visitors'      => $visitors,
                 'page_views'    => $pageViews,
