@@ -232,6 +232,19 @@ export default function PayPage() {
                   <div style={{ fontSize: 40 }}>✅</div>
                   <div style={{ fontSize: 17, fontWeight: 800, color: '#0f9d68', marginTop: 6 }}>পেমেন্ট সম্পন্ন ও নিশ্চিত</div>
                   <div style={{ fontSize: 13, color: '#166a44', marginTop: 4 }}>Payment done and confirmed{order.pay_method ? ` · ${order.pay_method.toUpperCase()}` : ''}</div>
+
+                  {/* receipt: paid amount, total payable, and the transaction id */}
+                  <div style={{ marginTop: 14, borderRadius: 12, background: '#fff', border: '1px solid #c9e8d6', padding: '12px 14px', textAlign: 'left' }}>
+                    <Row label="পরিশোধিত (Paid)" value={bdt(order.already_paid)} green />
+                    <Row label="মোট প্রদেয় (Payable)" value={bdt(order.total)} />
+                    {order.transaction_id && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px dashed #d7e9df', marginTop: 6, paddingTop: 8 }}>
+                        <span style={{ fontSize: 12.5, color: '#7a6f66' }}>Transaction ID</span>
+                        <b style={{ fontSize: 13.5, fontFamily: 'monospace', color: '#1f4d3d', wordBreak: 'break-all' }}>{order.transaction_id}</b>
+                      </div>
+                    )}
+                  </div>
+
                   {order.is_club && order.club_coupon && (
                     <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed #a7d8bf' }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: '#166a44' }}>🪪 Readers&apos; Club সক্রিয়!</div>

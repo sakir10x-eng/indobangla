@@ -1105,6 +1105,7 @@ class IntegrationController extends CoreController
                 'placed_at'       => optional($order->created_at)->format('j M Y'),
                 'paid'            => $paid,
                 'pay_method'      => $ops['pay_method'] ?? null,
+                'transaction_id'  => $ops['bkash']['trx_id'] ?? ($ops['trx_id'] ?? null),
                 // The 50% option itself, reported separately from pay_purpose — the screen must
                 // keep offering it even after the buyer has flipped the link to 'full'.
                 'advance_option'  => isset($ops['advance']['advance_bdt'])
@@ -1551,6 +1552,46 @@ class IntegrationController extends CoreController
             'sessions'      => $sessions,
             'login_blocked' => $blocks,
         ];
+    }
+
+    // ---------------------------------------------------------- POS order drafts
+
+    /** Admin: park the current POS order as a draft (not placed) so it can be resumed later. */
+    public function saveOrderDraft(Request $request)
+    {
+        $label = substr(trim((string) $request->input('label', '')), 0, 191) ?: 'খসড়া অর্ডার';
+        $id = DB::table('order_drafts')->insertGetId([
+            'label'      => $label,
+            'payload'    => json_encode($request->input('payload', [])),
+            'created_by' => optional($request->user())->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        return ['status' => 'success', 'id' => $id, 'label' => $label];
+    }
+
+    /** Admin: the 5 most recent drafts for the create-order header. */
+    public function listOrderDrafts(Request $request)
+    {
+        $drafts = DB::table('order_drafts')->orderByDesc('id')->limit(5)->get(['id', 'label', 'created_at']);
+        return ['status' => 'success', 'drafts' => $drafts];
+    }
+
+    /** Admin: one draft's saved state, to reload it into the POS form. */
+    public function getOrderDraft(Request $request, $id)
+    {
+        $row = DB::table('order_drafts')->where('id', (int) $id)->first();
+        if (!$row) {
+            throw new MarvelException('খসড়াটি পাওয়া যায়নি।');
+        }
+        return ['status' => 'success', 'id' => $row->id, 'label' => $row->label, 'payload' => json_decode($row->payload, true)];
+    }
+
+    /** Admin: drop a draft (e.g. once its order has been placed). */
+    public function deleteOrderDraft(Request $request, $id)
+    {
+        DB::table('order_drafts')->where('id', (int) $id)->delete();
+        return ['status' => 'success'];
     }
 
     // ---------------------------------------------------------- order create

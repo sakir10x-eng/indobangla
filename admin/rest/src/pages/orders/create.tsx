@@ -17,6 +17,7 @@ import { formatOrderedProduct } from '@/utils/format-ordered-product';
 import { useProductsQuery } from '@/data/product';
 import { userClient } from '@/data/client/user';
 import { HttpClient } from '@/data/client/http-client';
+import { toast } from 'react-toastify';
 import { useVerifyCheckoutMutation } from '@/data/checkout';
 import { useVerifyCouponMutation } from '@/data/coupon';
 import { ProductStatus } from '@/types';
@@ -141,6 +142,78 @@ export default function CreateOrderPage() {
   const [deliveryBy, setDeliveryBy] = useState<Courier>('RedX');
   const [area, setArea] = useState<'inside' | 'outside'>('inside');
   const [deliveryCharge, setDeliveryCharge] = useState<number>(60);
+
+  // ---- order drafts: park the unplaced order, reopen it from the header ----
+  const [drafts, setDrafts] = useState<any[]>([]);
+  const [savingDraft, setSavingDraft] = useState(false);
+  async function loadDrafts() {
+    try {
+      const r: any = await HttpClient.get('order-drafts');
+      setDrafts(r?.drafts ?? []);
+    } catch {}
+  }
+  useEffect(() => {
+    loadDrafts();
+  }, []);
+  async function saveDraft() {
+    if (!items?.length || savingDraft) return;
+    setSavingDraft(true);
+    try {
+      const payload = {
+        customer,
+        contact,
+        shipping,
+        pay,
+        coupon,
+        manual_discount: manualDiscount,
+        adjustment,
+        advance: advancePaid,
+        note,
+        delivery: { by: deliveryBy, area, charge: deliveryCharge },
+        custQ,
+        items: items.map((i: any) => ({ id: i.productId ?? i.id, slug: i.slug, qty: i.quantity })),
+      };
+      const label = `${(customer as any)?.label || contact || 'খসড়া'} · ${items.length} বই`;
+      await HttpClient.post('order-draft', { payload, label });
+      toast.success('খসড়া সেভ হয়েছে');
+      loadDrafts();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'খসড়া সেভ হয়নি');
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+  async function loadDraft(id: number) {
+    try {
+      const r: any = await HttpClient.get(`order-draft/${id}`);
+      const p: any = r?.payload || {};
+      if (p.customer) setCustomer(p.customer); // sets first — its atom nulls contact/shipping
+      setContact(p.contact || '');
+      if (p.shipping) setShipping(p.shipping);
+      if (p.pay) setPay(p.pay);
+      setCoupon(p.coupon ?? null);
+      setManualDiscount(Number(p.manual_discount) || 0);
+      setAdjustment(Number(p.adjustment) || 0);
+      setAdvancePaid(Number(p.advance) || 0);
+      setNote(p.note || '');
+      if (p.delivery) {
+        setDeliveryBy(p.delivery.by || 'RedX');
+        setArea(p.delivery.area || 'inside');
+        setDeliveryCharge(Number(p.delivery.charge) || 0);
+      }
+      setCustQ(p.custQ || '');
+      resetCart();
+      for (const it of p.items || []) {
+        try {
+          const prod: any = await HttpClient.get(`products/${it.slug}`, { language: locale });
+          addItemToCart(generateCartItem(prod, {} as any), Number(it.qty) || 1);
+        } catch {}
+      }
+      toast.success(`খসড়া #${id} খোলা হয়েছে`);
+    } catch {
+      toast.error('খসড়া খোলা যায়নি');
+    }
+  }
   const [editAddr, setEditAddr] = useState(false);
   // Raw verify result (tax / unavailable / wallet). Shipping is set by the admin below.
   const [vbase, setVbase] = useState<any>(null);
@@ -272,8 +345,9 @@ export default function CreateOrderPage() {
   function addBook(p: any) {
     if (!p?.quantity) return; // out of stock
     addItemToCart(generateCartItem(p, {} as any), 1);
-    setBookQ('');
-    setBookOpen(false);
+    // Keep the dropdown open and the query intact so several books can be added in a row
+    // straight from the scroll — no re-search per book.
+    toast.success(`${p.name} যোগ হয়েছে`);
   }
   function inc(item: any) {
     if (item.quantity < (item.stock ?? Infinity))
@@ -408,8 +482,30 @@ export default function CreateOrderPage() {
         {/* header row */}
         <div className="pos-top">
           <div className="title">New order</div>
-          <span className="chip">Draft</span>
+          {drafts.length > 0 && (
+            <div className="drafts">
+              <span className="drafts-lbl">খসড়া:</span>
+              {drafts.map((d) => (
+                <button
+                  key={d.id}
+                  className="draft-chip"
+                  onClick={() => loadDraft(d.id)}
+                  title={d.label || `Draft #${d.id}`}
+                >
+                  #{d.id}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="spacer" />
+          <button
+            className="draft-save"
+            onClick={saveDraft}
+            disabled={savingDraft || !items?.length}
+            title="এই অর্ডার খসড়া হিসেবে সেভ করুন (place না করে)"
+          >
+            {savingDraft ? '…' : '💾 খসড়া সেভ'}
+          </button>
           <div className="place-cta place-cta--top">
             <PlaceOrderAction>Place order</PlaceOrderAction>
           </div>
@@ -562,34 +658,43 @@ export default function CreateOrderPage() {
                         <span className="sb">No book found</span>
                       </div>
                     )}
-                    {(bookHits ?? []).map((b: any) => (
-                      <div
-                        className="res"
-                        key={b.id}
-                        style={
-                          b.quantity
-                            ? {}
-                            : { opacity: 0.5, cursor: 'not-allowed' }
-                        }
-                        onClick={() => b.quantity && addBook(b)}
-                      >
-                        <div className="rcover">
-                          {b.image?.thumbnail ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={b.image.thumbnail} alt={b.name} />
-                          ) : null}
-                        </div>
-                        <div className="rinfo">
-                          <div className="nm">{b.name}</div>
-                          <div className="sb">
-                            {b.quantity
-                              ? 'Stock: ' + b.quantity
-                              : 'Out of stock'}
+                    {(bookHits ?? []).map((b: any) => {
+                      const inCartQty =
+                        (items ?? []).find((i: any) => i.id === b.id)?.quantity || 0;
+                      return (
+                        <div
+                          className="res"
+                          key={b.id}
+                          style={
+                            b.quantity
+                              ? inCartQty
+                                ? { background: '#f0f9f4' }
+                                : {}
+                              : { opacity: 0.5, cursor: 'not-allowed' }
+                          }
+                          onClick={() => b.quantity && addBook(b)}
+                        >
+                          <div className="rcover">
+                            {b.image?.thumbnail ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={b.image.thumbnail} alt={b.name} />
+                            ) : null}
                           </div>
+                          <div className="rinfo">
+                            <div className="nm">{b.name}</div>
+                            <div className="sb">
+                              {b.quantity
+                                ? 'Stock: ' + b.quantity
+                                : 'Out of stock'}
+                            </div>
+                          </div>
+                          {inCartQty > 0 && (
+                            <span className="incart">✓ কার্টে {inCartQty}</span>
+                          )}
+                          <span className="rt">{tk(b.sale_price ?? b.price)}</span>
                         </div>
-                        <span className="rt">{tk(b.sale_price ?? b.price)}</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                     {bookHasMore && (
                       <div
                         className="res"
@@ -1050,6 +1155,53 @@ export default function CreateOrderPage() {
         .spacer {
           flex: 1;
         }
+        .drafts {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          flex-wrap: wrap;
+        }
+        .drafts-lbl {
+          font-size: 11px;
+          color: var(--ink-2);
+          font-weight: 600;
+        }
+        .draft-chip {
+          font-size: 11.5px;
+          font-weight: 700;
+          padding: 3px 9px;
+          border-radius: 999px;
+          background: #eef4ff;
+          border: 1px solid #c7dbff;
+          color: #2453b8;
+          cursor: pointer;
+          font-family: inherit;
+          transition: background 0.15s;
+        }
+        .draft-chip:hover {
+          background: #dbe8ff;
+        }
+        .draft-save {
+          font-size: 12.5px;
+          font-weight: 700;
+          padding: 8px 14px;
+          border-radius: 10px;
+          background: #fff;
+          border: 1.5px solid var(--line-2);
+          color: var(--ink);
+          cursor: pointer;
+          font-family: inherit;
+          white-space: nowrap;
+          transition: border-color 0.15s;
+        }
+        .draft-save:hover:not(:disabled) {
+          border-color: #2e6b5a;
+          color: #2e6b5a;
+        }
+        .draft-save:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
         .grid {
           display: grid;
           grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr);
@@ -1157,10 +1309,24 @@ export default function CreateOrderPage() {
           color: var(--ink-2);
         }
         .res .rt {
-          margin-left: auto;
+          margin-left: 8px;
           font-size: 12px;
           font-weight: 600;
           white-space: nowrap;
+        }
+        .res .incart {
+          margin-left: auto;
+          font-size: 10.5px;
+          font-weight: 700;
+          color: #0f9d68;
+          background: #e4f6ee;
+          border-radius: 999px;
+          padding: 2px 8px;
+          white-space: nowrap;
+        }
+        /* When no in-cart badge sits before it, the price pushes itself right. */
+        .res .rt:first-of-type {
+          margin-left: auto;
         }
         .res .rcover {
           width: 28px;

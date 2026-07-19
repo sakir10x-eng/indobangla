@@ -346,6 +346,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('order-pay-link', [IntegrationController::class, 'orderPayLink'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // IndoBangla shareable invoice-link generation (admin).
     Route::post('order-invoice-link', [IntegrationController::class, 'orderInvoiceLink'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    // IndoBangla POS order drafts (admin).
+    Route::post('order-draft', [IntegrationController::class, 'saveOrderDraft'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::get('order-drafts', [IntegrationController::class, 'listOrderDrafts'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::get('order-draft/{id}', [IntegrationController::class, 'getOrderDraft'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::delete('order-draft/{id}', [IntegrationController::class, 'deleteOrderDraft'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // Reader's Club settings (fee / discount %) — super-admin.
     Route::get('club-settings', [IntegrationController::class, 'clubSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
     Route::put('club-settings', [IntegrationController::class, 'clubSettings'])->middleware('can:' . Permission::SUPER_ADMIN);
