@@ -926,8 +926,21 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
       ops({ order_id: id, patch });
     },
     status: (id: any, order_status: string) => updateOrder({ id, order_status } as any),
-    lifecycle: (id: any, action: 'void' | 'unvoid' | 'archive' | 'unarchive' | 'unlock', reason?: string) =>
-      lifecycle({ order_id: id, action, reason }),
+    lifecycle: (id: any, action: 'void' | 'unvoid' | 'archive' | 'unarchive' | 'unlock', reason?: string) => {
+      // Voiding auto-archives, but archived_at only lands on the next refetch — mark ops.void
+      // locally too so the card drops out of the working tabs the instant Void is clicked (the
+      // filter hides bucket 'void'); unvoid clears it so it comes back.
+      if (action === 'void' || action === 'unvoid') {
+        setLocalOps((prev) => {
+          const base = prev[id] ?? source.find((o: any) => o.id === id)?.ops_meta ?? {};
+          const next = { ...base };
+          if (action === 'void') next.void = { ...(base.void || {}), at: new Date().toISOString() };
+          else delete next.void;
+          return { ...prev, [id]: next };
+        });
+      }
+      lifecycle({ order_id: id, action, reason });
+    },
     ship: (id: any, courier: string) => {
       const provider = String(courier || '').toLowerCase().replace(/\s+/g, '');
       createShipment(
@@ -969,14 +982,15 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
     // always sits at the very top. Orders needing action have their own ⚠️ Attention tab, so we
     // no longer pin them above newer orders here (that reordering broke "newest first").
     return mapped.filter((o) => {
-      // Archived orders (voiding auto-archives) live only in the Void / Archived tabs — every
+      // Voided (bucket 'void' — set the instant you click Void, before a refetch stamps
+      // archived_at) and archived orders live only in the 🚫 Void / 🗄️ Archived tabs — every
       // working tab, including 'All', hides them so the main list stays the live workload.
       const showsArchived = tab === 'void' || tab === 'archived';
-      if (!showsArchived && o.archived_at) return false;
+      if (!showsArchived && (o.archived_at || o.bucket === 'void')) return false;
       if (tab === 'attention') return needsAttention(o);
       if (tab === 'printstuck') return o.print === 'sent';
       if (tab === 'all') return true;
-      if (tab === 'archived') return !!o.archived_at;
+      if (tab === 'archived') return !!o.archived_at || o.bucket === 'void';
       return o.bucket === tab;
     });
   }, [mapped, tab]);
