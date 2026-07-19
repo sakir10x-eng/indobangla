@@ -440,7 +440,15 @@ function OrderView({ order, settings, loadingStatus }: any) {
     resetCheckout();
   }, [resetCart, resetCheckout]);
 
-  const { price: total } = usePrice({ amount: order?.paid_total ?? 0 });
+  // `Total` is the order's grand total; `paid`/`due` are separate so a fully-paid order
+  // reads Payable = 0 instead of the old code that showed paid_total in the Total row.
+  const { price: total } = usePrice({ amount: order?.total ?? 0 });
+  const { price: paid_amount } = usePrice({ amount: order?.paid_total ?? 0 });
+  const dueRaw = Math.max(
+    0,
+    (Number(order?.total) || 0) - (Number(order?.paid_total) || 0),
+  );
+  const { price: due_amount } = usePrice({ amount: dueRaw });
   const { price: sub_total } = usePrice({ amount: order?.amount ?? 0 });
   const { price: shipping_charge } = usePrice({ amount: order?.delivery_fee ?? 0 });
   const { price: tax } = usePrice({ amount: order?.sales_tax ?? 0 });
@@ -596,6 +604,16 @@ function OrderView({ order, settings, loadingStatus }: any) {
               <div className="line total">
                 <span>Total</span>
                 <span>{total}</span>
+              </div>
+              {(Number(order?.paid_total) || 0) > 0 ? (
+                <div className="line">
+                  <span className="muted">Paid</span>
+                  <span>- {paid_amount}</span>
+                </div>
+              ) : null}
+              <div className="line total">
+                <span>Payable</span>
+                <span>{due_amount}</span>
               </div>
             </div>
           </div>

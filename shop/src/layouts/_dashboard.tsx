@@ -1,4 +1,4 @@
-import DashboardSidebar from '@/components/dashboard/sidebar';
+import ProfileNav from '@/components/profile/profile-nav';
 import GeneralLayout from '@/components/layouts/_general';
 import classNames from 'classnames';
 
@@ -20,7 +20,11 @@ export default function DashboardLayout({
           className,
         )}
       >
-        <DashboardSidebar className="hidden shrink-0 ltr:mr-8 rtl:ml-8 lg:block lg:w-80" />
+        {/* Same profile menu as /profile — was DashboardSidebar (the old design), which is
+            why navigating from /profile to another account page dropped the profile menu bar. */}
+        <div className="hidden shrink-0 ltr:mr-8 rtl:ml-8 lg:block lg:w-80">
+          <ProfileNav />
+        </div>
         {children}
       </div>
     </GeneralLayout>
