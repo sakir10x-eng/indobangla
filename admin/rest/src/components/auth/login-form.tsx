@@ -39,6 +39,7 @@ const LoginForm = () => {
   const [ticket, setTicket] = useState('');
   const [choices, setChoices] = useState<Choice[]>([]);
   const [destination, setDestination] = useState('');
+  const [otpChannel, setOtpChannel] = useState<'sms' | 'email'>('sms');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -88,13 +89,14 @@ const LoginForm = () => {
     );
   }
 
-  async function sendCode(opts: { phone?: string; index?: number }) {
+  async function sendCode(opts: { phone?: string; index?: number; channel?: 'sms' | 'email' }) {
     setBusy(true);
     setErrorMessage(null);
     try {
       const r: any = await userClient.adminOtpRequest({ ticket, ...opts });
       if (r?.success) {
         setDestination(r.destination || '');
+        setOtpChannel(r.channel === 'email' ? 'email' : 'sms');
         setStep('otp');
       } else {
         setErrorMessage(r?.message || 'OTP পাঠানো যায়নি।');
@@ -200,6 +202,16 @@ const LoginForm = () => {
                 <span className="text-xs font-semibold text-accent">কোড পাঠান →</span>
               </button>
             ))}
+            {/* Email is free where SMS is not — the code goes to the admin's own address. */}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => sendCode({ channel: 'email' })}
+              className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-medium text-heading transition hover:border-accent hover:bg-accent/5 disabled:opacity-60"
+            >
+              <span>📧 আমার ইমেইলে কোড পাঠান</span>
+              <span className="text-xs font-semibold text-accent">কোড পাঠান →</span>
+            </button>
           </div>
           <button
             type="button"
@@ -245,6 +257,14 @@ const LoginForm = () => {
           </Button>
           <button
             type="button"
+            disabled={busy}
+            onClick={() => sendCode({ channel: 'email' })}
+            className="mt-3 w-full text-center text-sm font-medium text-accent underline hover:opacity-80 disabled:opacity-60"
+          >
+            📧 এর বদলে আমার ইমেইলে কোড পাঠান
+          </button>
+          <button
+            type="button"
             onClick={() => (choices.length ? setStep('choose') : resetToPassword())}
             className="mt-4 w-full text-center text-sm text-body underline hover:text-accent"
           >
@@ -259,9 +279,11 @@ const LoginForm = () => {
           <p className="mb-5 text-sm text-body">
             {destination ? (
               <>
-                <span className="font-semibold text-heading">{destination}</span> নম্বরে পাঠানো কোডটি
-                লিখুন।
+                <span className="font-semibold text-heading">{destination}</span>{' '}
+                {otpChannel === 'email' ? 'ইমেইলে' : 'নম্বরে'} পাঠানো কোডটি লিখুন।
               </>
+            ) : otpChannel === 'email' ? (
+              'আপনার ইমেইলে পাঠানো কোডটি লিখুন।'
             ) : (
               'আপনার মোবাইলে পাঠানো কোডটি লিখুন।'
             )}

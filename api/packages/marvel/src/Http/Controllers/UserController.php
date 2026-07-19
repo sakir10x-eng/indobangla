@@ -327,6 +327,19 @@ class UserController extends CoreController
         return substr($d, 0, 3) . str_repeat('•', strlen($d) - 5) . substr($d, -2);
     }
 
+    /** Mask an email for the "code sent to …" line: sa••••@gmail.com. */
+    private function maskEmail(string $e): string
+    {
+        $parts = explode('@', $e);
+        if (count($parts) !== 2 || $parts[0] === '') {
+            return '•••';
+        }
+        $name   = $parts[0];
+        $keep   = min(2, strlen($name));
+        $masked = substr($name, 0, $keep) . str_repeat('•', max(1, min(5, strlen($name) - $keep)));
+        return $masked . '@' . $parts[1];
+    }
+
     /** sms.net.bd wants a 8801XXXXXXXXX msisdn — turn a local 01… (or +880…) into that. */
     private function normalizeBdPhone($p): string
     {
@@ -393,6 +406,35 @@ class UserController extends CoreController
         if (!$data) {
             throw new MarvelException('লগইন সেশন শেষ হয়ে গেছে। আবার লগইন করুন।');
         }
+        // Email OTP — free, unlike SMS. Generate + cache a code and mail it to the admin's own
+        // address; adminOtpVerify checks the cache instead of the SMS gateway for this channel.
+        if ($request->input('channel') === 'email') {
+            $user  = User::find($data['user_id'] ?? null);
+            $email = $user ? trim((string) $user->email) : '';
+            if ($email === '') {
+                return ['success' => false, 'message' => 'এই অ্যাকাউন্টে কোনো ইমেইল ঠিকানা নেই।'];
+            }
+            $code = (string) random_int(100000, 999999);
+            $id   = 'email_' . bin2hex(random_bytes(8));
+            Cache::put("admin_email_otp:$id", ['code' => $code, 'email' => $email], now()->addMinutes(5));
+            try {
+                Mail::raw(
+                    "Your IndoBangla admin login code is: {$code}\n\n"
+                        . "This code expires in 5 minutes. If you did not just try to log in, ignore this email.",
+                    function ($m) use ($email) {
+                        $m->to($email)->subject('IndoBangla admin login code');
+                    }
+                );
+            } catch (\Throwable $e) {
+                return ['success' => false, 'message' => 'ইমেইল পাঠানো যায়নি। একটু পরে আবার চেষ্টা করুন।'];
+            }
+            $data['otp_id']      = $id;
+            $data['otp_channel'] = 'email';
+            $data['otp_email']   = $email;
+            $data['otp_phone']   = '';
+            Cache::put("admin_login:$ticket", $data, now()->addMinutes(10));
+            return ['success' => true, 'destination' => $this->maskEmail($email), 'channel' => 'email'];
+        }
         $enrolled = false;
         if ($request->filled('phone')) {
             $phone = $this->normalizeBdPhone($request->input('phone'));
@@ -413,11 +455,12 @@ class UserController extends CoreController
         if (!$res->isValid()) {
             return ['success' => false, 'message' => 'OTP পাঠানো যায়নি। নম্বরটি ঠিক আছে কিনা দেখুন।'];
         }
-        $data['otp_id']    = $res->getId();
-        $data['otp_phone'] = $phone;
-        $data['enrolled']  = $enrolled;
+        $data['otp_id']      = $res->getId();
+        $data['otp_phone']   = $phone;
+        $data['otp_channel'] = 'sms';
+        $data['enrolled']    = $enrolled;
         Cache::put("admin_login:$ticket", $data, now()->addMinutes(10));
-        return ['success' => true, 'destination' => $this->maskPhone($phone)];
+        return ['success' => true, 'destination' => $this->maskPhone($phone), 'channel' => 'sms'];
     }
 
     /** Public: verify the admin login OTP and, on success, issue the 3-day session token. */
@@ -433,10 +476,18 @@ class UserController extends CoreController
             throw new MarvelException('আগে OTP নিন।');
         }
         $ok = false;
-        try {
-            $ok = $this->getOtpGateway()->checkVerification($data['otp_id'], $code, $data['otp_phone'])->isValid();
-        } catch (\Throwable $e) {
-            $ok = false;
+        if (($data['otp_channel'] ?? 'sms') === 'email') {
+            $stored = Cache::get('admin_email_otp:' . $data['otp_id']);
+            $ok = $stored && hash_equals((string) ($stored['code'] ?? ''), (string) $code);
+            if ($ok) {
+                Cache::forget('admin_email_otp:' . $data['otp_id']);
+            }
+        } else {
+            try {
+                $ok = $this->getOtpGateway()->checkVerification($data['otp_id'], $code, $data['otp_phone'])->isValid();
+            } catch (\Throwable $e) {
+                $ok = false;
+            }
         }
         if (!$ok) {
             throw new MarvelException('OTP সঠিক নয় বা মেয়াদ শেষ হয়ে গেছে।');

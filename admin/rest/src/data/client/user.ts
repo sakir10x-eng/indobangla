@@ -34,11 +34,18 @@ export const userClient = {
     return HttpClient.post<AuthResponse>(API_ENDPOINTS.TOKEN, variables);
   },
   // Admin 2FA: send the login OTP to a chosen number (index) or a newly entered phone, and verify.
-  adminOtpRequest: (variables: { ticket: string; phone?: string; index?: number }) => {
-    return HttpClient.post<{ success: boolean; destination?: string; message?: string }>(
-      API_ENDPOINTS.ADMIN_OTP_REQUEST,
-      variables,
-    );
+  adminOtpRequest: (variables: {
+    ticket: string;
+    phone?: string;
+    index?: number;
+    channel?: 'sms' | 'email';
+  }) => {
+    return HttpClient.post<{
+      success: boolean;
+      destination?: string;
+      message?: string;
+      channel?: 'sms' | 'email';
+    }>(API_ENDPOINTS.ADMIN_OTP_REQUEST, variables);
   },
   adminOtpVerify: (variables: { ticket: string; code: string }) => {
     return HttpClient.post<AuthResponse>(API_ENDPOINTS.ADMIN_OTP_VERIFY, variables);
