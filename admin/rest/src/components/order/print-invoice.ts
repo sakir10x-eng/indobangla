@@ -109,7 +109,12 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
   .c-mfr{margin-top:.6mm;font-size:8.5px;color:var(--ink-soft);font-weight:600;}
   .badges{display:flex;gap:4mm;margin-top:3mm;font-size:8.5px;color:var(--green);font-weight:600;}
   .quote{margin-top:3mm;font-style:italic;font-size:9px;color:var(--gold);}
-  .totals{margin-top:4mm;margin-left:auto;width:70mm;font-size:10.5px;}
+  /* Book list ends, then a two-column summary: quote+QR fill the left, totals sit right,
+     side by side — no wasted vertical space, keeps the slip inside the half-A4. */
+  .summary-grid{display:flex;gap:8mm;margin-top:4mm;align-items:flex-start;}
+  .summary-left{flex:1;min-width:0;}
+  .summary-right{width:74mm;flex-shrink:0;}
+  .totals{margin-left:auto;width:70mm;font-size:10.5px;}
   .totals .row{display:flex;justify-content:space-between;padding:1.6mm 0;color:var(--ink-soft);}
   .totals .row b{color:var(--ink);}
   .totals .grand{border-top:2px solid var(--red);margin-top:1mm;padding-top:2.4mm;font-size:13px;font-weight:800;color:var(--ink);}
@@ -128,9 +133,9 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
 </div>
 <div class="sheet-wrap"><div class="sheet">
   <div class="header">
-    <div class="brand" style="display:flex;gap:10px;align-items:flex-start;">
+    <div class="brand" style="display:flex;flex-direction:column;gap:2mm;align-items:flex-start;">
       <img src="https://indobanglabook.s3.us-east-2.amazonaws.com/7827/Transparent-horizontal.png" alt="IndoBangla"
-           style="height:14mm;width:auto;max-width:52mm;object-fit:contain;flex-shrink:0;margin-top:1px;" />
+           style="height:15mm;width:auto;max-width:62mm;object-fit:contain;flex-shrink:0;" />
       <div>
         <h1 style="margin:0;color:var(--brand);position:absolute;left:-9999px;">Indo<span style="color:var(--red);">Bangla</span></h1>
         <div class="brand-addr"><b>IndoBangla Book Store</b><br>Dhanmondi, Dhaka 1205, Bangladesh<br>Mobile: 01556 436147 · hello@indobangla.tech</div>
@@ -162,32 +167,38 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
     <thead><tr><th>#</th><th>Book</th><th>Qty</th><th>Total</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
-  <div class="totals">
-    <div class="row">Sub Total <b>${bdt(subTotal)}</b></div>
-    ${discount ? `<div class="row">Discount <b>- ${bdt(discount)}</b></div>` : ''}
-    <div class="row">Delivery Fee <b>${bdt(delivery)}</b></div>
-    ${walletPaid ? `<div class="row">Wallet Points Used <b>- ${bdt(walletPaid)}</b></div>` : ''}
-    ${isPartial
-      ? `<div class="row">Total <b>${bdt(payable)}</b></div>
-    <div class="row">Advance Paid <b style="color:var(--green);">- ${bdt(advancePaid)}</b></div>
-    <div class="row grand"><span>Due on Delivery</span><span>${bdt(dueNow)}</span></div>`
-      : `<div class="row grand"><span>Total Payable</span><span>${bdt(payable)}</span></div>`}
-  </div>
-  <div class="badges">
-    <span id="bdg-bookmark" style="display:inline-flex;">✓ Free bookmark included</span>
-    <span id="bdg-tamper" style="display:inline-flex;">✓ Tamper-proof packaging</span>
-    <span id="bdg-replace" style="display:inline-flex;">✓ 3-day damage replacement</span>
-  </div>
-  ${o.note ? `<div class="nb">N.B. ${esc(o.note)}</div>` : ''}
-  <div class="quote">"A room without books is like a body without a soul." — Cicero</div>
-  <!-- QR sits directly under the quote so the essential slip (header→totals→QR) fits the
-       top half of an A4 and can be torn off along the cut guide below. -->
-  <div class="qr-slip" style="margin-top:2mm;display:flex;gap:5mm;align-items:center;">
-    <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=https%3A%2F%2Findobangla.tech%2Forders" alt="QR" style="width:20mm;height:20mm;flex-shrink:0;" />
-    <div style="flex:1;">
-      <div style="font-size:9px;font-weight:800;color:var(--ink);">📱 Track &amp; Reorder</div>
-      <div style="font-size:8.5px;color:var(--ink-soft);margin-top:1mm;">Scan the QR to track this order or reorder your favourite titles in one tap.</div>
-      ${showCoupon ? `<div style="margin-top:2mm;display:inline-block;border:1px dashed var(--red);border-radius:4px;padding:1.5mm 3mm;font-size:9px;color:var(--red);font-weight:800;">🎁 Next order: <span style="font-family:monospace;">${esc(couponCode)}</span> — ৳${esc(couponAmount)} OFF</div>` : ''}
+  <!-- Book list ends → left column carries the quote + QR right where the table stops,
+       totals sit alongside on the right, so nothing wastes vertical space. -->
+  <div class="summary-grid">
+    <div class="summary-left">
+      ${o.note ? `<div class="nb" style="margin-top:0;">N.B. ${esc(o.note)}</div>` : ''}
+      <div class="quote" style="margin-top:0;">"A room without books is like a body without a soul." — Cicero</div>
+      <div class="qr-slip" style="margin-top:2mm;display:flex;gap:5mm;align-items:center;">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=https%3A%2F%2Findobangla.tech%2Forders" alt="QR" style="width:20mm;height:20mm;flex-shrink:0;" />
+        <div style="flex:1;">
+          <div style="font-size:9px;font-weight:800;color:var(--ink);">📱 Track &amp; Reorder</div>
+          <div style="font-size:8.5px;color:var(--ink-soft);margin-top:1mm;">Scan the QR to track this order or reorder your favourite titles in one tap.</div>
+          ${showCoupon ? `<div style="margin-top:2mm;display:inline-block;border:1px dashed var(--red);border-radius:4px;padding:1.5mm 3mm;font-size:9px;color:var(--red);font-weight:800;">🎁 Next order: <span style="font-family:monospace;">${esc(couponCode)}</span> — ৳${esc(couponAmount)} OFF</div>` : ''}
+        </div>
+      </div>
+      <div class="badges" style="margin-top:3mm;">
+        <span id="bdg-bookmark" style="display:inline-flex;">✓ Free bookmark included</span>
+        <span id="bdg-tamper" style="display:inline-flex;">✓ Tamper-proof packaging</span>
+        <span id="bdg-replace" style="display:inline-flex;">✓ 3-day damage replacement</span>
+      </div>
+    </div>
+    <div class="summary-right">
+      <div class="totals">
+        <div class="row">Sub Total <b>${bdt(subTotal)}</b></div>
+        ${discount ? `<div class="row">Discount <b>- ${bdt(discount)}</b></div>` : ''}
+        <div class="row">Delivery Fee <b>${bdt(delivery)}</b></div>
+        ${walletPaid ? `<div class="row">Wallet Points Used <b>- ${bdt(walletPaid)}</b></div>` : ''}
+        ${isPartial
+          ? `<div class="row">Total <b>${bdt(payable)}</b></div>
+        <div class="row">Advance Paid <b style="color:var(--green);">- ${bdt(advancePaid)}</b></div>
+        <div class="row grand"><span>Due on Delivery</span><span>${bdt(dueNow)}</span></div>`
+          : `<div class="row grand"><span>Total Payable</span><span>${bdt(payable)}</span></div>`}
+      </div>
     </div>
   </div>
 
