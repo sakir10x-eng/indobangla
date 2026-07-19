@@ -29,6 +29,17 @@ import { adminOnly } from '@/utils/auth-utils';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
 
+// COD / cash / pending orders carry paid_total = total by Pickbazar convention even though
+// nothing was collected. Treat that as unpaid so a plain COD order isn't shown as "fully paid,
+// ৳0 due" — the desk needs to see the real amount to collect on delivery.
+const CONVENTION_UNPAID = ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'];
+function realPaidOf(order: any): number {
+  const total = Number(order?.total) || 0;
+  const pt = Number(order?.paid_total) || 0;
+  if (pt >= total && CONVENTION_UNPAID.includes(order?.payment_status)) return 0;
+  return pt;
+}
+
 const STEPS = [
   { key: 'order-pending', label: 'Pending' },
   { key: 'order-processing', label: 'Processing' },
@@ -233,7 +244,7 @@ export default function OrderDetailsPage() {
         weight_rate: (order.ops_meta as any)?.weight_rate ?? 0,
         weight_kg: (order.ops_meta as any)?.weight_kg ?? 0,
         adjustment: 0,
-        paid_total: order.paid_total ?? 0,
+        paid_total: realPaidOf(order),
         note: order.note ?? '',
       });
     }
@@ -312,9 +323,11 @@ export default function OrderDetailsPage() {
       delivery: Number(order.delivery_fee) || 0,
       discount: Number(order.discount) || 0,
       total: Number(order.total) || 0,
-      paidTotal: Number(order.paid_total) || 0,
+      paidTotal: realPaidOf(order),
       walletPoints: Number((order as any).wallet_point?.amount) || 0,
-      paid: order.payment_status === 'payment-success' || Number(order.paid_total) >= Number(order.total),
+      paid:
+        order.payment_status === 'payment-success' ||
+        (realPaidOf(order) >= Number(order.total) && Number(order.total) > 0),
       createdAt: order.created_at,
       courier: (order.ops_meta as any)?.courier || order.logistics_provider,
       note: order.note,
@@ -323,7 +336,7 @@ export default function OrderDetailsPage() {
 
   const notifyMessages: Record<string, string> = {
     order: `Dear ${order.customer_name || 'Customer'}, your order #${order.tracking_number} has been received and is currently "${label(order.order_status)}". We'll update you as it progresses. Thank you for ordering with IndoBangla!`,
-    payment: `Dear ${order.customer_name || 'Customer'}, an amount of ৳${Math.round(Number(order.total) - Number(order.paid_total || 0))} is due on delivery for order #${order.tracking_number}. Please keep it ready. Thank you!`,
+    payment: `Dear ${order.customer_name || 'Customer'}, an amount of ৳${Math.round(Number(order.total) - realPaidOf(order))} is due on delivery for order #${order.tracking_number}. Please keep it ready. Thank you!`,
     delivery: `Dear ${order.customer_name || 'Customer'}, your order #${order.tracking_number} is on its way via ${COURIERS.find((c) => c.key === courier)?.name || 'our courier'}. Please stay available. Thank you!`,
     custom: customMsg,
   };
@@ -335,8 +348,8 @@ export default function OrderDetailsPage() {
   };
 
   // Payment picture: an advance-paid pre-order owes only the remainder on delivery.
-  const paid = Number(order.paid_total) || 0;
   const total = Number(order.total) || 0;
+  const paid = realPaidOf(order);
   const due = Math.max(0, total - paid);
   const fullyPaid = total > 0 && paid >= total;
   const partlyPaid = paid > 0 && paid < total;
@@ -400,7 +413,7 @@ export default function OrderDetailsPage() {
             {[
               { cap: 'Total items', val: products.length, sub: 'books' },
               { cap: 'Subtotal', val: <Money amount={order.amount} />, sub: 'before charges' },
-              { cap: 'Paid', val: <Money amount={order.paid_total} />, sub: partlyPaid ? `advance ${advancePct}%` : fullyPaid ? 'settled' : 'nothing yet', tone: paid > 0 ? '#6cd39b' : '#efc05d' },
+              { cap: 'Paid', val: <Money amount={paid} />, sub: partlyPaid ? `advance ${advancePct}%` : fullyPaid ? 'settled' : 'nothing yet', tone: paid > 0 ? '#6cd39b' : '#efc05d' },
               { cap: fullyPaid ? 'Remaining due' : partlyPaid ? 'Due' : 'Total payable', val: <Money amount={due} />, sub: fullyPaid ? 'fully paid ✓' : 'on delivery', hot: !fullyPaid, tone: fullyPaid ? '#6cd39b' : undefined },
             ].map((s, i) => (
               <div key={i} className={`rounded-xl p-4 ${s.hot ? 'border border-[#5a2b2f] bg-[#2e1518]' : 'bg-[#141416]'}`}>
@@ -616,7 +629,7 @@ export default function OrderDetailsPage() {
               })()}
               <div className="flex justify-between border-b border-gray-100 py-2">
                 <span className="text-body">Paid</span>
-                <span className="font-mono font-medium text-accent">− <Money amount={order.paid_total} /></span>
+                <span className="font-mono font-medium text-accent">− <Money amount={paid} /></span>
               </div>
             </div>
             <div className="mt-2 flex items-center justify-between rounded-lg border border-accent/40 bg-accent/10 px-4 py-2.5">

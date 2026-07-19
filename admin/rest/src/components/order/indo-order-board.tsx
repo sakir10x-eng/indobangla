@@ -152,8 +152,19 @@ function mapOrder(o: any, stats: any) {
     sourceKey: (ops.source || '').toLowerCase(),
     bucket: ops.void ? 'void' : (TO_BUCKET[o.order_status] || 'pending'),
     order_status: o.order_status,
-    paid: o.payment_status === 'payment-success' || (Number(o.paid_total) >= Number(o.total) && Number(o.total) > 0),
-    paidTotal: Number(o.paid_total) || 0,
+    // COD / cash / pending orders carry paid_total = total by Pickbazar convention even though
+    // nothing was collected — treat that as unpaid so they don't read "PAID ✓" / drop out of the
+    // unpaid count. A real online/advance payment is unaffected.
+    paid:
+      o.payment_status === 'payment-success' ||
+      (Number(o.paid_total) >= Number(o.total) &&
+        Number(o.total) > 0 &&
+        !['payment-cash-on-delivery', 'payment-cash', 'payment-pending'].includes(o.payment_status)),
+    paidTotal:
+      Number(o.paid_total) >= Number(o.total) &&
+      ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'].includes(o.payment_status)
+        ? 0
+        : Number(o.paid_total) || 0,
     isPreorder: Boolean(o.is_preorder || ops.advance),
     delivery: Number(o.delivery_fee) || 0,
     discount: Number(o.discount) || 0,
