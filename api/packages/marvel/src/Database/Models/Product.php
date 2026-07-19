@@ -41,7 +41,16 @@ class Product extends Model
      */
     protected static function booted(): void
     {
-        $bustCatalog = static fn () => Cache::increment('catalog:version');
+        // Best-effort: a cache hiccup must never break the write itself. Throwing here would
+        // 500 every publish/edit AND every void (void releases stock via a product save) —
+        // failing to invalidate just means the catalog serves a stale copy until its TTL.
+        $bustCatalog = static function (): void {
+            try {
+                Cache::increment('catalog:version');
+            } catch (\Throwable $e) {
+                // ignore — invalidation is not worth failing a product write over
+            }
+        };
         static::saved($bustCatalog);
         static::deleted($bustCatalog);
     }
