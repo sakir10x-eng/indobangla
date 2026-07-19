@@ -144,11 +144,25 @@ class Order extends Model
                 if (!$order->wasChanged('order_status')) {
                     return;
                 }
+                // Capture the transition BEFORE the saveQuietly below: saveQuietly() re-syncs the
+                // model's "original", so getOriginal('order_status') would otherwise return the new
+                // value and break the cancel/void stock-release detection further down.
+                $new = $order->order_status;
+                $old = $order->getOriginal('order_status');
+                // Timeline: stamp when each status is first reached so the board can draw a
+                // Pending → Delivered progression with times. Every status change (board, agent,
+                // lifecycle) flows through here. saveQuietly() → no updated-event re-loop.
+                $ops  = (array) ($order->ops_meta ?? []);
+                $hist = (array) ($ops['status_history'] ?? []);
+                if (empty($hist[$new])) {
+                    $hist[$new] = now()->toIso8601String();
+                    $ops['status_history'] = $hist;
+                    $order->ops_meta = $ops;
+                    $order->saveQuietly();
+                }
                 // Void belongs here for the same reason as cancelled: the books were never
                 // really sold, so the copies have to go back on the shelf.
                 $cancelled = ['order-cancelled', 'order-refunded', 'order-void'];
-                $new = $order->order_status;
-                $old = $order->getOriginal('order_status');
                 if (in_array($new, $cancelled) && !in_array($old, $cancelled)) {
                     $ops = (array) ($order->ops_meta ?? []);
                     if (!empty($ops['stock_committed']) && empty($ops['stock_released'])) {

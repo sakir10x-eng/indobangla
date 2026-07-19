@@ -171,6 +171,7 @@ function mapOrder(o: any, stats: any) {
     total: Number(o.total) || 0,
     paymentGateway: o.payment_gateway || 'CASH_ON_DELIVERY',
     createdAt: o.created_at,
+    statusHistory: ops.status_history || {},
     note: o.note || '',
     ageDays,
     name: o.customer_name || o.customer?.name || 'Customer',
@@ -280,6 +281,71 @@ const TONE: Record<string, string> = {
   teal: 'bg-teal-50 text-teal-800 ring-teal-200',
   slate: 'bg-slate-50 text-slate-700 ring-slate-200',
 };
+
+/* ---------- delivery status timeline ---------- */
+const TIMELINE_STAGES: { key: string; label: string; statuses: string[] }[] = [
+  { key: 'pending', label: 'Pending', statuses: ['order-pending'] },
+  { key: 'ready', label: 'Ready', statuses: ['order-processing', 'order-at-local-facility'] },
+  { key: 'shipped', label: 'Shipped', statuses: ['order-out-for-delivery', 'order-shipped'] },
+  { key: 'transit', label: 'In transit', statuses: ['order-in-transit'] },
+  { key: 'delivered', label: 'Delivered', statuses: ['order-completed', 'order-partial-delivered'] },
+];
+const STAGE_ORDER = TIMELINE_STAGES.map((s) => s.key);
+
+function fmtStamp(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+// Pending → Delivered progression with the time each stage was reached (from the order's
+// ops_meta.status_history, stamped by the Order `updated` hook). Historical orders that predate
+// the history still light up their reached stages via the current bucket; only the times are '—'.
+function StatusTimeline({ o }: any) {
+  const hist: Record<string, string> = o.statusHistory || {};
+  const returned = o.bucket === 'returned' || o.bucket === 'void';
+  const curKey = o.bucket === 'hold' ? 'transit' : o.bucket === 'partial' ? 'delivered' : o.bucket;
+  const curIdx = STAGE_ORDER.indexOf(curKey);
+  const timeOf = (st: any): string | null => {
+    for (const s of st.statuses) if (hist[s]) return hist[s];
+    return st.key === 'pending' ? o.createdAt : null;
+  };
+  const last = TIMELINE_STAGES.length - 1;
+  return (
+    <div className="flex items-start overflow-x-auto px-4 py-2.5">
+      {TIMELINE_STAGES.map((st, i) => {
+        const t = timeOf(st);
+        const reached = (!returned && curIdx >= 0 && i <= curIdx) || !!t;
+        const current = !returned && i === curIdx;
+        return (
+          <div key={st.key} className="flex min-w-[54px] flex-1 flex-col items-center">
+            <div className="flex w-full items-center">
+              <div className={`h-0.5 flex-1 ${i === 0 ? 'opacity-0' : reached ? 'bg-emerald-400' : 'bg-slate-200'}`} />
+              <div className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${current ? 'bg-emerald-500 text-white ring-2 ring-emerald-200' : reached ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-400'}`}>
+                {reached ? '✓' : ''}
+              </div>
+              <div className={`h-0.5 flex-1 ${i === last ? 'opacity-0' : reached ? 'bg-emerald-400' : 'bg-slate-200'}`} />
+            </div>
+            <div className={`mt-1 text-center text-[10px] font-semibold leading-tight ${reached ? 'text-slate-700' : 'text-slate-400'}`}>{st.label}</div>
+            <div className="text-center text-[9px] leading-tight text-slate-400">{fmtStamp(t) || '·'}</div>
+          </div>
+        );
+      })}
+      {returned && (
+        <div className="flex min-w-[54px] flex-1 flex-col items-center">
+          <div className="flex w-full items-center">
+            <div className="h-0.5 flex-1 bg-rose-300" />
+            <div className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">✕</div>
+            <div className="h-0.5 flex-1 opacity-0" />
+          </div>
+          <div className="mt-1 text-center text-[10px] font-semibold leading-tight text-rose-600">{o.bucket === 'void' ? 'Canceled' : 'Returned'}</div>
+          <div className="text-center text-[9px] leading-tight text-slate-400">{fmtStamp(hist['order-cancelled'] || hist['order-refunded'] || hist['order-void']) || '·'}</div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ---------- card ---------- */
 function OrderCard({ o, act, busy, coupon }: any) {
@@ -409,6 +475,9 @@ function OrderCard({ o, act, busy, coupon }: any) {
           </button>
         </div>
       </div>
+
+      {/* Delivery timeline: Pending → Delivered with the time each stage was reached. */}
+      <StatusTimeline o={o} />
 
       {/* what exactly is holding this order's Attention flag — and what clears it */}
       {showAttn && (
