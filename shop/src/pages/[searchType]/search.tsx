@@ -11,7 +11,6 @@ import { useProducts } from '@/framework/product';
 import { drawerAtom } from '@/store/drawer-atom';
 import { motion } from 'framer-motion';
 import { useAtom } from 'jotai';
-import { useTranslation } from 'next-i18next';
 import { useRouter } from 'next/router';
 import StickyBox from 'react-sticky-box';
 
@@ -108,9 +107,15 @@ export default function SearchPage() {
   );
 }
 
-const GetLayout = (page: React.ReactElement) => {
-  const { t } = useTranslation('common');
-  const [_, setDrawerView] = useAtom(drawerAtom);
+// A real component — NOT an inline function that runs hooks at the _app level. When the layout
+// was an inline `(page) => { useTranslation(); ... }`, its hooks (and react-i18next's internal
+// ready-state hooks) became part of CustomApp's hook list; a momentary null i18n instance made
+// useTranslation early-return with fewer hooks, shifting that list and throwing React #310
+// ("Rendered fewer hooks than expected") — the /books/search client crash. As its own Fiber the
+// layout's hooks are isolated and always inside the i18n provider. The sr-only filter label is a
+// plain string so the layout no longer depends on the i18n instance being ready at all.
+function SearchLayout({ children }: { children: React.ReactNode }) {
+  const [, setDrawerView] = useAtom(drawerAtom);
   return (
     <GeneralLayout>
       <>
@@ -123,7 +128,7 @@ const GetLayout = (page: React.ReactElement) => {
                 </SearchErrorBoundary>
               </StickyBox>
             </div>
-            {page}
+            {children}
           </div>
         </div>
         <MobileNavigation>
@@ -137,13 +142,15 @@ const GetLayout = (page: React.ReactElement) => {
             }
             className="flex items-center justify-center h-full p-2 focus:text-accent focus:outline-0"
           >
-            <span className="sr-only">{t('text-filter')}</span>
+            <span className="sr-only">ফিল্টার</span>
             <FilterIcon width="17.05" height="18" />
           </motion.button>
         </MobileNavigation>
       </>
     </GeneralLayout>
   );
-};
+}
 
-SearchPage.getLayout = GetLayout;
+SearchPage.getLayout = (page: React.ReactElement) => (
+  <SearchLayout>{page}</SearchLayout>
+);
