@@ -2552,6 +2552,25 @@ class IntegrationController extends CoreController
 
     // --------------------------------------------------- courier: create shipment
     /** Create a shipment/consignment for an order with the selected courier. */
+    /**
+     * What the courier must actually collect on delivery (COD): the order total minus anything
+     * already settled — an online/advance payment and wallet points. Plain COD/pending orders
+     * carry paid_total = total by Pickbazar convention even though nothing was collected, so that
+     * case is reset to 0 (mirrors the pay-link due) — otherwise a fully-unpaid COD parcel would
+     * be created with 0 to collect. A fully-paid order collects nothing; an advance collects the
+     * remainder. `total` does NOT have wallet taken off (see Order::$with note), so subtract it.
+     */
+    private function courierCollectAmount(Order $order): int
+    {
+        $paid = (float) $order->paid_total;
+        if ($paid >= (float) $order->total
+            && in_array($order->payment_status, ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'], true)) {
+            $paid = 0;
+        }
+        $wallet = (float) (optional($order->wallet_point)->amount ?? 0);
+        return (int) max(0, round((float) $order->total - $paid - $wallet));
+    }
+
     public function createShipment(Request $request, $provider)
     {
         $cfg = ($this->options()['couriers'] ?? [])[$provider] ?? [];
@@ -2577,7 +2596,7 @@ class IntegrationController extends CoreController
                         'recipient_name'    => $order->customer_name,
                         'recipient_phone'   => $order->customer_contact,
                         'recipient_address' => $address ?: 'N/A',
-                        'cod_amount'        => (float) $order->total,
+                        'cod_amount'        => (float) $this->courierCollectAmount($order),
                         'note'              => $order->note,
                     ]);
                     break;
@@ -2594,7 +2613,7 @@ class IntegrationController extends CoreController
                         'delivery_area'          => $areaName ?: $cityName,
                         'customer_address'       => $address ?: 'N/A',
                         'merchant_invoice_id'    => $order->tracking_number,
-                        'cash_collection_amount' => (string) round((float) $order->total),
+                        'cash_collection_amount' => (string) $this->courierCollectAmount($order),
                         'parcel_weight'          => (int) ($cfg['default_weight'] ?? 500),
                         'value'                  => (int) round((float) $order->total),
                     ];
