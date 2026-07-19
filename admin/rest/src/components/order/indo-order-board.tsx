@@ -968,7 +968,17 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
     // `mapped` already arrives newest-first (created_at desc); keep that order and
     // only pin attention orders to the top (stable sort preserves recency within groups).
     return mapped
-      .filter((o) => (tab === 'attention' ? needsAttention(o) : tab === 'printstuck' ? o.print === 'sent' : tab === 'all' ? true : o.bucket === tab))
+      .filter((o) => {
+        // Archived orders (voiding auto-archives) live only in the Void / Archived tabs — every
+        // working tab, including 'All', hides them so the main list stays the live workload.
+        const showsArchived = tab === 'void' || tab === 'archived';
+        if (!showsArchived && o.archived_at) return false;
+        if (tab === 'attention') return needsAttention(o);
+        if (tab === 'printstuck') return o.print === 'sent';
+        if (tab === 'all') return true;
+        if (tab === 'archived') return !!o.archived_at;
+        return o.bucket === tab;
+      })
       .sort((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)));
   }, [mapped, tab]);
 
