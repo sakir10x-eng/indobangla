@@ -69,12 +69,12 @@ trait CalculatePaymentTrait
         $subtotal = 0;
         try {
             foreach ($cartItems as $item) {
-                if (isset($item[variation_option_id])) {
-                    $variation = Variation::findOrFail($item[variation_option_id]);
-                    $subtotal += $this->calculateEachItemMrpTotal($variation, $item[order_quantity]);
+                if (isset($item['variation_option_id'])) {
+                    $variation = Variation::findOrFail($item['variation_option_id']);
+                    $subtotal += $this->calculateEachItemMrpTotal($variation, $item['order_quantity']);
                 } else {
-                    $product = Product::findOrFail($item[product_id]);
-                    $subtotal += $this->calculateEachItemMrpTotal($product, $item[order_quantity]);
+                    $product = Product::findOrFail($item['product_id']);
+                    $subtotal += $this->calculateEachItemMrpTotal($product, $item['order_quantity']);
                 }
             }
             return $subtotal;
