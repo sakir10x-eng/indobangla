@@ -51,6 +51,11 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
     }
   );
   const base_amount = calculateTotal(available_items);
+  // MRP (main price) subtotal — percentage coupons discount the main price, not sale price.
+  const mrp_base = (available_items ?? []).reduce(
+    (sum: number, i: any) => sum + Number(i.mrp ?? i.price) * Number(i.quantity ?? 1),
+    0,
+  );
   const { price: sub_total } = usePrice(
     verifiedResponse && {
       amount: base_amount,
@@ -61,7 +66,7 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
 
   switch (coupon?.type) {
     case CouponType.PERCENTAGE:
-      calculateDiscount = (base_amount * Number(discount)) / 100
+      calculateDiscount = Math.min(base_amount, (mrp_base * Number(discount)) / 100)
       break;
     case CouponType.FREE_SHIPPING:
       calculateDiscount =  verifiedResponse ? verifiedResponse.shipping_charge : 0

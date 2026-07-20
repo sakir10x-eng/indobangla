@@ -324,12 +324,16 @@ class OrderRepository extends BaseRepository
         }
         $request['products'] = $this->guardGifts($request['products']);
         $request['amount'] = $this->calculateSubtotal($request['products']);
+        // MRP subtotal (regular price, ignoring sale_price) — a PERCENTAGE coupon discounts
+        // the MAIN price, not the already-reduced sale price.
+        $mrpAmount = $this->calculateMrpSubtotal($request['products']);
 
         // Gifts are charged in the subtotal above and handed straight back as an equal
         // discount further down, so the paperwork shows the real value of the gift while the
         // payable total is unchanged. Must be computed before `is_gift` is stripped below. It
         // is applied last, after every rounding step, so the two figures cancel to the taka.
         $giftValue = 0;
+        $mrpGiftValue = 0;
         foreach ($request['products'] as $line) {
             if (empty($line['is_gift'])) {
                 continue;
@@ -337,6 +341,7 @@ class OrderRepository extends BaseRepository
             $gift = $this->resolveLineItem($line);
             if ($gift) {
                 $giftValue += $this->calculateEachItemTotal($gift, $line['order_quantity']);
+                $mrpGiftValue += $this->calculateEachItemMrpTotal($gift, $line['order_quantity']);
             }
         }
         // SECURITY: order create is a PUBLIC endpoint (guest checkout), so a shopper must
@@ -429,7 +434,13 @@ class OrderRepository extends BaseRepository
                 // instead of wiping them out (which would charge the customer for the gift).
                 // The coupon is calculated on the paid goods only, so a gift can never inflate
                 // a percentage coupon.
-                $request['discount'] += $this->calculateDiscount($coupon, $request['amount'] - $giftValue);
+                // Percentage coupons discount the MAIN (MRP) price; fixed coupons stay a flat taka.
+                // Clamp so the discount never exceeds the paid goods' actual (sale) value → total >= 0.
+                $paidGoods = (float) $request['amount'] - $giftValue;
+                $couponBase = $coupon->type === CouponType::PERCENTAGE_COUPON
+                    ? max(0, $mrpAmount - $mrpGiftValue)
+                    : $paidGoods;
+                $request['discount'] += min($this->calculateDiscount($coupon, $couponBase), $paidGoods);
             } catch (Exception $th) {
                 throw $th;
             }

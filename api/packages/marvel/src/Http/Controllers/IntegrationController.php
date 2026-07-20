@@ -1004,6 +1004,13 @@ class IntegrationController extends CoreController
         }
         $order->loadMissing('products');
         $ops = (array) ($order->ops_meta ?? []);
+        // COD/cash/pending orders carry paid_total = total by Pickbazar convention though nothing
+        // was collected. Zero it (display-only) so the invoice shows the real outstanding due and
+        // is not mislabelled "paid". Mirrors the pay-link path normalization.
+        if ((float) $order->paid_total >= (float) $order->total
+            && in_array($order->payment_status, ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'], true)) {
+            $order->paid_total = 0;
+        }
         $paid = $order->payment_status === 'payment-success' || (float) $order->paid_total >= (float) $order->total;
         // Surface a live pay link only while one is genuinely payable (unpaid + not expired), so
         // the invoice can carry a "Pay now" button for a due amount without ever reviving a dead
@@ -8744,5 +8751,102 @@ class IntegrationController extends CoreController
             usleep(150000);
         }
         return ['checked' => $checked, 'updated' => $updated, 'details' => $details];
+    }
+
+    /**
+     * bKash reconciliation safety-net. Tokenized checkout only settles when the customer's
+     * browser makes it back to /bkash-callback and we call execute; if that redirect is lost
+     * (tab closed, network drop) a genuinely-paid order can sit "pending" forever. This sweeps
+     * recent unsettled bKash orders, asks bKash what really happened, and closes the loop:
+     *   - transactionStatus Completed  -> money is already ours, just record + settle
+     *   - verification Complete, not executed -> capture it now (execute), then settle
+     *   - Initiated / Incomplete       -> genuine abandonment, left untouched
+     * Only touches orders older than 5 minutes so it never races the live callback, and every
+     * step is idempotent (ops_meta.bkash.executed + payment_status guards) so a customer is
+     * never charged or credited twice. Runs every 15 minutes from the scheduler.
+     */
+    public function reconcileBkashPayments($days = 2, $limit = 200): array
+    {
+        $orders = \Marvel\Database\Models\Order::whereNull('deleted_at')
+            ->whereNotIn('payment_status', ['payment-success', 'payment-refunded'])
+            ->where('created_at', '>=', now()->subDays((int) $days ?: 2))
+            ->where('created_at', '<=', now()->subMinutes(5))
+            ->whereRaw("JSON_EXTRACT(ops_meta, '$.bkash.payment_id') IS NOT NULL")
+            ->latest('id')
+            ->limit((int) $limit ?: 200)
+            ->get();
+
+        $checked = 0;
+        $settled = 0;
+        $captured = 0;
+        $details = [];
+        foreach ($orders as $order) {
+            $ops = (array) ($order->ops_meta ?? []);
+            $bk  = (array) ($ops['bkash'] ?? []);
+            $pid = $bk['payment_id'] ?? null;
+            if (!$pid || !empty($bk['executed']) || $order->payment_status === 'payment-success') {
+                continue;
+            }
+            $checked++;
+            try {
+                $q = (array) BkashPaymentTokenize::queryPayment($pid);
+            } catch (\Throwable $e) {
+                continue; // bKash hiccup — leave it for the next run
+            }
+            $tx  = $q['transactionStatus'] ?? null;
+            $ver = $q['verificationStatus'] ?? null;
+
+            $finish = function ($order, $resp, $tag) use (&$details) {
+                $ops = (array) ($order->ops_meta ?? []);
+                $ops['bkash'] = array_merge($ops['bkash'] ?? [], [
+                    'executed'    => true,
+                    'reconciled'  => true,
+                    'last_status' => $resp['transactionStatus'] ?? 'Completed',
+                    'trx_id'      => $resp['trxID'] ?? null,
+                    'executed_at' => now()->toIso8601String(),
+                ]);
+                $order->ops_meta = $ops;
+                $order->saveQuietly();
+                $paid = isset($resp['amount']) ? (float) $resp['amount'] : (float) ($ops['bkash']['amount_bdt'] ?? $order->total);
+                $this->settlePayment($order, 'bkash', $paid);
+                $details[] = ['id' => (int) $order->id, 'action' => $tag, 'trx' => $resp['trxID'] ?? null];
+            };
+
+            // Already captured on bKash's side — record and settle.
+            if ($tx === 'Completed' && !empty($q['trxID'])) {
+                $finish($order, $q, 'settled-already-completed');
+                $settled++;
+                continue;
+            }
+
+            // Customer finished verification but never made it back to execute — capture now.
+            if (in_array($ver, ['Complete', 'Completed'], true) && $tx !== 'Completed') {
+                try {
+                    $ex = (array) BkashPaymentTokenize::executePayment($pid);
+                    if (!$ex) {
+                        $ex = (array) BkashPaymentTokenize::queryPayment($pid);
+                    }
+                } catch (\Throwable $e) {
+                    \Marvel\Helpers\AdminNotifier::send("⚠️ <b>bKash reconcile execute ব্যর্থ</b> #{$order->tracking_number} (paymentID: {$pid}) — হাতে যাচাই করুন");
+                    $details[] = ['id' => (int) $order->id, 'action' => 'execute-error'];
+                    continue;
+                }
+                $ok = ($ex['statusCode'] ?? null) === '0000'
+                    && ($ex['transactionStatus'] ?? null) === 'Completed'
+                    && !empty($ex['trxID']);
+                if ($ok) {
+                    $finish($order, $ex, 'captured-and-settled');
+                    $captured++;
+                } else {
+                    $details[] = ['id' => (int) $order->id, 'action' => 'execute-not-completed', 'status' => $ex['transactionStatus'] ?? 'unknown'];
+                }
+                continue;
+            }
+            // Initiated / Incomplete -> genuine abandonment; leave the order as placed.
+        }
+        if ($settled + $captured > 0) {
+            \Marvel\Helpers\AdminNotifier::send("✅ <b>bKash reconcile</b>: {$settled} already-paid + {$captured} recovered — settled.");
+        }
+        return ['checked' => $checked, 'settled' => $settled, 'captured' => $captured, 'details' => $details];
     }
 }

@@ -35,6 +35,7 @@ class Kernel extends ConsoleKernel
         // Checkout serves delivery areas from our own table, so it has to be kept in
         // step with RedX (they add and rename areas). Nightly is plenty — the list
         // moves slowly — and the command keeps the old rows if RedX is unreachable.
+        $schedule->command('bkash:reconcile')->everyFifteenMinutes()->withoutOverlapping()->runInBackground();
         $schedule->command('courier:sync-status')->hourly()->withoutOverlapping()->runInBackground();
         $schedule->command('courier:sync-areas')
             ->dailyAt('03:40')

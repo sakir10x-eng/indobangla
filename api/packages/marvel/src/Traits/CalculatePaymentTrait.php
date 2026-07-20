@@ -59,6 +59,35 @@ trait CalculatePaymentTrait
         return $total;
     }
 
+    // MRP (regular price) subtotal — ignores sale_price. Used as the base for PERCENTAGE
+    // coupons so the discount is taken off the MAIN price, not the already-reduced sale price.
+    public function calculateMrpSubtotal($cartItems)
+    {
+        if (!is_array($cartItems)) {
+            throw new MarvelException(CART_ITEMS_NOT_FOUND);
+        }
+        $subtotal = 0;
+        try {
+            foreach ($cartItems as $item) {
+                if (isset($item[variation_option_id])) {
+                    $variation = Variation::findOrFail($item[variation_option_id]);
+                    $subtotal += $this->calculateEachItemMrpTotal($variation, $item[order_quantity]);
+                } else {
+                    $product = Product::findOrFail($item[product_id]);
+                    $subtotal += $this->calculateEachItemMrpTotal($product, $item[order_quantity]);
+                }
+            }
+            return $subtotal;
+        } catch (\Throwable $th) {
+            throw new MarvelException(NOT_FOUND);
+        }
+    }
+
+    public function calculateEachItemMrpTotal($item, $quantity)
+    {
+        return (float) $item->price * $quantity;
+    }
+
     public function getUserWalletAmount($user)
     {
         $amount = 0;

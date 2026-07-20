@@ -55,6 +55,7 @@ export function generateCartItem(item: Item, variation: Variation) {
       price: Number(
         variation.sale_price ? variation.sale_price : variation.price,
       ),
+      mrp: Number(variation.price),
       image: image?.thumbnail,
       variationId: variation.id,
       language,
@@ -78,6 +79,7 @@ export function generateCartItem(item: Item, variation: Variation) {
     image: image?.thumbnail,
     stock: quantity,
     price: Number(sale_price ? sale_price : price),
+    mrp: Number(price),
     language,
     in_flash_sale,
     shop_id: shop?.id,
