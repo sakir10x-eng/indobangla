@@ -635,6 +635,25 @@ class OrderRepository extends BaseRepository
         try {
             $orderInput = $request->only($this->dataArray);
             $order = $this->create($orderInput);
+            // IndoBangla: record who placed the order so the admin board can label it "by admin"
+            // vs "by customer". A creator holding an admin/staff/store-owner permission means the
+            // order was cut from the dashboard (POS), not the storefront. Guests/customers never
+            // match, so their orders stay "by customer".
+            try {
+                $creator = $request->user();
+                if ($creator && (
+                    $creator->hasPermissionTo(Permission::SUPER_ADMIN)
+                    || $creator->hasPermissionTo(Permission::STORE_OWNER)
+                    || $creator->hasPermissionTo(Permission::STAFF)
+                )) {
+                    $ops = (array) ($order->ops_meta ?? []);
+                    $ops['created_by_name'] = $creator->name;
+                    $order->ops_meta = $ops;
+                    $order->save();
+                }
+            } catch (\Throwable $e) {
+                // creator attribution is cosmetic — never let it break order creation
+            }
             $products = $this->processProducts($request['products'], $request['customer_id'], $order);
             $order->products()->attach($products);
             Order::commitStock($order); // IndoBangla: reserve book stock on placement

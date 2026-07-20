@@ -147,7 +147,7 @@ function mapOrder(o: any, stats: any) {
   return {
     _id: o.id,
     id: o.tracking_number,
-    by: o.order_created_by_name ? 'by admin' : 'by customer',
+    by: ops.created_by_name ? `by admin · ${ops.created_by_name}` : 'by customer',
     source: ops.created_by || null,          // 'ReplyGenie' etc. — set by the agent/API
     sourceKey: (ops.source || '').toLowerCase(),
     bucket: ops.void ? 'void' : (TO_BUCKET[o.order_status] || 'pending'),

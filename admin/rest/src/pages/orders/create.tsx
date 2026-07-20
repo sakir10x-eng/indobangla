@@ -129,6 +129,39 @@ export default function CreateOrderPage() {
   const [custBusy, setCustBusy] = useState(false);
   const [fullCust, setFullCust] = useState<any>(null);
 
+  // Duplicate-order guard: when a customer is chosen and books are in the cart, ask the API
+  // whether this same customer already has a recent live order for any of these books, so the
+  // admin can re-check before cutting a duplicate. Debounced; failures fail silently.
+  const [dupOrders, setDupOrders] = useState<any[]>([]);
+  const dupCustomerId = (customer as any)?.value ?? (customer as any)?.id ?? (fullCust as any)?.id ?? null;
+  const dupProductIds = useMemo(
+    () => (items as any[]).map((i) => i.productId ?? i.id).filter(Boolean).join(','),
+    [items],
+  );
+  useEffect(() => {
+    let cancelled = false;
+    if (!dupCustomerId || !dupProductIds) {
+      setDupOrders([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res: any = await HttpClient.get('order-duplicate-check', {
+          customer_id: dupCustomerId,
+          product_ids: dupProductIds,
+          days: 45,
+        });
+        if (!cancelled) setDupOrders(res?.orders ?? []);
+      } catch {
+        if (!cancelled) setDupOrders([]);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [dupCustomerId, dupProductIds]);
+
   const [bookQ, setBookQ] = useState('');
   const [bookOpen, setBookOpen] = useState(false);
   const [bookLimit, setBookLimit] = useState(20);
@@ -510,6 +543,29 @@ export default function CreateOrderPage() {
             <PlaceOrderAction>Place order</PlaceOrderAction>
           </div>
         </div>
+
+        {dupOrders.length > 0 && (
+          <div style={{ margin: '0 0 14px', border: '1px solid #f0c36d', background: '#fff8e6', borderRadius: 12, padding: '12px 14px' }}>
+            <div style={{ fontWeight: 700, color: '#8a5a00', fontSize: 14 }}>⚠️ সম্ভাব্য ডুপ্লিকেট অর্ডার</div>
+            <div style={{ marginTop: 4, fontSize: 13, color: '#5c4a1a' }}>
+              এই কাস্টমারের নামে এই বই(গুলো) নিয়ে আগেই অর্ডার আছে — কাটার আগে একবার রি-চেক করে নিন:
+            </div>
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {dupOrders.map((o: any) => (
+                <a
+                  key={o.id}
+                  href={`/orders/${o.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#fff', border: '1px solid #e0b84e', borderRadius: 999, padding: '4px 10px', fontSize: 12, fontWeight: 600, color: '#8a5a00', textDecoration: 'none' }}
+                  title="অর্ডারটি নতুন ট্যাবে খুলে দেখে নিন"
+                >
+                  #{o.tracking_number || o.id} · {String(o.order_status || '').replace('order-', '')} ↗
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="grid">
           {/* LEFT */}

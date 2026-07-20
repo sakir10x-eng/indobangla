@@ -8613,4 +8613,47 @@ class IntegrationController extends CoreController
 
         return ['status' => 'success', 'transaction' => $info];
     }
+
+    /**
+     * Duplicate-order guard for the admin POS create-order screen. Given a customer and the
+     * books in the cart, return recent still-live orders by that same customer that already
+     * contain any of those books — so staff can be warned before cutting a duplicate.
+     */
+    public function orderDuplicateCheck(Request $request)
+    {
+        $customerId = (int) $request->input('customer_id');
+        $productIds = array_values(array_filter(array_map('intval', explode(',', (string) $request->input('product_ids', '')))));
+        $days = (int) $request->input('days', 45);
+        if ($customerId <= 0 || empty($productIds)) {
+            return ['orders' => []];
+        }
+        if ($days <= 0) {
+            $days = 45;
+        }
+        $rows = DB::table('orders as o')
+            ->join('order_product as op', 'op.order_id', '=', 'o.id')
+            ->whereNull('o.deleted_at')
+            ->where('o.customer_id', $customerId)
+            ->whereIn('op.product_id', $productIds)
+            ->where('o.created_at', '>=', now()->subDays($days))
+            ->whereNotIn('o.order_status', ['order-cancelled', 'order-void', 'order-refunded', 'order-failed'])
+            ->select('o.id', 'o.tracking_number', 'o.order_status', 'o.created_at', 'op.product_id')
+            ->orderByDesc('o.created_at')
+            ->limit(50)
+            ->get();
+        $orders = [];
+        foreach ($rows as $r) {
+            if (!isset($orders[$r->id])) {
+                $orders[$r->id] = [
+                    'id'              => (int) $r->id,
+                    'tracking_number' => $r->tracking_number,
+                    'order_status'    => $r->order_status,
+                    'created_at'      => (string) $r->created_at,
+                    'product_ids'     => [],
+                ];
+            }
+            $orders[$r->id]['product_ids'][] = (int) $r->product_id;
+        }
+        return ['orders' => array_values($orders)];
+    }
 }

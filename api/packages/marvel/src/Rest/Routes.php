@@ -295,6 +295,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     // ReplyGenie / bot order creation
     Route::post('bot-order-create', [IntegrationController::class, 'createOrderApi'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    Route::get('order-duplicate-check', [IntegrationController::class, 'orderDuplicateCheck'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     // order line-item edit, courier shipment, bKash payment
     Route::post('order-edit-items', [IntegrationController::class, 'editOrderItems'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::post('courier-shipment/{provider}', [IntegrationController::class, 'createShipment'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
