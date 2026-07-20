@@ -794,6 +794,24 @@ class UserController extends CoreController
         }
     }
 
+    // Existing customers' phones are stored on the profile in local 01XXXXXXXXX form, but the
+    // OTP flow sends them as 8801XXXXXXXXX. A plain contact match therefore missed every
+    // existing customer and treated them as brand-new (asking for name/email or failing the
+    // login). Match against every equivalent shape instead.
+    protected function findProfileByContact($phone)
+    {
+        $digits = preg_replace('/\D/', '', (string) $phone);
+        if ($digits === '') {
+            return null;
+        }
+        $local = str_starts_with($digits, '880')
+            ? '0' . substr($digits, 3)
+            : (str_starts_with($digits, '0') ? $digits : '0' . $digits);
+        $intl = str_starts_with($digits, '880') ? $digits : '880' . ltrim($local, '0');
+        $candidates = array_values(array_unique([(string) $phone, $digits, $local, $intl, '+' . $intl]));
+        return Profile::whereIn('contact', $candidates)->first();
+    }
+
     protected function getOtpGateway()
     {
         $gateway = config('auth.active_otp_gateway');
@@ -827,7 +845,7 @@ class UserController extends CoreController
             if (!$sendOtpCode->isValid()) {
                 return ['message' => OTP_SEND_FAIL, 'success' => false];
             }
-            $profile = Profile::where('contact', $phoneNumber)->first();
+            $profile = $this->findProfileByContact($phoneNumber);
             return [
                 'message' => OTP_SEND_SUCCESSFUL,
                 'success' => true,
@@ -863,7 +881,7 @@ class UserController extends CoreController
         try {
             if ($this->verifyOtp($request)) {
                 // check if phone number exist
-                $profile = Profile::where('contact', $phoneNumber)->first();
+                $profile = $this->findProfileByContact($phoneNumber);
                 $user = '';
                 if (!$profile) {
                     // profile not found so could be a new user
