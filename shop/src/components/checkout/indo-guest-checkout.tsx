@@ -25,8 +25,11 @@ const bdt = (n: number) => '৳ ' + bn(Math.round(Number(n) || 0).toLocaleString
 export default function IndoGuestCheckout() {
   const router = useRouter();
   const { items } = useCart();
-  const { settings } = useSettings();
-  const useOtp = Boolean(settings?.useOtp);
+  const { settings, isLoading: settingsLoading } = useSettings();
+  // Fail safe: only an EXPLICIT useOtp:false disables the code. While settings are still
+  // loading (or the dehydrated cache hasn't hydrated) settings?.useOtp is undefined — and a
+  // half-loaded read must never let an order slip through without OTP.
+  const useOtp = settings?.useOtp !== false;
   const { createOrder, isLoading: placing } = useCreateOrder();
 
   const [name, setName] = useState('');
@@ -125,6 +128,10 @@ export default function IndoGuestCheckout() {
   }
 
   function onPlaceClick() {
+    if (settingsLoading) {
+      toast.error('এক মুহূর্ত অপেক্ষা করুন — লোড হচ্ছে…');
+      return;
+    }
     if (!validate()) return;
     if (!useOtp) {
       placeNow();
