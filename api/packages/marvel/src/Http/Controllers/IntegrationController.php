@@ -8656,4 +8656,93 @@ class IntegrationController extends CoreController
         }
         return ['orders' => array_values($orders)];
     }
+
+    /**
+     * Map a RedX tracking response to one of our order statuses. RedX returns no status enum —
+     * only human messages — so we key off the newest message_en. Returns null for anything we
+     * must not auto-advance to (returns / holds / unknown), which stays for a human to handle.
+     */
+    public function redxStatusFromTracking($tracking): ?string
+    {
+        $events = is_array($tracking) ? ($tracking['tracking'] ?? []) : [];
+        if (!is_array($events) || !count($events)) {
+            return null;
+        }
+        $last = strtolower((string) ($events[count($events) - 1]['message_en'] ?? ''));
+        if ($last === '') {
+            return null;
+        }
+        if (str_contains($last, 'delivered')) {
+            return \Marvel\Enums\OrderStatus::COMPLETED;
+        }
+        if (str_contains($last, 'on the way to delivery') || str_contains($last, 'out for delivery')) {
+            return \Marvel\Enums\OrderStatus::OUT_FOR_DELIVERY;
+        }
+        if (
+            str_contains($last, 'picked up') || str_contains($last, 'received in')
+            || str_contains($last, 'unloaded') || str_contains($last, 'left from')
+            || str_contains($last, 'ready for transfer') || str_contains($last, 'in transit')
+        ) {
+            return \Marvel\Enums\OrderStatus::IN_TRANSIT;
+        }
+        return null;
+    }
+
+    /**
+     * Pull live RedX status for every recent, still-in-flight order and advance order_status to
+     * match (delivered -> completed, etc.). Forward-only — never moves an order backwards. The
+     * status change flows through OrderRepository::changeOrderStatus so delivered_at, the board
+     * timeline, loyalty points and the admin notifier all fire exactly as a manual update would.
+     */
+    public function syncCourierStatuses($days = 45, $limit = 500): array
+    {
+        $rank = [
+            \Marvel\Enums\OrderStatus::PENDING           => 0,
+            \Marvel\Enums\OrderStatus::CONFIRMED         => 1,
+            \Marvel\Enums\OrderStatus::PLACED            => 1,
+            \Marvel\Enums\OrderStatus::PROCESSING        => 2,
+            \Marvel\Enums\OrderStatus::SHIPPED           => 3,
+            \Marvel\Enums\OrderStatus::IN_TRANSIT        => 4,
+            \Marvel\Enums\OrderStatus::AT_LOCAL_FACILITY => 4,
+            \Marvel\Enums\OrderStatus::OUT_FOR_DELIVERY  => 5,
+            \Marvel\Enums\OrderStatus::COMPLETED         => 6,
+        ];
+        $terminal = ['order-completed', 'order-cancelled', 'order-void', 'order-refunded', 'order-failed'];
+        $orders = \Marvel\Database\Models\Order::whereNull('deleted_at')
+            ->whereNotIn('order_status', $terminal)
+            ->where('created_at', '>=', now()->subDays((int) $days ?: 45))
+            ->latest('id')
+            ->limit((int) $limit ?: 500)
+            ->get();
+        $repo = app(\Marvel\Database\Repositories\OrderRepository::class);
+        $checked = 0;
+        $updated = 0;
+        $details = [];
+        foreach ($orders as $order) {
+            $ops = (array) ($order->ops_meta ?? []);
+            $tid = $ops['courier_tracking_id'] ?? null;
+            $courier = strtolower((string) ($ops['courier'] ?? ''));
+            if (!$tid || $courier !== 'redx') {
+                continue;
+            }
+            $checked++;
+            try {
+                $res = $this->courierTrack(new Request(['tracking_id' => (string) $tid]), 'redx');
+                $mapped = $this->redxStatusFromTracking($res['tracking'] ?? []);
+                if (!$mapped) {
+                    continue;
+                }
+                $cur = $order->order_status;
+                if (($rank[$mapped] ?? -1) > ($rank[$cur] ?? -1)) {
+                    $repo->changeOrderStatus($order, $mapped);
+                    $updated++;
+                    $details[] = ['id' => (int) $order->id, 'from' => $cur, 'to' => $mapped];
+                }
+            } catch (\Throwable $e) {
+                // a courier hiccup on one parcel must not stop the batch
+            }
+            usleep(150000);
+        }
+        return ['checked' => $checked, 'updated' => $updated, 'details' => $details];
+    }
 }
