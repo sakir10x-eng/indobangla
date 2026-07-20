@@ -98,7 +98,7 @@ class ProductCreateRequest extends FormRequest
             'language'                     => ['nullable', 'string'],
             'dropoff_locations'            => ['array'],
             'pickup_locations'             => ['array'],
-            'digital_file'                 => ['array'],
+            'digital_file'                 => ['nullable', 'array'],
             'variations'                   => ['array'],
             'variation_options'            => ['array'],
             'quantity'                     => ['nullable', 'integer'],

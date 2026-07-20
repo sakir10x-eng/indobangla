@@ -392,7 +392,10 @@ class ProductRepository extends BaseRepository
             if (isset($request['deposits'])) {
                 $product->deposits()->sync($request['deposits']);
             }
-            if (isset($request['digital_file'])) {
+            // A physical product sends digital_file: null; the request's ArrayAccess reports the
+            // key as set even when the value is null, so guard on a real array or create() gets
+            // null and throws. Only touch the digital file when there is actually one.
+            if (!empty($request['digital_file']) && is_array($request['digital_file'])) {
                 $file = $request['digital_file'];
                 if (isset($file['id'])) {
                     $product->digital_file()->where('id', $file['id'])->update($file);

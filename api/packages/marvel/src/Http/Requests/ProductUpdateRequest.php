@@ -54,7 +54,7 @@ class ProductUpdateRequest extends FormRequest
             'dropoff_locations'            => ['array'],
             'pickup_locations'             => ['array'],
             'language'                     => ['nullable', 'string'],
-            'digital_file'                 => ['array'],
+            'digital_file'                 => ['nullable', 'array'],
             'product_type'                 => ['required', Rule::in($productType)],
             'unit'                         => ['string'],
             'description'                  => ['nullable', 'string', 'max:10000'],
