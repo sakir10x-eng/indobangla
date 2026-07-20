@@ -52,6 +52,40 @@ trait OrderManagementTrait
                 $child_order->save();
             }
         }
+
+        // IndoBangla loyalty: the first time an order is COMPLETED, credit the customer the
+        // reward points advertised on the product page (~5% of the bill: 5 per ৳100, minimum
+        // ৳5-worth). Stored at the store's currency→points ratio so they redeem back to that
+        // exact ৳ value. Idempotent via orders.earned_points; guests (no customer_id) can't
+        // hold a wallet, so they simply don't earn. Never let this block a status change.
+        if (
+            $prev_order_status !== OrderStatusEnum::COMPLETED
+            && $new_order_status === OrderStatusEnum::COMPLETED
+            && empty($order->earned_points)
+            && !empty($order->customer_id)
+        ) {
+            try {
+                $paid = (float) ($order->paid_total ?: $order->total);
+                $rewardTaka = max(5, round($paid / 100) * 5);
+                $settings = \Marvel\Database\Models\Settings::getData();
+                $ratio = (float) ($settings['options']['currencyToWalletRatio'] ?? 1);
+                if ($ratio <= 0) {
+                    $ratio = 1;
+                }
+                $points = (int) round($rewardTaka * $ratio);
+                if ($points > 0) {
+                    $wallet = \Marvel\Database\Models\Wallet::firstOrCreate(['customer_id' => $order->customer_id]);
+                    $wallet->total_points = (int) $wallet->total_points + $points;
+                    $wallet->available_points = (int) $wallet->available_points + $points;
+                    $wallet->save();
+                    $order->earned_points = $points;
+                    $order->save();
+                }
+            } catch (\Throwable $e) {
+                // loyalty accounting must never break an order status update
+            }
+        }
+
         return $order;
     }
 }
