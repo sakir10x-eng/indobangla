@@ -171,15 +171,31 @@ export default function IndoGuestCheckout() {
     );
   }
 
-  function onDigit(i: number, v: string) {
-    const d = v.replace(/\D/g, '').slice(-1);
-    const next = [...digits];
-    next[i] = d;
+  // Fill the boxes from a (possibly multi-digit) value — typed or pasted — and auto-submit
+  // once all four are in. Most shoppers copy the code out of the SMS and paste it, so a box
+  // that only kept the last character was the whole "code doesn't work, ask again" loop.
+  function fillCode(start: number, raw: string) {
+    const clean = raw.replace(/\D/g, '');
+    if (!clean) {
+      const next = [...digits];
+      next[start] = '';
+      setDigits(next);
+      return;
+    }
+    const next = start === 0 && clean.length > 1 ? ['', '', '', ''] : [...digits];
+    for (let k = 0; k < clean.length && start + k < 4; k++) {
+      next[start + k] = clean[k];
+    }
     setDigits(next);
     setOtpErr('');
-    if (d && i < 3) otpRefs.current[i + 1]?.focus();
+    const lastFilled = Math.min(start + clean.length, 4);
+    otpRefs.current[Math.min(lastFilled, 3)]?.focus();
     const code = next.join('');
     if (code.length === 4) submitOtp(code);
+  }
+
+  function onDigit(i: number, v: string) {
+    fillCode(i, v.length > 1 ? v : v.slice(-1));
   }
 
   const canResend = !sendOtp.isLoading;
@@ -339,11 +355,15 @@ export default function IndoGuestCheckout() {
                   }}
                   value={d}
                   onChange={(e) => onDigit(i, e.target.value)}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    fillCode(0, e.clipboardData.getData('text') || '');
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Backspace' && !digits[i] && i > 0) otpRefs.current[i - 1]?.focus();
                   }}
                   inputMode="numeric"
-                  maxLength={1}
+                  maxLength={4}
                 />
               ))}
             </div>

@@ -1334,6 +1334,11 @@ class IntegrationController extends CoreController
         if ($order->payment_status === 'payment-success') {
             return ['status' => 'success', 'paid' => true];
         }
+        // A cancelled / voided / refunded order must never collect money — the link may still
+        // exist (customer Pay-now, or an old admin link) but the sale is off.
+        if (in_array($order->order_status, ['order-cancelled', 'order-void', 'order-refunded', 'order-failed'], true)) {
+            throw new MarvelException('এই অর্ডারটি আর সক্রিয় নেই — পেমেন্ট নেওয়া যাবে না।');
+        }
         $method = (string) $request->input('method', '');
 
         // #5c — the buyer chooses full-vs-advance per attempt, and this re-stamps the meta so
