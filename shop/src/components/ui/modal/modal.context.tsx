@@ -3,6 +3,7 @@ import React from 'react';
 type MODAL_VIEWS =
   | 'REGISTER'
   | 'LOGIN_VIEW'
+  | 'CHECKOUT_CHOICE'
   | 'FORGOT_VIEW'
   | 'OTP_LOGIN'
   | 'ADD_OR_UPDATE_ADDRESS'

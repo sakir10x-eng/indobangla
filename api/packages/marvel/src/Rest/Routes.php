@@ -71,7 +71,7 @@ Broadcast::routes(['middleware' => ['auth:sanctum']]);
 Route::get('/email/verify/{id}/{hash}', [UserController::class, 'verifyEmail'])->name('verification.verify');
 
 Route::post('/register', [UserController::class, 'register']);
-Route::post('/token', [UserController::class, 'token']);
+Route::post('/token', [UserController::class, 'token'])->middleware('throttle:20,1');
 // Admin login 2FA: (re)send + verify the SMS OTP for a half-finished admin login. Public but
 // guarded by a short-lived server-side ticket, and throttled so the code can't be brute-forced.
 Route::post('/admin-login-otp/request', [UserController::class, 'adminOtpRequest'])->middleware('throttle:8,1');

@@ -86,17 +86,36 @@ class CheckoutRepository
             if (!count($physical_products)) {
                 return 0;
             }
-            $settings = Settings::getData();
-            $class_id = $settings['options']['shippingClass'];
-            if ($class_id) {
-                $shipping_class = Shipping::find($class_id);
-                return $this->getShippingCharge($shipping_class, $amount);
-            } else {
-                return $this->calculateShippingChargeByProduct($request['products']);
-            }
+            // IndoBangla zone charge: inside Dhaka vs outside, matched from the shipping address
+            // (mirrors the storefront guest checkout). The stock fixed shipping class returned one
+            // flat amount, so logged-in shoppers outside Dhaka were undercharged. Unmatched/empty
+            // address falls back to \"outside\" so we never undercharge.
+            return $this->zoneShippingCharge($request);
         } catch (\Throwable $th) {
             return 0;
         }
+    }
+
+    protected function zoneShippingCharge($request)
+    {
+        $settings = Settings::getData();
+        $opts = $settings['options'] ?? [];
+        $dhaka   = isset($opts['dhakaDeliveryCharge']) && $opts['dhakaDeliveryCharge'] !== null && $opts['dhakaDeliveryCharge'] !== ''
+            ? (float) $opts['dhakaDeliveryCharge'] : 60;
+        $outside = isset($opts['outsideDhakaDeliveryCharge']) && $opts['outsideDhakaDeliveryCharge'] !== null && $opts['outsideDhakaDeliveryCharge'] !== ''
+            ? (float) $opts['outsideDhakaDeliveryCharge'] : 120;
+        $addr = $request['shipping_address'] ?? $request['billing_address'] ?? [];
+        if (!is_array($addr)) {
+            $addr = (array) $addr;
+        }
+        $hay = mb_strtolower(trim(implode(' ', [
+            $addr['city'] ?? '',
+            $addr['state'] ?? '',
+            $addr['street_address'] ?? '',
+            $addr['address'] ?? '',
+        ])));
+        $insideDhaka = $hay !== '' && (str_contains($hay, 'dhaka') || str_contains($hay, 'ঢাকা'));
+        return $insideDhaka ? $dhaka : $outside;
     }
 
     protected function calculateShippingChargeByProduct($products)

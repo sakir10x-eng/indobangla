@@ -59,7 +59,7 @@ class SettingsController extends CoreController
         // gated endpoints — the shop never needs them.
         $options = $data['options'] ?? [];
         if (is_array($options)) {
-            foreach (['couriers', 'replygenie', 'ai_settings', 'payments', 'notify', 'server_info'] as $secretKey) {
+            foreach (['couriers', 'replygenie', 'ai_settings', 'payments', 'notify', 'server_info', 'adminOtpNumbers'] as $secretKey) {
                 unset($options[$secretKey]);
             }
             $data['options'] = $options;

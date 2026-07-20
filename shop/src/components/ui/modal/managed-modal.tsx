@@ -3,6 +3,9 @@ import Modal from '@/components/ui/modal/modal';
 import { useModalAction, useModalState } from './modal.context';
 
 const OtpLoginView = dynamic(() => import('@/components/auth/otp-login'));
+const CheckoutChoice = dynamic(
+  () => import('@/components/checkout/checkout-choice'),
+);
 const Login = dynamic(() => import('@/components/auth/login-form'), {
   ssr: false,
 });
@@ -104,6 +107,7 @@ const ManagedModal = () => {
   return (
     <Modal open={isOpen} onClose={closeModal}>
       {view === 'LOGIN_VIEW' && <Login />}
+      {view === 'CHECKOUT_CHOICE' && <CheckoutChoice />}
       {view === 'REGISTER' && <Register />}
       {view === 'FORGOT_VIEW' && <ForgotPassword />}
       {view === 'OTP_LOGIN' && <OtpLoginView />}

@@ -15,6 +15,8 @@ import { formatString } from '@/lib/format-string';
 import { useTranslation } from 'next-i18next';
 import { useAtom } from 'jotai';
 import { drawerAtom } from '@/store/drawer-atom';
+import { useToken } from '@/lib/hooks/use-token';
+import { useModalAction } from '@/components/ui/modal/modal.context';
 import { toast } from 'react-toastify';
 
 const CartSidebarView = () => {
@@ -22,19 +24,25 @@ const CartSidebarView = () => {
   const { items, totalUniqueItems, total, language } = useCart();
   const [_, closeSidebar] = useAtom(drawerAtom);
   const router = useRouter();
+  const { hasToken } = useToken();
+  const { openModal } = useModalAction();
   function handleCheckout() {
     const isRegularCheckout = items.find((item) => !Boolean(item.is_digital));
-    if (isRegularCheckout) {
-      router.push(Routes.checkout, undefined, {
-        locale: language,
-      });
-    } else {
-      router.push(Routes.checkoutDigital, undefined, {
-        locale: language,
-      });
+    if (!isRegularCheckout) {
+      router.push(Routes.checkoutDigital, undefined, { locale: language });
+      closeSidebar({ display: false, view: '' });
+      return;
     }
-
+    // Logged-in shoppers keep the standard checkout (saved addresses, wallet, coupons).
+    if (hasToken()) {
+      router.push(Routes.checkout, undefined, { locale: language });
+      closeSidebar({ display: false, view: '' });
+      return;
+    }
+    // Guests: ask how they want to check out — log in (regular) or continue as guest —
+    // instead of silently forcing either path.
     closeSidebar({ display: false, view: '' });
+    openModal('CHECKOUT_CHOICE');
   }
 
   // Build a short, self-contained share link — /shared-cart?i=id.qty-id.qty — so anyone opening

@@ -339,7 +339,17 @@ class OrderRepository extends BaseRepository
                 $giftValue += $this->calculateEachItemTotal($gift, $line['order_quantity']);
             }
         }
-        $request['discount'] = (float) ($request['discount'] ?? 0);
+        // SECURITY: order create is a PUBLIC endpoint (guest checkout), so a shopper must
+        // never hand-pick their own discount. For everyone but an authenticated admin/staff the
+        // discount is rebuilt from server-validated sources only (coupon, gift, pre-order
+        // full-pay) further down; the client-sent figure is ignored. Admin/POS keep manual control.
+        $discountUser = $request->user();
+        $isPrivilegedOrder = $discountUser && (
+            $discountUser->hasPermissionTo(Permission::SUPER_ADMIN)
+            || $discountUser->hasPermissionTo(Permission::STORE_OWNER)
+            || $discountUser->hasPermissionTo(Permission::STAFF)
+        );
+        $request['discount'] = $isPrivilegedOrder ? (float) ($request['discount'] ?? 0) : 0.0;
 
         // `is_gift` is only needed for the gift pricing above; strip it now so it
         // doesn't leak into the order_product pivot insert (extra column → 21S01).
@@ -428,7 +438,8 @@ class OrderRepository extends BaseRepository
         if (isset($coupon) && $coupon->type === CouponType::FREE_SHIPPING_COUPON) {
             $request['delivery_fee'] = 0;
         } else {
-            $request['delivery_fee'] = $request['delivery_fee'];
+            // SECURITY: never let a client-sent negative delivery fee credit the total.
+            $request['delivery_fee'] = max(0, (float) ($request['delivery_fee'] ?? 0));
         }
 
         // Hand the gift back, unrounded, so it cancels the gift line in `amount` exactly.
