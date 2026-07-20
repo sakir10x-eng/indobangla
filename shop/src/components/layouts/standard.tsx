@@ -11,6 +11,7 @@ const HomeCategorySections = dynamic(() => import('@/components/common/home-cate
 const RotatingBanners = dynamic(() => import('@/components/common/rotating-banners'), { ssr: false });
 const BookSpotlight = dynamic(() => import('@/components/common/book-spotlight'), { ssr: false });
 const BuyMoreSaveMore = dynamic(() => import('@/components/common/buy-more-save-more'), { ssr: false });
+const HomeTrust = dynamic(() => import('@/components/common/home-trust'), { ssr: false });
 
 // Client-only: uses the authenticated wishlist query, which must not run during
 // static generation (it 401s server-side and fails the page build).
@@ -111,6 +112,11 @@ export default function Standard({ variables }: HomePageProps) {
       <LazyOnView minHeight={420}>
         {/* Category-wise book rails */}
         <HomeCategorySections />
+      </LazyOnView>
+
+      <LazyOnView minHeight={260}>
+        {/* Social proof: real store rating + reviews + trust policies */}
+        <HomeTrust />
       </LazyOnView>
 
       <LazyOnView minHeight={520}>
