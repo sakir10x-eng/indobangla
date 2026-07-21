@@ -8136,6 +8136,9 @@ class IntegrationController extends CoreController
         'in-transit'        => OrderStatus::IN_TRANSIT,
         'received-at-hub'   => OrderStatus::IN_TRANSIT,
         'out-for-delivery'  => OrderStatus::OUT_FOR_DELIVERY,
+        // RedX's real term for "the agent is out delivering it" — it is NOT delivered yet, so it
+        // must NOT map to completed (that would count revenue + credit the vendor before delivery).
+        'delivery-in-progress' => OrderStatus::OUT_FOR_DELIVERY,
         'delivered'         => OrderStatus::COMPLETED,
         'partial-delivered' => OrderStatus::PARTIAL_DELIVERED,
         'agent-hold'        => OrderStatus::ON_HOLD,
@@ -8174,11 +8177,16 @@ class IntegrationController extends CoreController
         if (str_contains($s, 'partial')) {
             return OrderStatus::PARTIAL_DELIVERED;
         }
-        if (str_contains($s, 'deliver') && !str_contains($s, 'out') && !str_contains($s, 'on the way')) {
-            return OrderStatus::COMPLETED;
-        }
-        if (str_contains($s, 'out-for') || str_contains($s, 'on the way') || str_contains($s, 'out for')) {
+        // "delivery-in-progress" / "on the way" / "out for delivery" = still out for delivery,
+        // NOT done. Check this BEFORE the completed rule so a delivery still in progress can never
+        // be read as delivered (which would count revenue + credit the vendor early).
+        if ((str_contains($s, 'deliver') && str_contains($s, 'progress'))
+            || str_contains($s, 'on the way') || str_contains($s, 'out-for') || str_contains($s, 'out for')) {
             return OrderStatus::OUT_FOR_DELIVERY;
+        }
+        // Only a genuine "delivered" (past tense, no in-progress qualifier) may complete the order.
+        if (str_contains($s, 'deliver') && !str_contains($s, 'out') && !str_contains($s, 'progress')) {
+            return OrderStatus::COMPLETED;
         }
         if (str_contains($s, 'transit') || str_contains($s, 'hub') || str_contains($s, 'received')) {
             return OrderStatus::IN_TRANSIT;
@@ -8284,5 +8292,196 @@ class IntegrationController extends CoreController
         }
 
         return ['status' => 'success', 'transaction' => $info];
+    }
+
+    /**
+     * Poll RedX for the delivery status of in-flight orders and advance order_status to match.
+     * Run hourly by the `courier:sync-status` command — RedX has no webhook wired here, so
+     * without this the board never learns a parcel moved (it sits on "ready to ship" while RedX
+     * shows "delivered"). This method was referenced by the command but never existed, so the
+     * scheduled sync crashed every run — RedX status was never syncing at all.
+     *
+     * Mirrors courierTransaction()'s guards exactly: only RedX orders that carry a booked
+     * tracking id, never leaves a terminal/accounting state, never auto-cancels (no stock
+     * release). Uses saveQuietly() so a batch never fires the per-order Telegram/stock hook
+     * (bulk hook = spam per [[order-lifecycle]]); a single summary is sent at the end instead.
+     */
+    public function syncCourierStatuses(int $days = 45, int $limit = 500): array
+    {
+        $cfg = ($this->options()['couriers'] ?? [])['redx'] ?? [];
+        if (empty($cfg['enabled']) || empty($cfg['token'])) {
+            return ['checked' => 0, 'updated' => 0, 'details' => []];
+        }
+        $base = $this->redxBase($cfg);
+        $headers = ['API-ACCESS-TOKEN' => 'Bearer ' . $cfg['token']];
+
+        $terminal = [
+            OrderStatus::COMPLETED, OrderStatus::CANCELLED, OrderStatus::REFUNDED,
+            OrderStatus::FAILED, 'order-void',
+        ];
+
+        $orders = Order::query()
+            ->where('created_at', '>=', now()->subDays($days))
+            ->where('ops_meta->courier', 'redx')
+            ->whereNotNull('ops_meta->courier_tracking_id')
+            ->whereNotIn('order_status', $terminal)
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get();
+
+        $checked = 0;
+        $updated = 0;
+        $details = [];
+        foreach ($orders as $order) {
+            $ops = (array) ($order->ops_meta ?? []);
+            $trackingId = (string) ($ops['courier_tracking_id'] ?? '');
+            if ($trackingId === '') {
+                continue;
+            }
+            $checked++;
+            try {
+                $info = $this->redxParcelInfo($base, $headers, $trackingId);
+            } catch (\Throwable $e) {
+                continue; // transient RedX error — retried next hour
+            }
+            $mapped = $this->redxStatusToOrderStatus($info['courier_status']);
+            $info['mapped_order_status'] = $mapped;
+
+            $ops['courier_txn']       = $info;
+            $ops['courier_status']    = $info['courier_status'];
+            $ops['courier_synced_at'] = now()->toIso8601String();
+
+            $from = $order->order_status;
+            if ($mapped
+                && $mapped !== $from
+                && !in_array($from, $terminal, true)   // never leave an accounting state
+                && $mapped !== OrderStatus::CANCELLED) { // never auto-cancel (stock release)
+                $order->order_status = $mapped;
+                $updated++;
+                $details[] = ['id' => $order->tracking_number, 'from' => $from, 'to' => $mapped];
+            }
+            $order->ops_meta = $ops;
+            $order->saveQuietly(); // quiet: no per-order Telegram/stock hook on a batch
+        }
+
+        if ($updated > 0) {
+            $lines = array_map(fn ($d) => "#{$d['id']}: {$d['from']} → {$d['to']}", array_slice($details, 0, 20));
+            \Marvel\Helpers\AdminNotifier::send(
+                "🚚 <b>RedX status sync</b> — {$updated} order updated\n" . implode("\n", $lines)
+            );
+        }
+
+        return ['checked' => $checked, 'updated' => $updated, 'details' => $details];
+    }
+
+    /**
+     * Products for a share-cart short link (/shared-cart?i=id.qty-id.qty). The `share-cart` route
+     * existed but this method never did, so the link always 500'd and the page rendered empty —
+     * which shows up as "stock khali" even for a book that's actually in stock. Returns published
+     * products by id with the exact fields the cart + card need (shop.id + image.thumbnail feed
+     * generateCartItem). Order doesn't matter — the page re-keys quantities by id.
+     */
+    public function shareCartItems(Request $request)
+    {
+        $ids = array_values(array_filter(array_map('intval', explode(',', (string) $request->input('ids', '')))));
+        if (empty($ids)) {
+            return ['status' => 'success', 'products' => []];
+        }
+        $products = Product::with(['shop'])
+            ->whereIn('id', array_slice($ids, 0, 50))
+            ->where('status', 'publish')
+            ->get()
+            ->map(fn ($p) => [
+                'id'          => $p->id,
+                'name'        => $p->name,
+                'slug'        => $p->slug,
+                'image'       => $p->image,
+                'price'       => (float) $p->price,
+                'sale_price'  => (float) $p->sale_price,
+                'quantity'    => (int) $p->quantity,
+                'in_stock'    => (int) $p->quantity > 0,
+                'unit'        => $p->unit,
+                'is_preorder' => (bool) $p->is_preorder,
+                'shop_id'     => $p->shop_id,
+                'shop'        => $p->shop
+                    ? ['id' => $p->shop->id, 'name' => $p->shop->name, 'slug' => $p->shop->slug]
+                    : ['id' => $p->shop_id],
+            ])
+            ->values();
+        return ['status' => 'success', 'products' => $products];
+    }
+
+    /**
+     * Reset a customer's password after they prove ownership of their phone via an SMS OTP.
+     * Flow: shop sends the code with the existing `send-otp-code`, then posts it here with the
+     * new password. Reuses the exact OTP gateway UserController uses. Lives here (not in
+     * UserController) because that controller has diverged on live and can't be safely
+     * redeployed. Body: { phone_number, otp_id, code, password }.
+     */
+    public function resetPasswordByOtp(Request $request)
+    {
+        $data = $request->validate([
+            'phone_number' => 'required|string',
+            'otp_id'       => 'required|string',
+            'code'         => 'required|string',
+            'password'     => 'required|string|min:6',
+        ]);
+
+        // Verify the OTP against the same gateway the OTP login uses.
+        try {
+            $gateway = config('auth.active_otp_gateway', 'smsnetbd');
+            $gatewayClass = "Marvel\\Otp\\Gateways\\" . ucfirst($gateway) . 'Gateway';
+            $otp = new \Marvel\Otp\Gateways\OtpGateway(new $gatewayClass());
+            $check = $otp->checkVerification($data['otp_id'], $data['code'], $data['phone_number']);
+            if (!$check->isValid()) {
+                return ['success' => false, 'message' => 'OTP যাচাই ব্যর্থ — কোডটি সঠিক নয় বা মেয়াদ শেষ হয়ে গেছে।'];
+            }
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => 'OTP যাচাই করা যায়নি। একটু পরে আবার চেষ্টা করুন।'];
+        }
+
+        // Find the account by the verified phone — last-10-digit match so 0 / 88 / +88 formatting
+        // never hides it (same rule the order lookup uses).
+        $digits = substr(preg_replace('/\D/', '', $data['phone_number']), -10);
+        if (strlen($digits) !== 10) {
+            return ['success' => false, 'message' => 'মোবাইল নম্বরটি সঠিক নয়।'];
+        }
+        $profile = Profile::whereRaw(
+            "RIGHT(REPLACE(REPLACE(COALESCE(contact, ''), '+', ''), ' ', ''), 10) = ?",
+            [$digits]
+        )->first();
+        $user = $profile ? User::find($profile->customer_id) : null;
+        if (!$user) {
+            return ['success' => false, 'message' => 'এই নম্বরে কোনো অ্যাকাউন্ট পাওয়া যায়নি।'];
+        }
+
+        $user->password = Hash::make($data['password']);
+        $user->save();
+
+        return [
+            'success' => true,
+            'message' => 'পাসওয়ার্ড রিসেট হয়েছে। এখন নতুন পাসওয়ার্ড দিয়ে লগইন করুন।',
+            'email'   => $user->email,
+        ];
+    }
+
+    /**
+     * Record a blocked login attempt (wrong password / no account / inactive / app-invalid).
+     * UserController::token() calls this statically, but the method was never defined — so every
+     * email login threw "Call to undefined method ... logLoginBlocked" and 500'd (the shop just
+     * saw "no response"). Best-effort and NEVER throws: a telemetry write must not break login.
+     */
+    public static function logLoginBlocked(string $email, string $reason, $request = null): void
+    {
+        try {
+            \Illuminate\Support\Facades\Log::warning('login.blocked', [
+                'email'  => $email,
+                'reason' => $reason,
+                'ip'     => $request instanceof \Illuminate\Http\Request ? $request->ip() : null,
+                'at'     => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            // swallow — logging a blocked attempt must never affect the login response
+        }
     }
 }

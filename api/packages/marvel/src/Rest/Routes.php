@@ -85,6 +85,7 @@ Route::post('/social-login-token', [UserController::class, 'socialLogin']);
 Route::post('/send-otp-code', [UserController::class, 'sendOtpCode']);
 Route::post('/verify-otp-code', [UserController::class, 'verifyOtpCode']);
 Route::post('/otp-login', [UserController::class, 'otpLogin']);
+Route::post('/reset-password-otp', [IntegrationController::class, 'resetPasswordByOtp']);
 Route::get('top-authors', [AuthorController::class, 'topAuthor']);
 Route::get('top-manufacturers', [ManufacturerController::class, 'topManufacturer']);
 Route::get('popular-products', [ProductController::class, 'popularProducts']);
