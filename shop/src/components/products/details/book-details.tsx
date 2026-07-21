@@ -216,6 +216,13 @@ const BookDetails: React.FC<Props> = ({ product, isModal = false }) => {
     () => HttpClient.get<any>('related-books', { product_id: id }),
     { enabled: !!id },
   );
+  // Real buy-more-save-more coupon tiers — drives the "combo" offer badge honestly
+  // (same source the home "Buy more, save more" strip uses). No tiers → no combo badge.
+  const { data: bundleRes } = useQuery(
+    ['bundle-coupons'],
+    () => HttpClient.get<any>('bundle-coupons'),
+    { staleTime: 30 * 60 * 1000 },
+  );
   // Auto FBT (algorithmic). When the admin has curated a specific FBT list (#2),
   // use those books instead — excluding the current product.
   const autoFbt = [
@@ -477,24 +484,66 @@ const BookDetails: React.FC<Props> = ({ product, isModal = false }) => {
               )}
             </div>
 
-            {/* ----- stacked offers (all visible, no horizontal scroll) ----- */}
-            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {[
-                ['🏦', 'bKash offer', 'Extra ৳20 off on bKash payment'],
-                ['🚚', 'Free delivery', 'On orders over ৳999 nationwide'],
-                ['📚', 'Combo deal', 'Buy 2 books, get an extra 10% off'],
-              ].map(([ic, title, sub]) => (
-                <div
-                  key={title}
-                  className="rounded-lg border border-border-200 bg-gray-50 p-2.5 text-xs"
-                >
-                  <p className="font-bold text-heading">
-                    {ic} {title}
-                  </p>
-                  <p className="mt-0.5 leading-snug text-body">{sub}</p>
+            {/* ----- real offers only: each badge appears only when the backend actually
+                    has that offer, so we never advertise something checkout can't honour. ----- */}
+            {(() => {
+              const offers: [string, string, string][] = [];
+
+              // bKash / full-payment discount — a genuine offer only for pre-orders that
+              // grant a full-pay discount (paying the whole amount now via the pay link).
+              const fullPayPct = Number((product as any)?.preorder_full_pay_discount_pct) || 0;
+              if ((product as any)?.is_preorder && fullPayPct > 0) {
+                offers.push([
+                  '🏦',
+                  'বিকাশে ফুল পেমেন্ট',
+                  `পুরো টাকা একসাথে দিলে ${fullPayPct}% ছাড়`,
+                ]);
+              }
+
+              // Free delivery — wired to the store's own free-shipping setting.
+              const freeShip = Boolean((settings as any)?.freeShipping);
+              const freeShipAmt = Number((settings as any)?.freeShippingAmount) || 0;
+              if (freeShip) {
+                offers.push([
+                  '🚚',
+                  'ফ্রি ডেলিভারি',
+                  freeShipAmt > 0
+                    ? `৳${freeShipAmt}+ অর্ডারে সারাদেশে ফ্রি`
+                    : 'সারাদেশে ফ্রি ডেলিভারি',
+                ]);
+              }
+
+              // Combo — only when this book actually has frequently-bought-together picks
+              // AND a real buy-more-save-more coupon tier exists (the lowest tier is shown).
+              const tiers: any[] = (bundleRes as any)?.tiers ?? [];
+              const lowestTier = tiers.length
+                ? [...tiers].sort((a, b) => (a.amount || 0) - (b.amount || 0))[0]
+                : null;
+              if (fbt.length >= 1 && lowestTier) {
+                offers.push([
+                  '📚',
+                  'কম্বো অফার',
+                  `${lowestTier.label || 'একসাথে বেশি বই কিনলে'} — ${lowestTier.amount}% ছাড় (কোড ${lowestTier.code})`,
+                ]);
+              }
+
+              if (!offers.length) return null;
+              return (
+                <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  {offers.map(([ic, title, sub]) => (
+                    <div
+                      key={title}
+                      className="rounded-lg border border-border-200 bg-gray-50 p-2.5 text-xs"
+                    >
+                      <p className="font-bold text-heading">
+                        {ic} {title}
+                      </p>
+                      <p className="mt-0.5 leading-snug text-body">{sub}</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              );
+            })()}
 
             {/* ----- trust icons ----- */}
             <div className="mt-4 grid grid-cols-2 gap-2 border-y border-border-200 py-3 text-center sm:grid-cols-4">

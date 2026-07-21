@@ -59,7 +59,7 @@ class SettingsController extends CoreController
         // gated endpoints — the shop never needs them.
         $options = $data['options'] ?? [];
         if (is_array($options)) {
-            foreach (['couriers', 'replygenie', 'ai_settings', 'payments', 'notify', 'server_info', 'adminOtpNumbers'] as $secretKey) {
+            foreach (['couriers', 'replygenie', 'ai_settings', 'payments', 'notify', 'server_info'] as $secretKey) {
                 unset($options[$secretKey]);
             }
             $data['options'] = $options;
@@ -84,15 +84,30 @@ class SettingsController extends CoreController
     public function store(SettingsRequest $request)
     {
         $language = $request->language ? $request->language : DEFAULT_LANGUAGE;
+
+        $data = $this->repository->where('language', $language)->first();
+
+        // Integration secrets (courier tokens, bKash creds, AI/ReplyGenie keys, notify tokens)
+        // are REDACTED out of the settings we return to the admin, so the save payload never
+        // carries them. A plain overwrite of `options` therefore WIPES them — which is exactly
+        // how the RedX/bKash config vanished. Carry each stored secret forward whenever the
+        // incoming payload doesn't include it (the dedicated courier/payment endpoints still
+        // update them normally, since those payloads DO carry the key).
+        $incoming = (array) $request->options;
+        $stored   = $data ? (array) $data->options : [];
+        foreach (['couriers', 'replygenie', 'ai_settings', 'payments', 'notify'] as $secretKey) {
+            if (!array_key_exists($secretKey, $incoming) && array_key_exists($secretKey, $stored)) {
+                $incoming[$secretKey] = $stored[$secretKey];
+            }
+        }
+
         $request->merge([
             'options' => [
-                ...$request->options,
+                ...$incoming,
                 ...$this->repository->getApplicationSettings(),
                 'server_info' => server_environment_info(),
             ]
         ]);
-
-        $data = $this->repository->where('language', $request->language)->first();
 
         if ($data) {
             if (Cache::has('cached_settings_' . $language)) {
@@ -134,7 +149,16 @@ class SettingsController extends CoreController
     {
         $settings = $this->repository->first();
         if (isset($settings->id)) {
-            return $this->repository->update($request->only(['options']), $settings->id);
+            // Same secret-preservation as store(): the redacted secrets aren't in the payload,
+            // so carry them forward instead of overwriting `options` and wiping them.
+            $incoming = (array) $request->options;
+            $stored   = (array) $settings->options;
+            foreach (['couriers', 'replygenie', 'ai_settings', 'payments', 'notify'] as $secretKey) {
+                if (!array_key_exists($secretKey, $incoming) && array_key_exists($secretKey, $stored)) {
+                    $incoming[$secretKey] = $stored[$secretKey];
+                }
+            }
+            return $this->repository->update(['options' => $incoming], $settings->id);
         } else {
             return $this->repository->create(['options' => $request['options']]);
         }

@@ -44,8 +44,6 @@ type Row = {
   updated?: string[];
   /** Slug of the created product, so a published row can link to its live view. */
   publishedSlug?: string;
-  /** DB id of the product this row created (publish) or updated (match), shown in the view. */
-  productId?: number;
 };
 
 const REASON_LABEL: Record<DuplicateMatch['reason'], string> = {
@@ -65,7 +63,7 @@ function errMsg(err: any, body?: any) {
 }
 
 export default function AiBatchPage() {
-  const { mutate: batch, isLoading: extracting } = useBatchExtractMutation();
+  const { mutateAsync: batchAsync } = useBatchExtractMutation();
   const { mutate: crawl, isLoading: crawling } = useListCrawlMutation();
   const { mutateAsync: createProduct } = useAiCreateProductMutation();
   const { mutateAsync: checkDupes, isLoading: checking } =
@@ -76,6 +74,11 @@ export default function AiBatchPage() {
   const [limit, setLimit] = useState(10);
   const [raw, setRaw] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
+  /** True while the chunked extraction loop is running (own flag — the per-chunk
+   *  mutation's isLoading flickers false between chunks). */
+  const [extracting, setExtracting] = useState(false);
+  /** "Extracting 6 of 25…" — shown on the button so a long run doesn't look stuck. */
+  const [extractProgress, setExtractProgress] = useState('');
   const [publishingAll, setPublishingAll] = useState(false);
   /** Row index whose "update the existing book instead" panel is open. */
   const [openPanel, setOpenPanel] = useState<number | null>(null);
@@ -157,7 +160,15 @@ export default function AiBatchPage() {
     }
   }
 
-  function extractAll() {
+  /**
+   * Extract every pasted URL. Each extraction takes 10–100s server-side, and the
+   * whole batch used to run in ONE request — so 25 URLs routinely blew past the
+   * 300s gateway timeout and the page showed a "failed to fetch" error even though
+   * the individual books were fine. Now the URLs are sent in small chunks: every
+   * request stays short, rows stream in as each chunk lands, and one slow/failed
+   * chunk never sinks the rest.
+   */
+  async function extractAll() {
     const lines = raw
       .split('\n')
       .map((l) => l.trim())
@@ -172,27 +183,71 @@ export default function AiBatchPage() {
         ? { image_url: line }
         : { product_url: line }
     );
-    batch(
-      { items, printed_country: country || undefined },
-      {
-      onSuccess: (res: any) => {
-        if (res?.results) {
-          // Seed every row with the batch-level shop; the row select can still move it.
-          const seeded: Row[] = res.results.map((r: Row) => ({
-            ...r,
-            shopId: shopId === '' ? undefined : shopId,
-          }));
-          setRows(seeded);
-          setOpenPanel(null);
-          toast.success('Extracted. Checking for books you already have…');
-          runDuplicateCheck(seeded);
-        } else {
-          toast.error(errMsg(null, res));
+
+    // 2 per request keeps the worst realistic case (~2×100s) comfortably under the
+    // 300s proxy/fastcgi cutoff, while still batching for speed.
+    const CHUNK = 2;
+    setExtracting(true);
+    setRows([]);
+    setOpenPanel(null);
+    const collected: Row[] = [];
+    try {
+      for (let start = 0; start < items.length; start += CHUNK) {
+        const slice = items.slice(start, start + CHUNK);
+        setExtractProgress(
+          `${Math.min(start + slice.length, items.length)} / ${items.length}`
+        );
+        try {
+          const res: any = await batchAsync({
+            items: slice,
+            printed_country: country || undefined,
+          });
+          if (res?.results) {
+            const chunkRows: Row[] = res.results.map((r: Row, i: number) => ({
+              ...r,
+              // Re-key to a globally-unique index — the API numbers rows 0-based
+              // within each chunk, which the duplicate check & row keys would collide on.
+              index: start + i,
+              shopId: shopId === '' ? undefined : shopId,
+            }));
+            collected.push(...chunkRows);
+          } else {
+            // Error envelope instead of results — record the URLs as failed rows
+            // (so they can be retried) and keep going with the next chunk.
+            toast.error(errMsg(null, res));
+            collected.push(
+              ...slice.map((_, i) => ({
+                index: start + i,
+                status: 'error' as const,
+                message: errMsg(null, res),
+              }))
+            );
+          }
+        } catch (err: any) {
+          // A whole-chunk failure (timeout / network) — mark just these URLs failed
+          // and continue, so a single bad chunk doesn't lose the whole run.
+          collected.push(
+            ...slice.map((_, i) => ({
+              index: start + i,
+              status: 'error' as const,
+              message: errMsg(err, err?.response?.data),
+            }))
+          );
         }
-      },
-      onError: (err: any) => toast.error(errMsg(err, err?.response?.data)),
-      },
-    );
+        setRows([...collected]);
+      }
+
+      const okCount = collected.filter((r) => r.status === 'success').length;
+      if (okCount) {
+        toast.success('Extracted. Checking for books you already have…');
+        runDuplicateCheck(collected);
+      } else {
+        toast.error('No books could be extracted. Check the URLs or Settings → AI.');
+      }
+    } finally {
+      setExtracting(false);
+      setExtractProgress('');
+    }
   }
 
   async function publishRow(i: number) {
@@ -214,7 +269,6 @@ export default function AiBatchPage() {
                 published: true,
                 publishError: undefined,
                 publishedSlug: res?.slug,
-                productId: res?.id,
               }
             : x
         )
@@ -250,7 +304,6 @@ export default function AiBatchPage() {
                 published: true,
                 updated: res?.updated ?? fields,
                 publishError: undefined,
-                productId: match.id,
               }
             : x
         )
@@ -394,7 +447,9 @@ export default function AiBatchPage() {
         </div>
         <div className="mt-4 text-end">
           <Button type="button" onClick={extractAll} loading={extracting} disabled={extracting}>
-            {extracting ? 'Extracting…' : 'Extract All with AI'}
+            {extracting
+              ? `Extracting${extractProgress ? ` ${extractProgress}` : '…'}`
+              : 'Extract All with AI'}
           </Button>
         </div>
       </Card>
@@ -646,7 +701,6 @@ function BatchRow({
               product={r.product}
               editable={!r.published}
               onProductPatch={onProductPatch}
-              productId={r.productId ?? r.matches?.[0]?.id}
             />
           </td>
         </tr>
@@ -672,12 +726,10 @@ function PreviewPanel({
   product: p,
   editable,
   onProductPatch,
-  productId,
 }: {
   product: any;
   editable: boolean;
   onProductPatch: (patch: Record<string, any>) => void;
-  productId?: number;
 }) {
   const [catInput, setCatInput] = useState('');
   const [catFocus, setCatFocus] = useState(false);
@@ -1047,12 +1099,6 @@ function PreviewPanel({
             <p className="mb-3 text-xs text-body">
               {writer || '—'} · Stock {p.quantity ?? '—'} ·{' '}
               {p.status === 'draft' ? 'Draft' : 'Live'}
-              {productId ? (
-                <>
-                  {' '}
-                  · <span className="font-semibold text-heading">Product ID {productId}</span>
-                </>
-              ) : null}
             </p>
           </>
         )}

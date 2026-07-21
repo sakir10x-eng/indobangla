@@ -470,6 +470,29 @@ export default function PreorderCreate() {
               </button>
             </div>
 
+            {/* Fetched cover — shown so the admin can see it was captured; it's downloaded
+                onto the product server-side when the pre-order is created. */}
+            {it.image_url && (
+              <div className="mt-3 flex items-center gap-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={it.image_url}
+                  alt="book cover"
+                  className="h-16 w-12 shrink-0 rounded border border-slate-200 object-cover"
+                />
+                <p className="text-[11px] text-slate-500">
+                  <span className="font-semibold text-[#1f7a52]">✓ কভার এসেছে</span> — প্রোডাক্টের
+                  সাথে যোগ হবে।
+                  <button
+                    onClick={() => patch(it.key, { image_url: '' })}
+                    className="ml-2 font-semibold text-red-500 hover:underline"
+                  >
+                    সরান
+                  </button>
+                </p>
+              </div>
+            )}
+
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <span className={label}>বইয়ের নাম *</span>

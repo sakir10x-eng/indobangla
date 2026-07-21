@@ -13,6 +13,7 @@ use Marvel\Enums\Permission;
 use Marvel\Support\FeatureRegistry;
 use Marvel\Support\FeatureChecks;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Marvel\Database\Models\Order;
 use Marvel\Database\Models\Product;
@@ -83,23 +84,6 @@ class IntegrationController extends CoreController
      * Admin product list with derived metrics (sold, wishlist, sell-through,
      * 7/30-day velocity) — powers the redesigned Products page.
      */
-    // Recycle bin: restore a soft-deleted product, or purge it for good.
-    public function restoreTrashedProduct(Request $request, $id)
-    {
-        $p = Product::onlyTrashed()->where('type_id', 8)->findOrFail($id);
-        $p->restore();
-        return ['success' => true, 'id' => (int) $id];
-    }
-
-    public function forceDeleteProduct(Request $request, $id)
-    {
-        $p = Product::onlyTrashed()->where('type_id', 8)->findOrFail($id);
-        $p->categories()->detach();
-        $p->tags()->detach();
-        $p->forceDelete();
-        return ['success' => true, 'id' => (int) $id];
-    }
-
     public function productAdminList(Request $request)
     {
         $search = trim((string) $request->input('search', ''));
@@ -107,7 +91,6 @@ class IntegrationController extends CoreController
         $sort   = (string) $request->input('sort', 'sold');
         $page   = max(1, (int) $request->input('page', 1));
         $limit  = min(60, max(1, (int) $request->input('limit', 20)));
-        $trashed = $request->boolean('trashed'); // recycle-bin view
 
         $paidStatuses = "'order-completed','order-processing','order-out-for-delivery','order-at-local-facility'";
         $soldSub = "COALESCE((SELECT SUM(op.order_quantity) FROM order_product op JOIN orders o ON o.id=op.order_id WHERE op.product_id=products.id AND o.order_status IN ($paidStatuses)),0)";
@@ -121,9 +104,6 @@ class IntegrationController extends CoreController
             ->selectRaw("$wishSub AS wishlist_count")
             ->selectRaw("$sold30 AS units_30d")
             ->selectRaw("$sold7 AS units_7d");
-        if ($trashed) {
-            $q->onlyTrashed();
-        }
 
         if ($search !== '') {
             $like = '%' . $search . '%';
@@ -149,9 +129,6 @@ class IntegrationController extends CoreController
 
         if ($chip === 'bestseller') {
             $q->having('units_30d', '>=', 5);
-        }
-        if ($trashed) {
-            $q->reorder()->orderByDesc('deleted_at');
         }
 
         $p = $q->paginate($limit, ['*'], 'page', $page);
@@ -190,8 +167,6 @@ class IntegrationController extends CoreController
                 // 'default' when the generic template is used, or the bespoke template id
                 // (e.g. 'anandamela') so the admin list can flag single-product designs.
                 'landing_template' => (string) (($landingMap[(string) $x->id]['template'] ?? 'default')),
-                'deleted_at'  => optional($x->deleted_at)->toIso8601String(),
-                'days_left'   => $x->deleted_at ? max(0, 30 - (int) $x->deleted_at->diffInDays(now())) : null,
             ];
         });
         return [
@@ -907,14 +882,6 @@ class IntegrationController extends CoreController
         $amount  = $request->filled('amount_bdt') ? (float) $request->input('amount_bdt')
             : ($request->filled('amount') ? (float) $request->input('amount') : null);
         $purpose = (string) ($request->input('purpose') ?: $request->input('type') ?: 'full');
-        // COD / cash / pending orders carry paid_total = total by Pickbazar convention even
-        // though nothing was collected, which makes a pay-link's due zero and bKash reject it
-        // with "Invalid amount". Mirror the online-gateway stampPayLink path and zero it so the
-        // link can collect the real outstanding amount (settlePayment credits it back on pay).
-        if ((float) $order->paid_total >= (float) $order->total
-            && in_array($order->payment_status, ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'], true)) {
-            $order->paid_total = 0;
-        }
         $due = round((float) $order->total - (float) $order->paid_total);
         if ($amount !== null) {
             if ($amount > $due + 0.5) {
@@ -934,31 +901,16 @@ class IntegrationController extends CoreController
         // pay_amount and force pay_purpose='full' — which silently turned a 50% pre-order
         // advance into a full-price bKash bill, because bkashCreate falls back to
         // $order->total when pay_amount is gone.
-        // bKash service charge: when the desk opts to pass the gateway fee on to the buyer,
-        // add bKash's standard 1.85% to what the link collects and record the split so
-        // /pay/{token} can show an itemised bill (book amount + bKash charge).
-        $payBase = (float) ($ops['pay_amount'] ?? $due);
-        if ($request->boolean('bkash_charge') && $payBase > 0) {
-            $charge = (int) round($payBase * 1.85 / 100);
-            $ops['bkash_charge'] = $charge;
-            $ops['bkash_charge_base'] = (int) round($payBase);
-            $ops['pay_amount'] = (int) round($payBase + $charge);
-        } else {
-            unset($ops['bkash_charge'], $ops['bkash_charge_base']);
-        }
-
         $order->ops_meta = $ops;
         $order->saveQuietly();
 
         $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
         return [
-            'status'       => 'success',
-            'token'        => $ops['pay_token'],
-            'pay_link'     => $base . '/pay/' . $ops['pay_token'],
-            'amount_bdt'   => $ops['pay_amount'] ?? $due,
-            'bkash_charge' => $ops['bkash_charge'] ?? 0,
-            'base_bdt'     => $ops['bkash_charge_base'] ?? ($ops['pay_amount'] ?? $due),
-            'purpose'      => $ops['pay_purpose'],
+            'status'     => 'success',
+            'token'      => $ops['pay_token'],
+            'pay_link'   => $base . '/pay/' . $ops['pay_token'],
+            'amount_bdt' => $ops['pay_amount'] ?? $due,
+            'purpose'    => $ops['pay_purpose'],
         ];
     }
 
@@ -968,94 +920,6 @@ class IntegrationController extends CoreController
             return null;
         }
         return Order::whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.pay_token')) = ?", [$token])->first();
-    }
-
-    /**
-     * Admin: mint (once) a stable, non-expiring invoice link the desk can send so the buyer can
-     * view their invoice without opening the order. Unlike the pay token this never rotates, so
-     * a link shared today keeps working.
-     */
-    public function orderInvoiceLink(Request $request)
-    {
-        $order = Order::findOrFail($request->order_id);
-        $ops = (array) ($order->ops_meta ?? []);
-        if (empty($ops['invoice_token'])) {
-            $ops['invoice_token'] = 'inv_' . Str::random(24);
-            $order->ops_meta = $ops;
-            $order->saveQuietly();
-        }
-        $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.bd', '/');
-        return [
-            'status'        => 'success',
-            'invoice_token' => $ops['invoice_token'],
-            'invoice_link'  => $base . '/invoice/' . $ops['invoice_token'],
-        ];
-    }
-
-    /** Public: the read-only invoice behind /invoice/{token}. Always viewable — paid or not. */
-    public function invoiceInfo(Request $request)
-    {
-        $token = (string) $request->input('token', '');
-        $order = $token === ''
-            ? null
-            : Order::whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.invoice_token')) = ?", [$token])->first();
-        if (!$order) {
-            throw new MarvelException('Invoice not found.');
-        }
-        $order->loadMissing('products');
-        $ops = (array) ($order->ops_meta ?? []);
-        // COD/cash/pending orders carry paid_total = total by Pickbazar convention though nothing
-        // was collected. Zero it (display-only) so the invoice shows the real outstanding due and
-        // is not mislabelled "paid". Mirrors the pay-link path normalization.
-        if ((float) $order->paid_total >= (float) $order->total
-            && in_array($order->payment_status, ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'], true)) {
-            $order->paid_total = 0;
-        }
-        $paid = $order->payment_status === 'payment-success' || (float) $order->paid_total >= (float) $order->total;
-        // Surface a live pay link only while one is genuinely payable (unpaid + not expired), so
-        // the invoice can carry a "Pay now" button for a due amount without ever reviving a dead
-        // link.
-        $payLink = null;
-        if (!$paid && !empty($ops['pay_token'])) {
-            $expired = !empty($ops['pay_expires_at']) && now()->gt(Carbon::parse($ops['pay_expires_at']));
-            if (!$expired) {
-                $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.bd', '/');
-                $payLink = $base . '/pay/' . $ops['pay_token'];
-            }
-        }
-        $opts = (array) (Settings::getData()->options ?? []);
-        return [
-            'status'  => 'success',
-            'invoice' => [
-                'tracking_number' => $order->tracking_number,
-                'customer_name'   => $order->customer_name,
-                'customer_contact' => $order->customer_contact,
-                'shipping_address' => $order->shipping_address,
-                'placed_at'       => optional($order->created_at)->format('j M Y'),
-                'order_status'    => $order->order_status,
-                'payment_status'  => $order->payment_status,
-                'paid'            => $paid,
-                'subtotal'        => (float) $order->amount,
-                'delivery_fee'    => (float) $order->delivery_fee,
-                'weight_charge'   => (int) ($ops['weight_charge'] ?? 0),
-                'weight_kg'       => (float) ($ops['weight_kg'] ?? 0),
-                'discount'        => (float) $order->discount,
-                'total'           => (float) $order->total,
-                'paid_total'      => (float) $order->paid_total,
-                'due'             => round((float) $order->total - (float) $order->paid_total),
-                'pay_method'      => $ops['pay_method'] ?? null,
-                'pay_link'        => $payLink,
-                'items'           => $order->products->map(fn ($p) => [
-                    'name'         => $p->name,
-                    'manufacturer' => optional($p->manufacturer)->name,
-                    'quantity'     => (int) ($p->pivot->order_quantity ?? 0),
-                    'price'        => (float) ($p->pivot->subtotal ?? $p->pivot->unit_price ?? 0),
-                ]),
-            ],
-            'shop' => [
-                'name' => $opts['siteTitle'] ?? 'IndoBangla',
-            ],
-        ];
     }
 
     /** Public: order summary + payment methods + current payment state for the pay page. */
@@ -1100,8 +964,6 @@ class IntegrationController extends CoreController
                 'customer_name'   => $order->customer_name,
                 'total'           => (float) $order->total,
                 'pay_amount'      => $payAmount,
-                'bkash_charge'      => (int) ($ops['bkash_charge'] ?? 0),
-                'bkash_charge_base' => isset($ops['bkash_charge_base']) ? (int) $ops['bkash_charge_base'] : null,
                 'pay_purpose'     => $isAdvance ? 'advance' : 'full',
                 'already_paid'    => (float) $order->paid_total,
                 'due'             => round((float) $order->total - (float) $order->paid_total),
@@ -1112,7 +974,6 @@ class IntegrationController extends CoreController
                 'placed_at'       => optional($order->created_at)->format('j M Y'),
                 'paid'            => $paid,
                 'pay_method'      => $ops['pay_method'] ?? null,
-                'transaction_id'  => $ops['bkash']['trx_id'] ?? ($ops['trx_id'] ?? null),
                 // The 50% option itself, reported separately from pay_purpose — the screen must
                 // keep offering it even after the buyer has flipped the link to 'full'.
                 'advance_option'  => isset($ops['advance']['advance_bdt'])
@@ -1334,11 +1195,6 @@ class IntegrationController extends CoreController
         if ($order->payment_status === 'payment-success') {
             return ['status' => 'success', 'paid' => true];
         }
-        // A cancelled / voided / refunded order must never collect money — the link may still
-        // exist (customer Pay-now, or an old admin link) but the sale is off.
-        if (in_array($order->order_status, ['order-cancelled', 'order-void', 'order-refunded', 'order-failed'], true)) {
-            throw new MarvelException('এই অর্ডারটি আর সক্রিয় নেই — পেমেন্ট নেওয়া যাবে না।');
-        }
         $method = (string) $request->input('method', '');
 
         // #5c — the buyer chooses full-vs-advance per attempt, and this re-stamps the meta so
@@ -1350,29 +1206,14 @@ class IntegrationController extends CoreController
         // the whole order. Switching back to 'advance' now restores the stamped advance.
         $wanted = (string) $request->input('purpose', '');
         $advanceBdt = isset($meta['advance']['advance_bdt']) ? round((float) $meta['advance']['advance_bdt']) : null;
-        // A link created with the desk's "bKash charge" box carries bkash_charge in meta. The
-        // full/advance re-stamp below recomputes pay_amount from the order, so re-apply the
-        // 1.85% on the new base — otherwise picking 100%/advance silently drops the charge.
-        $chargeOn = (int) ($meta['bkash_charge'] ?? 0) > 0;
-        $restamp = function (array $m, float $base) use ($chargeOn) {
-            if ($chargeOn && $base > 0) {
-                $charge = (int) round($base * 1.85 / 100);
-                $m['bkash_charge']      = $charge;
-                $m['bkash_charge_base'] = (int) round($base);
-                $m['pay_amount']        = (int) round($base + $charge);
-            } else {
-                $m['pay_amount'] = round($base);
-            }
-            return $m;
-        };
         if ($wanted === 'full') {
             $meta['pay_purpose'] = 'full';
-            $meta = $restamp($meta, (float) $order->total - (float) $order->paid_total);
+            $meta['pay_amount'] = round((float) $order->total - (float) $order->paid_total);
             $order->ops_meta = $meta;
             $order->saveQuietly();
         } elseif ($wanted === 'advance' && $advanceBdt !== null) {
             $meta['pay_purpose'] = 'advance';
-            $meta = $restamp($meta, (float) $advanceBdt);
+            $meta['pay_amount'] = $advanceBdt;
             $order->ops_meta = $meta;
             $order->saveQuietly();
         }
@@ -1419,198 +1260,6 @@ class IntegrationController extends CoreController
                 'in_stock'   => (int) $p->quantity > 0,
             ])->values(),
         ];
-    }
-
-    /**
-     * Public: resolve a shareable cart's product ids into the fields /shared-cart needs. Keeps the
-     * share link short (ids instead of slugs) and returns products in the requested order.
-     */
-    public function shareCartItems(Request $request)
-    {
-        $ids = array_values(array_unique(array_filter(array_map('intval', explode(',', (string) $request->input('ids', ''))))));
-        if (empty($ids)) {
-            return ['status' => 'success', 'products' => []];
-        }
-        $byId = Product::with('author')
-            ->whereIn('id', array_slice($ids, 0, 100))
-            ->get()
-            ->keyBy('id');
-        $products = collect($ids)
-            ->map(fn ($id) => $byId->get($id))
-            ->filter()
-            ->map(fn ($p) => [
-                'id'          => $p->id,
-                'slug'        => $p->slug,
-                'name'        => $p->name,
-                'price'       => (float) $p->price,
-                'sale_price'  => (float) $p->sale_price,
-                'quantity'    => (int) $p->quantity,
-                'is_preorder' => (bool) $p->is_preorder,
-                'image'       => $p->image,
-                'shop'        => ['id' => $p->shop_id],
-                'shop_id'     => $p->shop_id,
-                'author'      => $p->author ? ['name' => $p->author->name, 'slug' => $p->author->slug] : null,
-            ])
-            ->values();
-        return ['status' => 'success', 'products' => $products];
-    }
-
-    // ---------------------------------------------------------- storefront analytics
-
-    /** Log a login block from the auth flow (see UserController). */
-    public static function logLoginBlocked(?string $identifier, string $reason, $request): void
-    {
-        try {
-            DB::table('analytics_events')->insert([
-                'session_id' => 'login',
-                'event'      => 'login_blocked',
-                'path'       => substr((string) $identifier, 0, 512) ?: null,
-                'meta'       => json_encode(['reason' => $reason, 'identifier' => $identifier]),
-                'ip'         => $request ? substr((string) $request->ip(), 0, 64) : null,
-                'user_agent' => $request ? substr((string) $request->userAgent(), 0, 512) : null,
-                'created_at' => now(),
-            ]);
-        } catch (\Throwable $e) {
-            // analytics must never break login
-        }
-    }
-
-    /** Public: record a storefront event. Kept fire-and-forget — it must never break a page. */
-    public function track(Request $request)
-    {
-        $sid   = substr((string) $request->input('sid', ''), 0, 64);
-        $event = substr((string) $request->input('event', ''), 0, 32);
-        $allowed = ['page_view', 'product_view', 'product_click', 'add_to_cart', 'checkout_start', 'order_placed'];
-        if ($sid === '' || !in_array($event, $allowed, true)) {
-            return ['status' => 'ok'];
-        }
-        try {
-            DB::table('analytics_events')->insert([
-                'session_id'  => $sid,
-                'user_id'     => optional(auth('sanctum')->user())->id,
-                'event'       => $event,
-                'path'        => substr((string) $request->input('path', ''), 0, 512) ?: null,
-                'product_id'  => $request->filled('product_id') ? (int) $request->input('product_id') : null,
-                'referrer'    => substr((string) $request->input('referrer', ''), 0, 512) ?: null,
-                'duration_ms' => $request->filled('duration_ms') ? (int) $request->input('duration_ms') : null,
-                'meta'        => $request->filled('meta') ? json_encode($request->input('meta')) : null,
-                'ip'          => substr((string) $request->ip(), 0, 64),
-                'user_agent'  => substr((string) $request->userAgent(), 0, 512),
-                'created_at'  => now(),
-            ]);
-        } catch (\Throwable $e) {
-            // swallow — a tracking hiccup must not surface to the shopper
-        }
-        return ['status' => 'ok'];
-    }
-
-    /** Admin: storefront analytics summary for the last N days — visitors, funnel, journeys. */
-    public function analyticsSummary(Request $request)
-    {
-        $days  = max(1, min(90, (int) $request->input('days', 7)));
-        $since = now()->subDays($days);
-        $ev    = fn () => DB::table('analytics_events')->where('created_at', '>=', $since);
-
-        $visitors     = $ev()->where('session_id', '!=', 'login')->distinct()->count('session_id');
-        $pageViews    = $ev()->where('event', 'page_view')->count();
-        $productViews = $ev()->where('event', 'page_view')->where('path', 'like', '/products/%')->count();
-        $cartAdds     = $ev()->where('event', 'add_to_cart')->count();
-        $loginBlocked = $ev()->where('event', 'login_blocked')->count();
-
-        $topPages = $ev()->where('event', 'page_view')
-            ->select('path', DB::raw('count(*) as views'), DB::raw('count(distinct session_id) as visitors'))
-            ->groupBy('path')->orderByDesc('views')->limit(15)->get();
-
-        // Recent sessions with their in-order page journey.
-        $recent = $ev()->where('session_id', '!=', 'login')
-            ->select('session_id', DB::raw('max(created_at) as last_at'), DB::raw('min(created_at) as first_at'), DB::raw('count(*) as events'))
-            ->groupBy('session_id')->orderByDesc('last_at')->limit(30)->get();
-
-        $sessions = $recent->map(function ($s) use ($since) {
-            $evs = DB::table('analytics_events')
-                ->where('session_id', $s->session_id)->where('created_at', '>=', $since)
-                ->orderBy('created_at')->limit(60)->get(['event', 'path', 'created_at', 'user_id']);
-            $uid  = optional($evs->firstWhere('user_id', '!=', null))->user_id;
-            $user = $uid ? DB::table('users')->where('id', $uid)->first(['name', 'email', 'mobile_number']) : null;
-            return [
-                'session'    => substr((string) $s->session_id, 0, 8),
-                'user'       => $user ? ($user->name ?: $user->mobile_number ?: $user->email) : null,
-                'events'     => (int) $s->events,
-                'duration_s' => max(0, strtotime((string) $s->last_at) - strtotime((string) $s->first_at)),
-                'started_at' => $s->first_at,
-                'journey'    => $evs->map(fn ($e) => [
-                    'event' => $e->event,
-                    'path'  => $e->path,
-                    'at'    => $e->created_at,
-                ])->values(),
-            ];
-        });
-
-        $blocks = $ev()->where('event', 'login_blocked')
-            ->orderByDesc('created_at')->limit(25)->get(['path', 'meta', 'ip', 'created_at']);
-
-        return [
-            'status'  => 'success',
-            'days'    => $days,
-            // since-when data exists + events in the chosen window, so a new store
-            // understands why 1/7/30 days can read the same.
-            'meta'    => [
-                'first_event_at' => DB::table('analytics_events')->min('created_at'),
-                'from'           => $since->toDateString(),
-                'window_events'  => $ev()->count(),
-            ],
-            'kpis'    => [
-                'visitors'      => $visitors,
-                'page_views'    => $pageViews,
-                'product_views' => $productViews,
-                'cart_adds'     => $cartAdds,
-                'login_blocked' => $loginBlocked,
-            ],
-            'funnel'        => ['page_views' => $pageViews, 'product_views' => $productViews, 'cart_adds' => $cartAdds],
-            'top_pages'     => $topPages,
-            'sessions'      => $sessions,
-            'login_blocked' => $blocks,
-        ];
-    }
-
-    // ---------------------------------------------------------- POS order drafts
-
-    /** Admin: park the current POS order as a draft (not placed) so it can be resumed later. */
-    public function saveOrderDraft(Request $request)
-    {
-        $label = substr(trim((string) $request->input('label', '')), 0, 191) ?: 'খসড়া অর্ডার';
-        $id = DB::table('order_drafts')->insertGetId([
-            'label'      => $label,
-            'payload'    => json_encode($request->input('payload', [])),
-            'created_by' => optional($request->user())->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-        return ['status' => 'success', 'id' => $id, 'label' => $label];
-    }
-
-    /** Admin: the 5 most recent drafts for the create-order header. */
-    public function listOrderDrafts(Request $request)
-    {
-        $drafts = DB::table('order_drafts')->orderByDesc('id')->limit(5)->get(['id', 'label', 'created_at']);
-        return ['status' => 'success', 'drafts' => $drafts];
-    }
-
-    /** Admin: one draft's saved state, to reload it into the POS form. */
-    public function getOrderDraft(Request $request, $id)
-    {
-        $row = DB::table('order_drafts')->where('id', (int) $id)->first();
-        if (!$row) {
-            throw new MarvelException('খসড়াটি পাওয়া যায়নি।');
-        }
-        return ['status' => 'success', 'id' => $row->id, 'label' => $row->label, 'payload' => json_decode($row->payload, true)];
-    }
-
-    /** Admin: drop a draft (e.g. once its order has been placed). */
-    public function deleteOrderDraft(Request $request, $id)
-    {
-        DB::table('order_drafts')->where('id', (int) $id)->delete();
-        return ['status' => 'success'];
     }
 
     // ---------------------------------------------------------- order create
@@ -2086,20 +1735,9 @@ class IntegrationController extends CoreController
             $order->note = $request->note;
         }
         // Extra weight charge for heavy books — persisted so it survives later adjustments.
-        // Computed as rate (৳/kg) × weight (kg); the pieces are kept so the invoice can show the
-        // weight and the desk can re-edit. A bare weight_charge (no kg) is still honoured as a flat
-        // amount for older orders.
         $ops = (array) ($order->ops_meta ?? []);
-        if ($request->filled('weight_kg') || $request->filled('weight_rate')) {
-            $wKg   = round((float) $request->input('weight_kg', 0), 3);
-            $wRate = round((float) $request->input('weight_rate', 0), 2);
-            $ops['weight_kg']     = $wKg;
-            $ops['weight_rate']   = $wRate;
-            $ops['weight_charge'] = (int) round($wKg * $wRate);
-            $order->ops_meta = $ops;
-        } elseif ($request->filled('weight_charge')) {
+        if ($request->filled('weight_charge')) {
             $ops['weight_charge'] = round((float) $request->weight_charge);
-            unset($ops['weight_kg'], $ops['weight_rate']);
             $order->ops_meta = $ops;
         }
         $weightCharge = (float) ($ops['weight_charge'] ?? 0);
@@ -2113,11 +1751,6 @@ class IntegrationController extends CoreController
         if ($request->boolean('mark_paid')) {
             $order->paid_total = $order->total;
         }
-        // #paid — let the desk correct the amount actually received, independent of the total
-        // (e.g. record a partial payment). Clamped to 0…total.
-        if ($request->filled('paid_total')) {
-            $order->paid_total = min((float) $order->total, max(0, round((float) $request->input('paid_total'), 2)));
-        }
         $order->save();
         return [
             'status' => 'success',
@@ -2125,8 +1758,6 @@ class IntegrationController extends CoreController
                 'id' => $order->id, 'total' => $order->total, 'paid_total' => $order->paid_total,
                 'discount' => $order->discount, 'delivery_fee' => $order->delivery_fee, 'note' => $order->note,
                 'weight_charge' => $weightCharge,
-                'weight_kg' => (float) ($ops['weight_kg'] ?? 0),
-                'weight_rate' => (float) ($ops['weight_rate'] ?? 0),
             ],
         ];
     }
@@ -2564,25 +2195,6 @@ class IntegrationController extends CoreController
 
     // --------------------------------------------------- courier: create shipment
     /** Create a shipment/consignment for an order with the selected courier. */
-    /**
-     * What the courier must actually collect on delivery (COD): the order total minus anything
-     * already settled — an online/advance payment and wallet points. Plain COD/pending orders
-     * carry paid_total = total by Pickbazar convention even though nothing was collected, so that
-     * case is reset to 0 (mirrors the pay-link due) — otherwise a fully-unpaid COD parcel would
-     * be created with 0 to collect. A fully-paid order collects nothing; an advance collects the
-     * remainder. `total` does NOT have wallet taken off (see Order::$with note), so subtract it.
-     */
-    private function courierCollectAmount(Order $order): int
-    {
-        $paid = (float) $order->paid_total;
-        if ($paid >= (float) $order->total
-            && in_array($order->payment_status, ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'], true)) {
-            $paid = 0;
-        }
-        $wallet = (float) (optional($order->wallet_point)->amount ?? 0);
-        return (int) max(0, round((float) $order->total - $paid - $wallet));
-    }
-
     public function createShipment(Request $request, $provider)
     {
         $cfg = ($this->options()['couriers'] ?? [])[$provider] ?? [];
@@ -2608,7 +2220,7 @@ class IntegrationController extends CoreController
                         'recipient_name'    => $order->customer_name,
                         'recipient_phone'   => $order->customer_contact,
                         'recipient_address' => $address ?: 'N/A',
-                        'cod_amount'        => (float) $this->courierCollectAmount($order),
+                        'cod_amount'        => (float) $order->total,
                         'note'              => $order->note,
                     ]);
                     break;
@@ -2625,7 +2237,7 @@ class IntegrationController extends CoreController
                         'delivery_area'          => $areaName ?: $cityName,
                         'customer_address'       => $address ?: 'N/A',
                         'merchant_invoice_id'    => $order->tracking_number,
-                        'cash_collection_amount' => (string) $this->courierCollectAmount($order),
+                        'cash_collection_amount' => (string) round((float) $order->total),
                         'parcel_weight'          => (int) ($cfg['default_weight'] ?? 500),
                         'value'                  => (int) round((float) $order->total),
                     ];
@@ -3321,7 +2933,6 @@ class IntegrationController extends CoreController
         // Aggregate order figures grouped by coupon_id in a single query.
         $stats = Order::query()
             ->whereNotNull('coupon_id')
-            ->where('order_status', '!=', \Marvel\Enums\OrderStatus::VOID) // void = test/dead, out of coupon stats
             ->selectRaw('coupon_id, COUNT(*) as uses, COALESCE(SUM(total),0) as sales, COALESCE(SUM(discount),0) as discount_given')
             ->groupBy('coupon_id')
             ->get()
@@ -6495,8 +6106,8 @@ class IntegrationController extends CoreController
 
         switch ($data['action']) {
             case 'void':
-                if (!empty($ops['void'])) {
-                    return ['status' => 'success', 'message' => 'Already voided.'];
+                if ($order->order_status === OrderStatus::VOID) {
+                    return ['status' => 'success', 'message' => 'Already void.'];
                 }
                 // Remember where it came from: unvoid has to put it back, and there is no other
                 // record of the status once it is overwritten.
@@ -6507,10 +6118,6 @@ class IntegrationController extends CoreController
                     'reason' => $data['reason'] ?? null,
                 ];
                 $order->ops_meta = $ops;
-                // Void = a test/dead order: keep the dedicated order-void status so every
-                // statistics query (which already excludes VOID) leaves it out, while the board
-                // labels it "Canceled" for the desk. VOID releases the committed stock via the
-                // model's updated hook, same as cancelled/refunded.
                 $order->order_status = OrderStatus::VOID;
                 // Voiding is the desk saying "this was never a real order", so it leaves the
                 // working list at the same moment — that is what auto-archive means here.
@@ -6519,7 +6126,7 @@ class IntegrationController extends CoreController
                 break;
 
             case 'unvoid':
-                if (empty($ops['void'])) {
+                if ($order->order_status !== OrderStatus::VOID) {
                     throw new MarvelException('This order is not void.');
                 }
                 if (!$isSuperAdmin) {
@@ -7523,7 +7130,13 @@ class IntegrationController extends CoreController
         $product->description = '🔖 প্রি-অর্ডার — বইটি আনতে '
             . $cfg['eta_min_days'] . '–' . $cfg['eta_max_days'] . ' দিন সময় লাগবে।';
         if (!empty($item['image_url'])) {
-            $product->image = ['original' => $item['image_url'], 'thumbnail' => $item['image_url']];
+            // Download the fetched cover to our own storage so it actually renders on the
+            // storefront: a raw Amazon/source URL is neither whitelisted for next/image nor
+            // hotlink-safe (Amazon blocks/expires them). Fall back to the remote URL only if
+            // the download fails, so a hiccup never drops the cover entirely.
+            $stored = $this->storeRemoteImage($item['image_url']);
+            $product->image = $stored
+                ?: ['original' => $item['image_url'], 'thumbnail' => $item['image_url']];
         }
         if (!empty($item['weight_kg'])) {
             $product->book_meta = array_merge(
@@ -7542,6 +7155,53 @@ class IntegrationController extends CoreController
         Cache::increment('catalog:version');
 
         return $product;
+    }
+
+    /**
+     * Download a remote image (a fetched book cover) into our own public storage and
+     * return an attachment-shaped array the Product `image` column expects. Mirrors the
+     * AI-import path (AiExtractController) so preorder covers live on our domain and render.
+     * Returns null (never throws) on any failure — creating the pre-order must not hinge
+     * on an image download succeeding.
+     */
+    private function storeRemoteImage(string $url): ?array
+    {
+        $url = trim($url);
+        if ($url === '' || !preg_match('#^https?://#i', $url)) {
+            return null;
+        }
+        try {
+            $resp = Http::timeout(30)->withHeaders([
+                'User-Agent' => 'Mozilla/5.0 (compatible; IndoBanglaBot/1.0)',
+            ])->get($url);
+            if ($resp->failed()) {
+                return null;
+            }
+            $body = $resp->body();
+            $ctype = strtolower($resp->header('Content-Type') ?? '');
+            // Not an image (e.g. an HTML block/expiry page dressed as a jpg URL).
+            if (!str_starts_with($ctype, 'image/') && strlen($body) < 500) {
+                return null;
+            }
+            $ext = 'jpg';
+            foreach (['png' => 'png', 'webp' => 'webp', 'gif' => 'gif', 'jpeg' => 'jpg', 'jpg' => 'jpg'] as $needle => $e) {
+                if (str_contains($ctype, $needle)) {
+                    $ext = $e;
+                    break;
+                }
+            }
+            $name = 'preorder-covers/' . bin2hex(random_bytes(8)) . '.' . $ext;
+            Storage::disk('public')->put($name, $body);
+            $publicUrl = rtrim(config('app.url'), '/') . '/storage/' . $name;
+            return [
+                'id'        => null,
+                'thumbnail' => $publicUrl,
+                'original'  => $publicUrl,
+                'file_name' => basename($name),
+            ];
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     /** Admin: how many books already have an MRP (so the panel can show what's ready). */
@@ -8624,234 +8284,5 @@ class IntegrationController extends CoreController
         }
 
         return ['status' => 'success', 'transaction' => $info];
-    }
-
-    /**
-     * Duplicate-order guard for the admin POS create-order screen. Given a customer and the
-     * books in the cart, return recent still-live orders by that same customer that already
-     * contain any of those books — so staff can be warned before cutting a duplicate.
-     */
-    public function orderDuplicateCheck(Request $request)
-    {
-        $customerId = (int) $request->input('customer_id');
-        $productIds = array_values(array_filter(array_map('intval', explode(',', (string) $request->input('product_ids', '')))));
-        $days = (int) $request->input('days', 45);
-        if ($customerId <= 0 || empty($productIds)) {
-            return ['orders' => []];
-        }
-        if ($days <= 0) {
-            $days = 45;
-        }
-        $rows = DB::table('orders as o')
-            ->join('order_product as op', 'op.order_id', '=', 'o.id')
-            ->whereNull('o.deleted_at')
-            ->where('o.customer_id', $customerId)
-            ->whereIn('op.product_id', $productIds)
-            ->where('o.created_at', '>=', now()->subDays($days))
-            ->whereNotIn('o.order_status', ['order-cancelled', 'order-void', 'order-refunded', 'order-failed'])
-            ->select('o.id', 'o.tracking_number', 'o.order_status', 'o.created_at', 'op.product_id')
-            ->orderByDesc('o.created_at')
-            ->limit(50)
-            ->get();
-        $orders = [];
-        foreach ($rows as $r) {
-            if (!isset($orders[$r->id])) {
-                $orders[$r->id] = [
-                    'id'              => (int) $r->id,
-                    'tracking_number' => $r->tracking_number,
-                    'order_status'    => $r->order_status,
-                    'created_at'      => (string) $r->created_at,
-                    'product_ids'     => [],
-                ];
-            }
-            $orders[$r->id]['product_ids'][] = (int) $r->product_id;
-        }
-        return ['orders' => array_values($orders)];
-    }
-
-    /**
-     * Map a RedX tracking response to one of our order statuses. RedX returns no status enum —
-     * only human messages — so we key off the newest message_en. Returns null for anything we
-     * must not auto-advance to (returns / holds / unknown), which stays for a human to handle.
-     */
-    public function redxStatusFromTracking($tracking): ?string
-    {
-        $events = is_array($tracking) ? ($tracking['tracking'] ?? []) : [];
-        if (!is_array($events) || !count($events)) {
-            return null;
-        }
-        $last = strtolower((string) ($events[count($events) - 1]['message_en'] ?? ''));
-        if ($last === '') {
-            return null;
-        }
-        if (str_contains($last, 'delivered')) {
-            return \Marvel\Enums\OrderStatus::COMPLETED;
-        }
-        if (str_contains($last, 'on the way to delivery') || str_contains($last, 'out for delivery')) {
-            return \Marvel\Enums\OrderStatus::OUT_FOR_DELIVERY;
-        }
-        if (
-            str_contains($last, 'picked up') || str_contains($last, 'received in')
-            || str_contains($last, 'unloaded') || str_contains($last, 'left from')
-            || str_contains($last, 'ready for transfer') || str_contains($last, 'in transit')
-        ) {
-            return \Marvel\Enums\OrderStatus::IN_TRANSIT;
-        }
-        return null;
-    }
-
-    /**
-     * Pull live RedX status for every recent, still-in-flight order and advance order_status to
-     * match (delivered -> completed, etc.). Forward-only — never moves an order backwards. The
-     * status change flows through OrderRepository::changeOrderStatus so delivered_at, the board
-     * timeline, loyalty points and the admin notifier all fire exactly as a manual update would.
-     */
-    public function syncCourierStatuses($days = 45, $limit = 500): array
-    {
-        $rank = [
-            \Marvel\Enums\OrderStatus::PENDING           => 0,
-            \Marvel\Enums\OrderStatus::CONFIRMED         => 1,
-            \Marvel\Enums\OrderStatus::PLACED            => 1,
-            \Marvel\Enums\OrderStatus::PROCESSING        => 2,
-            \Marvel\Enums\OrderStatus::SHIPPED           => 3,
-            \Marvel\Enums\OrderStatus::IN_TRANSIT        => 4,
-            \Marvel\Enums\OrderStatus::AT_LOCAL_FACILITY => 4,
-            \Marvel\Enums\OrderStatus::OUT_FOR_DELIVERY  => 5,
-            \Marvel\Enums\OrderStatus::COMPLETED         => 6,
-        ];
-        $terminal = ['order-completed', 'order-cancelled', 'order-void', 'order-refunded', 'order-failed'];
-        $orders = \Marvel\Database\Models\Order::whereNull('deleted_at')
-            ->whereNotIn('order_status', $terminal)
-            ->where('created_at', '>=', now()->subDays((int) $days ?: 45))
-            ->latest('id')
-            ->limit((int) $limit ?: 500)
-            ->get();
-        $repo = app(\Marvel\Database\Repositories\OrderRepository::class);
-        $checked = 0;
-        $updated = 0;
-        $details = [];
-        foreach ($orders as $order) {
-            $ops = (array) ($order->ops_meta ?? []);
-            $tid = $ops['courier_tracking_id'] ?? null;
-            $courier = strtolower((string) ($ops['courier'] ?? ''));
-            if (!$tid || $courier !== 'redx') {
-                continue;
-            }
-            $checked++;
-            try {
-                $res = $this->courierTrack(new Request(['tracking_id' => (string) $tid]), 'redx');
-                $mapped = $this->redxStatusFromTracking($res['tracking'] ?? []);
-                if (!$mapped) {
-                    continue;
-                }
-                $cur = $order->order_status;
-                if (($rank[$mapped] ?? -1) > ($rank[$cur] ?? -1)) {
-                    $repo->changeOrderStatus($order, $mapped);
-                    $updated++;
-                    $details[] = ['id' => (int) $order->id, 'from' => $cur, 'to' => $mapped];
-                }
-            } catch (\Throwable $e) {
-                // a courier hiccup on one parcel must not stop the batch
-            }
-            usleep(150000);
-        }
-        return ['checked' => $checked, 'updated' => $updated, 'details' => $details];
-    }
-
-    /**
-     * bKash reconciliation safety-net. Tokenized checkout only settles when the customer's
-     * browser makes it back to /bkash-callback and we call execute; if that redirect is lost
-     * (tab closed, network drop) a genuinely-paid order can sit "pending" forever. This sweeps
-     * recent unsettled bKash orders, asks bKash what really happened, and closes the loop:
-     *   - transactionStatus Completed  -> money is already ours, just record + settle
-     *   - verification Complete, not executed -> capture it now (execute), then settle
-     *   - Initiated / Incomplete       -> genuine abandonment, left untouched
-     * Only touches orders older than 5 minutes so it never races the live callback, and every
-     * step is idempotent (ops_meta.bkash.executed + payment_status guards) so a customer is
-     * never charged or credited twice. Runs every 15 minutes from the scheduler.
-     */
-    public function reconcileBkashPayments($days = 2, $limit = 200): array
-    {
-        $orders = \Marvel\Database\Models\Order::whereNull('deleted_at')
-            ->whereNotIn('payment_status', ['payment-success', 'payment-refunded'])
-            ->where('created_at', '>=', now()->subDays((int) $days ?: 2))
-            ->where('created_at', '<=', now()->subMinutes(5))
-            ->whereRaw("JSON_EXTRACT(ops_meta, '$.bkash.payment_id') IS NOT NULL")
-            ->latest('id')
-            ->limit((int) $limit ?: 200)
-            ->get();
-
-        $checked = 0;
-        $settled = 0;
-        $captured = 0;
-        $details = [];
-        foreach ($orders as $order) {
-            $ops = (array) ($order->ops_meta ?? []);
-            $bk  = (array) ($ops['bkash'] ?? []);
-            $pid = $bk['payment_id'] ?? null;
-            if (!$pid || !empty($bk['executed']) || $order->payment_status === 'payment-success') {
-                continue;
-            }
-            $checked++;
-            try {
-                $q = (array) BkashPaymentTokenize::queryPayment($pid);
-            } catch (\Throwable $e) {
-                continue; // bKash hiccup — leave it for the next run
-            }
-            $tx  = $q['transactionStatus'] ?? null;
-            $ver = $q['verificationStatus'] ?? null;
-
-            $finish = function ($order, $resp, $tag) use (&$details) {
-                $ops = (array) ($order->ops_meta ?? []);
-                $ops['bkash'] = array_merge($ops['bkash'] ?? [], [
-                    'executed'    => true,
-                    'reconciled'  => true,
-                    'last_status' => $resp['transactionStatus'] ?? 'Completed',
-                    'trx_id'      => $resp['trxID'] ?? null,
-                    'executed_at' => now()->toIso8601String(),
-                ]);
-                $order->ops_meta = $ops;
-                $order->saveQuietly();
-                $paid = isset($resp['amount']) ? (float) $resp['amount'] : (float) ($ops['bkash']['amount_bdt'] ?? $order->total);
-                $this->settlePayment($order, 'bkash', $paid);
-                $details[] = ['id' => (int) $order->id, 'action' => $tag, 'trx' => $resp['trxID'] ?? null];
-            };
-
-            // Already captured on bKash's side — record and settle.
-            if ($tx === 'Completed' && !empty($q['trxID'])) {
-                $finish($order, $q, 'settled-already-completed');
-                $settled++;
-                continue;
-            }
-
-            // Customer finished verification but never made it back to execute — capture now.
-            if (in_array($ver, ['Complete', 'Completed'], true) && $tx !== 'Completed') {
-                try {
-                    $ex = (array) BkashPaymentTokenize::executePayment($pid);
-                    if (!$ex) {
-                        $ex = (array) BkashPaymentTokenize::queryPayment($pid);
-                    }
-                } catch (\Throwable $e) {
-                    \Marvel\Helpers\AdminNotifier::send("⚠️ <b>bKash reconcile execute ব্যর্থ</b> #{$order->tracking_number} (paymentID: {$pid}) — হাতে যাচাই করুন");
-                    $details[] = ['id' => (int) $order->id, 'action' => 'execute-error'];
-                    continue;
-                }
-                $ok = ($ex['statusCode'] ?? null) === '0000'
-                    && ($ex['transactionStatus'] ?? null) === 'Completed'
-                    && !empty($ex['trxID']);
-                if ($ok) {
-                    $finish($order, $ex, 'captured-and-settled');
-                    $captured++;
-                } else {
-                    $details[] = ['id' => (int) $order->id, 'action' => 'execute-not-completed', 'status' => $ex['transactionStatus'] ?? 'unknown'];
-                }
-                continue;
-            }
-            // Initiated / Incomplete -> genuine abandonment; leave the order as placed.
-        }
-        if ($settled + $captured > 0) {
-            \Marvel\Helpers\AdminNotifier::send("✅ <b>bKash reconcile</b>: {$settled} already-paid + {$captured} recovered — settled.");
-        }
-        return ['checked' => $checked, 'settled' => $settled, 'captured' => $captured, 'details' => $details];
     }
 }

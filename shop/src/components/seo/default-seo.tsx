@@ -42,14 +42,21 @@ const DefaultSeo = () => {
         type: 'website',
         locale: 'en_US',
         site_name: settings?.siteTitle,
-        images: [
-          {
-            url: settings?.seo?.ogImage?.original,
-            width: 800,
-            height: 600,
-            alt: settings?.seo?.ogTitle,
-          },
-        ],
+        // Only emit a default og:image when one is actually configured. Emitting it with an
+        // undefined url produced an empty `<meta property="og:image"/>` on every page, which
+        // competed with the real per-page product cover (see page-og.tsx).
+        ...(settings?.seo?.ogImage?.original
+          ? {
+              images: [
+                {
+                  url: settings.seo.ogImage.original,
+                  width: 800,
+                  height: 600,
+                  alt: settings?.seo?.ogTitle,
+                },
+              ],
+            }
+          : {}),
       }}
       twitter={{
         handle: settings?.seo?.twitterHandle,

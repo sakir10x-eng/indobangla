@@ -7,6 +7,7 @@ import { ModalProvider } from '@/components/ui/modal/modal.context';
 import ManagedModal from '@/components/ui/modal/managed-modal';
 import ManagedDrawer from '@/components/ui/drawer/managed-drawer';
 import DefaultSeo from '@/components/seo/default-seo';
+import PageOg from '@/components/seo/page-og';
 import { SearchProvider } from '@/components/ui/search/search.context';
 import PrivateRoute from '@/lib/private-route';
 import { CartProvider } from '@/store/quick-cart/cart.context';
@@ -14,10 +15,8 @@ import SocialLogin from '@/components/auth/social-login';
 import { NextPageWithLayout } from '@/types';
 import QueryProvider from '@/framework/client/query-provider';
 import { getDirection } from '@/lib/constants';
-import Router, { useRouter } from 'next/router';
+import { useRouter } from 'next/router';
 import dynamic from 'next/dynamic';
-import { useEffect } from 'react';
-import { trackPageView } from '@/lib/analytics';
 const ToastContainer = dynamic(
   () => import('react-toastify').then((module) => module.ToastContainer),
   { ssr: false },
@@ -51,14 +50,6 @@ function CustomApp({
   // Heartbeat for the admin's live-visitor counter. Here in _app so it covers every page; it
   // swallows its own errors and never renders anything.
   usePresencePing();
-  // Storefront analytics: record every page view (with time on the previous page) so the admin
-  // dashboard can show visitors, top pages and per-session journeys.
-  useEffect(() => {
-    trackPageView(window.location.pathname + window.location.search);
-    const onRoute = (url: string) => trackPageView(url);
-    Router.events.on('routeChangeComplete', onRoute);
-    return () => Router.events.off('routeChangeComplete', onRoute);
-  }, []);
   return (
     <>
       <div dir={dir}>
@@ -69,6 +60,10 @@ function CustomApp({
                 <CartProvider>
                   <>
                     <DefaultSeo />
+                    {/* Product OG tags — rendered here (outside Maintenance) so they reach the
+                        server HTML crawlers read; the per-page <Seo> is hidden by Maintenance's
+                        SSR spinner. See page-og.tsx. */}
+                    <PageOg pageProps={pageProps} />
                     <Maintenance>
                       <NotificationProvider>
                         {authenticationRequired ? (

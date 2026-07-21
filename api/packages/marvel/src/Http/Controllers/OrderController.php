@@ -104,7 +104,26 @@ class OrderController extends CoreController
                 break;
 
             default:
-                return $this->repository->with('children')->where('customer_id', '=', $user->id)->where('parent_id', '=', null);
+                // A customer's history = their own account orders AND any order placed with
+                // their verified phone. Guest checkout (no OTP) creates orders under a null /
+                // different customer_id but carries the phone the buyer typed — when that phone
+                // matches this customer's profile contact, the order is genuinely theirs and must
+                // appear in their profile. Match on the last 10 digits so 0 / 88 / +88 formatting
+                // never hides an order. Falls back to id-only when the profile has no phone.
+                $contactDigits = substr(preg_replace('/\D/', '', (string) optional($user->profile)->contact), -10);
+                $query = $this->repository->with('children')->where('parent_id', '=', null);
+                if (strlen($contactDigits) === 10) {
+                    $query->where(function ($w) use ($user, $contactDigits) {
+                        $w->where('customer_id', '=', $user->id)
+                            ->orWhereRaw(
+                                "RIGHT(REPLACE(REPLACE(COALESCE(customer_contact, ''), '+', ''), ' ', ''), 10) = ?",
+                                [$contactDigits]
+                            );
+                    });
+                } else {
+                    $query->where('customer_id', '=', $user->id);
+                }
+                return $query;
                 break;
         }
 
@@ -212,11 +231,22 @@ class OrderController extends CoreController
         }
         if ($user && $user->hasPermissionTo(Permission::SUPER_ADMIN)) {
             return $order;
-        } elseif (isset($order->shop_id)) {
-            if ($user && ($this->repository->hasPermission($user, $order->shop_id) || $user->id == $order->customer_id)) {
+        }
+        // The order is the customer's if it's under their account OR was placed with their
+        // verified phone (a guest-checkout order re-homed to their profile). Same last-10-digit
+        // match the order list uses, so what they can see they can also open.
+        $ownsByPhone = false;
+        if ($user) {
+            $mine = substr(preg_replace('/\D/', '', (string) optional($user->profile)->contact), -10);
+            $theirs = substr(preg_replace('/\D/', '', (string) $order->customer_contact), -10);
+            $ownsByPhone = strlen($mine) === 10 && $mine === $theirs;
+        }
+        if (isset($order->shop_id)) {
+            if ($user && ($this->repository->hasPermission($user, $order->shop_id) || $user->id == $order->customer_id || $ownsByPhone)) {
                 return $order;
             }
-        } elseif ($user && $user->id == $order->customer_id) {
+            throw new AuthorizationException(NOT_AUTHORIZED);
+        } elseif ($user && ($user->id == $order->customer_id || $ownsByPhone)) {
             return $order;
         } else {
             throw new AuthorizationException(NOT_AUTHORIZED);
@@ -240,7 +270,13 @@ class OrderController extends CoreController
             if ($order->customer_id === null) {
                 return $order;
             }
-            if ($user && ($user->id === $order->customer_id || $user->can('super_admin'))) {
+            $ownsByPhone = false;
+            if ($user) {
+                $mine = substr(preg_replace('/\D/', '', (string) optional($user->profile)->contact), -10);
+                $theirs = substr(preg_replace('/\D/', '', (string) $order->customer_contact), -10);
+                $ownsByPhone = strlen($mine) === 10 && $mine === $theirs;
+            }
+            if ($user && ($user->id === $order->customer_id || $user->can('super_admin') || $ownsByPhone)) {
                 return $order;
             } else {
                 throw new AuthorizationException(NOT_AUTHORIZED);

@@ -5,6 +5,13 @@ import { toast } from 'react-toastify';
 
 const bdt = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-IN');
 
+// MarvelException on this API comes back as HTTP 200 with a GraphQL-style
+// `{errors:[{message}]}` body, NOT a 4xx/5xx — so axios resolves instead of
+// rejecting and a bare try/catch never sees it. Every real success response
+// from pay-confirm/pay-info/pay-bank-proof carries an explicit `status`;
+// anything else (including this envelope) must be treated as a failure.
+const errorMessage = (r: any): string | null => r?.errors?.[0]?.message || null;
+
 // Which of these actually appear is decided by the API (`info.methods`) — Nagad stays out
 // until its credentials land, so it must never be assumed present here.
 const METHODS: { id: string; name: string; tag: string; logo: string; color: string }[] = [
@@ -33,10 +40,12 @@ export default function PayPage() {
     if (!token) return;
     try {
       const r = await HttpClient.get<any>('pay-info', { token });
+      const msg = errorMessage(r);
+      if (msg) throw new Error(msg);
       setInfo(r);
       if (r?.order?.paid) setDone(true);
     } catch (e: any) {
-      setErr(e?.response?.data?.message || 'লিংকটি সঠিক নয় বা মেয়াদ শেষ।');
+      setErr(e?.response?.data?.message || e?.message || 'লিংকটি সঠিক নয় বা মেয়াদ শেষ।');
     }
   };
   useEffect(() => {
@@ -54,16 +63,27 @@ export default function PayPage() {
 
   const pay = async () => {
     setPaying(true);
+    setErr('');
     try {
       const r = await HttpClient.post<any>('pay-confirm', { token, method, purpose: payFull ? 'full' : 'advance' });
+      const msg = errorMessage(r);
+      if (msg) throw new Error(msg);
       if (r?.status === 'redirect' && r?.url) {
         window.location.href = r.url;
         return;
       }
-      setDone(true);
-      load();
+      // Only an explicit server-confirmed success may show the ✅ screen — anything
+      // else (an unrecognised body, a gateway that never redirected) is a failure,
+      // not a free pass. This is the exact shape settlePayment/payConfirm return for
+      // an order that's already paid.
+      if (r?.status === 'success') {
+        setDone(true);
+        load();
+        return;
+      }
+      throw new Error('পেমেন্ট সম্পন্ন করা যায়নি।');
     } catch (e: any) {
-      setErr(e?.response?.data?.message || 'পেমেন্ট সম্পন্ন করা যায়নি।');
+      setErr(e?.response?.data?.message || e?.message || 'পেমেন্ট সম্পন্ন করা যায়নি।');
     } finally {
       setPaying(false);
     }
@@ -81,9 +101,11 @@ export default function PayPage() {
       body.append('screenshot', proofFile);
       // The axios instance defaults to application/json, so multipart has to be asked for
       // explicitly — same as settings.upload does.
-      await HttpClient.post<any>('pay-bank-proof', body, {
+      const r = await HttpClient.post<any>('pay-bank-proof', body, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
+      const msg = errorMessage(r);
+      if (msg) throw new Error(msg);
       setProofFile(null);
       // Flip to the confirmation immediately. `load()` re-reads bank_proof from the server and
       // keeps it across refreshes, but the buyer should not sit looking at the upload form
@@ -92,7 +114,7 @@ export default function PayPage() {
       toast.success('স্লিপ জমা হয়েছে — যাচাইয়ের পর নিশ্চিত করা হবে।');
       await load();
     } catch (e: any) {
-      setErr(e?.response?.data?.message || 'স্লিপ জমা দেওয়া যায়নি। আবার চেষ্টা করুন।');
+      setErr(e?.response?.data?.message || e?.message || 'স্লিপ জমা দেওয়া যায়নি। আবার চেষ্টা করুন।');
     } finally {
       setPaying(false);
     }
@@ -106,12 +128,6 @@ export default function PayPage() {
   const advanceOption = Number(order?.advance_option) || 0;
   const isAdvanceLink = advanceOption > 0 && advanceOption < Number(dueAmount);
   const payNow = isAdvanceLink && !payFull ? advanceOption : dueAmount;
-  // bKash service charge: the desk can pass bKash's 1.85% on to the buyer. It only applies when
-  // paying by bKash, and is recomputed off whatever the buyer picks (advance/full) so it matches
-  // what the gateway will actually collect (payConfirm re-stamps the same figure server-side).
-  const bkashChargeOn = (Number(order?.bkash_charge) || 0) > 0;
-  const bkashChargeNow = bkashChargeOn && method === 'bkash' ? Math.round(Number(payNow) * 1.85 / 100) : 0;
-  const payTotal = Number(payNow) + bkashChargeNow;
   const bank = info?.bank ?? null;
   const bankProofPending = order?.bank_proof?.status === 'pending_review' || proofSubmitted;
   const bankProofRejected = order?.bank_proof?.status === 'rejected' && !proofSubmitted;
@@ -191,17 +207,6 @@ export default function PayPage() {
                   <span style={{ fontSize: 16.5, fontWeight: 700 }}>মোট</span>
                   <span style={{ fontSize: 27, fontWeight: 700, color: '#2e6b5a', letterSpacing: '-.5px' }}>{bdt(order.total)}</span>
                 </div>
-                {/* An advance / partial payment was already collected on this order — show it and
-                    the real remaining, so the buyer understands why the amount to pay is less than the total. */}
-                {Number(order.already_paid) > 0 && Number(order.already_paid) < Number(order.total) && (
-                  <>
-                    <Row label="ইতিমধ্যে পরিশোধিত (অগ্রিম)" value={'− ' + bdt(order.already_paid)} green />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px dashed #d7e9df', marginTop: 6, paddingTop: 10 }}>
-                      <span style={{ fontSize: 15, fontWeight: 800, color: '#9a3412' }}>বাকি</span>
-                      <span style={{ fontSize: 20, fontWeight: 800, color: '#9a3412' }}>{bdt(order.due)}</span>
-                    </div>
-                  </>
-                )}
                 {isAdvanceLink && !(done || order.paid) ? (
                   <div style={{ marginTop: 14 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: '#7a6f66', marginBottom: 8 }}>কত টাকা এখন দেবেন?</div>
@@ -232,19 +237,6 @@ export default function PayPage() {
                   <div style={{ fontSize: 40 }}>✅</div>
                   <div style={{ fontSize: 17, fontWeight: 800, color: '#0f9d68', marginTop: 6 }}>পেমেন্ট সম্পন্ন ও নিশ্চিত</div>
                   <div style={{ fontSize: 13, color: '#166a44', marginTop: 4 }}>Payment done and confirmed{order.pay_method ? ` · ${order.pay_method.toUpperCase()}` : ''}</div>
-
-                  {/* receipt: paid amount, total payable, and the transaction id */}
-                  <div style={{ marginTop: 14, borderRadius: 12, background: '#fff', border: '1px solid #c9e8d6', padding: '12px 14px', textAlign: 'left' }}>
-                    <Row label="পরিশোধিত (Paid)" value={bdt(order.already_paid)} green />
-                    <Row label="মোট প্রদেয় (Payable)" value={bdt(order.total)} />
-                    {order.transaction_id && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px dashed #d7e9df', marginTop: 6, paddingTop: 8 }}>
-                        <span style={{ fontSize: 12.5, color: '#7a6f66' }}>Transaction ID</span>
-                        <b style={{ fontSize: 13.5, fontFamily: 'monospace', color: '#1f4d3d', wordBreak: 'break-all' }}>{order.transaction_id}</b>
-                      </div>
-                    )}
-                  </div>
-
                   {order.is_club && order.club_coupon && (
                     <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed #a7d8bf' }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: '#166a44' }}>🪪 Readers&apos; Club সক্রিয়!</div>
@@ -331,21 +323,9 @@ export default function PayPage() {
                       </div>
                     )
                   ) : (
-                    <>
-                      {bkashChargeNow > 0 && (
-                        <div style={{ marginTop: 16, borderRadius: 12, background: '#fff7ed', border: '1px solid #f2d79a', padding: '10px 14px' }}>
-                          <Row label={Number(order.already_paid) > 0 && Number(order.already_paid) < Number(order.total) ? 'বাকি' : (isAdvanceLink && !payFull ? 'অগ্রিম' : 'বই / অর্ডার')} value={bdt(payNow)} />
-                          <Row label="বিকাশ চার্জ (১.৮৫%)" value={'+ ' + bdt(bkashChargeNow)} />
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px dashed #f2d79a', marginTop: 6, paddingTop: 8 }}>
-                            <span style={{ fontSize: 13.5, fontWeight: 800, color: '#9a3412' }}>বিকাশে দিতে হবে</span>
-                            <span style={{ fontSize: 18, fontWeight: 800, color: '#9a3412' }}>{bdt(payTotal)}</span>
-                          </div>
-                        </div>
-                      )}
-                      <button onClick={pay} disabled={paying} style={{ width: '100%', marginTop: bkashChargeNow > 0 ? 12 : 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: 'linear-gradient(135deg,#d43a2b,#b02a1e)', color: '#fff', fontWeight: 700, fontSize: 17, padding: 16, borderRadius: 14, boxShadow: '0 10px 24px rgba(212,58,43,.30)', opacity: paying ? 0.7 : 1 }}>
-                        {paying ? 'প্রসেস হচ্ছে…' : `${methodName}ে ${bdt(payTotal)} ${order.pay_purpose === 'advance' ? 'অগ্রিম ' : ''}পরিশোধ করুন`}
-                      </button>
-                    </>
+                    <button onClick={pay} disabled={paying} style={{ width: '100%', marginTop: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: 'linear-gradient(135deg,#d43a2b,#b02a1e)', color: '#fff', fontWeight: 700, fontSize: 17, padding: 16, borderRadius: 14, boxShadow: '0 10px 24px rgba(212,58,43,.30)', opacity: paying ? 0.7 : 1 }}>
+                      {paying ? 'প্রসেস হচ্ছে…' : `${methodName}ে ${bdt(payNow)} ${order.pay_purpose === 'advance' ? 'অগ্রিম ' : ''}পরিশোধ করুন`}
+                    </button>
                   )}
                   <div style={{ textAlign: 'center', color: '#7a6f66', fontSize: 12.5, marginTop: 14 }}>
                     🔒 নিরাপদ পেমেন্ট · IndoBangla · ১০০% অরিজিনাল বইয়ের নিশ্চয়তা
