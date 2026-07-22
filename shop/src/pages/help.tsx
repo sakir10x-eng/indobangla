@@ -8,7 +8,15 @@ import { LIMIT_HUNDRED } from '@/lib/constants';
 import { getLayoutWithFooter } from '@/components/layouts/layout-with-footer';
 import PageBanner from '@/components/banners/page-banner';
 import FAQ from '@/components/faq/faq';
+import dynamic from 'next/dynamic';
 import ErrorMessage from '@/components/ui/error-message';
+
+// ssr:false — it runs an authenticated query, and /help is statically generated, so it must
+// not execute during `next build` (see the SSG notes for this shop).
+const SupportTickets = dynamic(
+  () => import('@/components/support/support-tickets'),
+  { ssr: false },
+);
 
 export default function HelpPage() {
   const { t } = useTranslation();
@@ -36,6 +44,12 @@ export default function HelpPage() {
           ) : (
             <FAQ data={faqs as any} isLoading={isLoading} />
           )}
+
+          {/* The FAQ answers the common questions; this is how a reader reaches a person when
+              it does not. The tickets API already existed — nothing on the shop ever called it. */}
+          <div className="mt-12 border-t border-border-200 pt-10">
+            <SupportTickets />
+          </div>
         </div>
       </section>
     </>

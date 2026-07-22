@@ -194,7 +194,9 @@ function SearchBox() {
           value={scope}
           onChange={(e) => setScope(e.target.value as Scope)}
           aria-label="সার্চ ক্যাটাগরি"
-          className="hidden shrink-0 cursor-pointer border-0 border-r border-border-200 bg-gray-50 px-3 text-[13.5px] font-semibold text-heading outline-none sm:block"
+          // pr-8 leaves room for the chevron the base `select` rule paints on the right;
+          // px-3 alone would let the label sit under it.
+          className="hidden shrink-0 cursor-pointer border-0 border-r border-border-200 bg-gray-50 pl-3 pr-8 text-[13.5px] font-semibold text-heading outline-none sm:block"
         >
           {SCOPES.map((s) => (
             <option key={s.value} value={s.value}>{s.label}</option>
@@ -585,7 +587,7 @@ function AdvancedSearch({ cats }: { cats: Cat[] }) {
             </div>
             <div>
               <label className={lbl}>জঁর</label>
-              <select className={cn(fld, 'cursor-pointer')} value={f.category} onChange={(e) => set('category', e.target.value)}>
+              <select className={cn(fld, 'cursor-pointer pr-8')} value={f.category} onChange={(e) => set('category', e.target.value)}>
                 <option value="">সব জঁর</option>
                 {cats.map((c) => (
                   <option key={c.id} value={c.slug}>{c.name}</option>
