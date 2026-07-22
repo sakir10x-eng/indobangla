@@ -864,7 +864,18 @@ function PreviewPanel({
       v !== '' &&
       !(label === 'Source MRP' && (p.mrp ?? p.source_price) == null) &&
       // Print type, Publisher & Slug have their own editable inputs above when editing.
-      !(editable && (label === 'Print type' || label === 'Publisher' || label === 'Slug')),
+      // These have their own editable inputs above when editing — showing them twice
+      // (once editable, once as a stale read-only copy) reads as a contradiction.
+      !(
+        editable &&
+        [
+          'Print type',
+          'Publisher',
+          'Slug',
+          'Regular price (×2)',
+          'Sale price (×1.75)',
+        ].includes(label)
+      ),
   );
 
   const input =
@@ -925,6 +936,100 @@ function PreviewPanel({
                 onChange={(e) => onProductPatch({ slug: e.target.value })}
                 placeholder="e.g. amar-priyo-boi"
               />
+            </div>
+
+            {/* Price was read-only in the spec grid below, so a wrong source MRP could only be
+                corrected after publishing. Both fields go straight to create-product. */}
+            <div>
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">
+                Regular price (৳)
+              </label>
+              <input
+                type="number"
+                min={0}
+                className={input}
+                value={p.price ?? ''}
+                onChange={(e) =>
+                  onProductPatch({
+                    price: e.target.value === '' ? null : Number(e.target.value),
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">
+                Sale price (৳)
+              </label>
+              <input
+                type="number"
+                min={0}
+                className={input}
+                value={p.sale_price ?? ''}
+                onChange={(e) =>
+                  onProductPatch({
+                    sale_price:
+                      e.target.value === '' ? null : Number(e.target.value),
+                  })
+                }
+                placeholder="ছাড় না থাকলে ফাঁকা"
+              />
+            </div>
+
+            {/* Cover. Editing the URL re-points the image the backend downloads on publish. */}
+            <div className="sm:col-span-2">
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">
+                Cover image URL
+              </label>
+              <input
+                className={input}
+                value={p.image_url ?? cover ?? ''}
+                onChange={(e) => {
+                  setCoverFailed(false);
+                  setCoverTried(false);
+                  setResolvedCover(undefined);
+                  onProductPatch({ image_url: e.target.value });
+                }}
+                placeholder="https://…"
+              />
+            </div>
+
+            {/* Gallery = the storefront's "বইয়ের ভেতরে এক ঝলক" section. One URL per line; the
+                backend downloads each into our storage on publish (max 8, cover excluded). */}
+            <div className="sm:col-span-2">
+              <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">
+                ভেতরের পাতার ছবি — gallery{' '}
+                <span className="font-normal text-body">(এক লাইনে একটি URL)</span>
+              </label>
+              <textarea
+                rows={3}
+                className="w-full rounded border border-border-base bg-white px-2 py-1.5 text-xs text-heading focus:border-accent focus:outline-none"
+                value={(p.gallery_urls ?? []).join('\n')}
+                onChange={(e) =>
+                  onProductPatch({
+                    gallery_urls: e.target.value
+                      .split('\n')
+                      .map((x: string) => x.trim())
+                      .filter(Boolean),
+                  })
+                }
+                placeholder={'https://…/page-1.jpg\nhttps://…/page-2.jpg'}
+              />
+              {(p.gallery_urls ?? []).length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {(p.gallery_urls ?? []).map((g: string, i: number) => (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      key={`${g}-${i}`}
+                      src={g}
+                      alt={`inside ${i + 1}`}
+                      className="h-12 w-9 rounded border border-border-200 object-cover"
+                      onError={(ev) => {
+                        (ev.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
             <div className="relative">
               <label className="mb-0.5 block text-[11px] font-semibold text-body-dark">Writer</label>

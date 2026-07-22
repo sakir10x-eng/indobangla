@@ -264,13 +264,23 @@ class UserController extends CoreController
             'password' => 'required',
         ]);
 
-        $user = User::where('email', $request->email)->where('is_active', true)->first();
+        // One email can legitimately map to SEVERAL rows here: guest checkout and OTP
+        // re-registration both mint fresh users, so the same person ends up with more than one
+        // account (the same reason order history is matched by phone in OrderController).
+        // The old lookup was `where('email',…)->first()`, which always picked the LOWEST id — so
+        // a password changed on the newer account could never be used to log in: `first()` kept
+        // returning the older row and Hash::check failed against a password nobody had changed.
+        // Match the password against every candidate instead, and let the credentials themselves
+        // choose the account. This is not a weaker check — the correct password for that specific
+        // account is still required.
+        $candidates = User::where('email', $request->email)->orderBy('id')->limit(10)->get();
+        $matched = $candidates->first(fn ($u) => Hash::check($request->password, $u->password));
+        $user = ($matched && $matched->is_active) ? $matched : null;
 
-        if (!$user || !Hash::check($request->password, $user->password) || !$this->applicationIsValid) {
-            $exists = User::where('email', $request->email)->first();
+        if (!$user || !$this->applicationIsValid) {
             $reason = !$this->applicationIsValid ? 'app-invalid'
-                : (!$exists ? 'no-account'
-                : (!$exists->is_active ? 'account-inactive-blocked' : 'wrong-password'));
+                : ($candidates->isEmpty() ? 'no-account'
+                : (($matched && !$matched->is_active) ? 'account-inactive-blocked' : 'wrong-password'));
             \Marvel\Http\Controllers\IntegrationController::logLoginBlocked($request->email, $reason, $request);
             return ["token" => null, "permissions" => []];
         }

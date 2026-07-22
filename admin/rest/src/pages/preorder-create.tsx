@@ -42,6 +42,89 @@ const input =
   'h-10 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-accent';
 const label = 'mb-1 block text-[11px] font-semibold uppercase text-slate-400';
 
+/** Amazon-sourced books are routed to the AmazonBooks shop by the API — mirror that rule here
+ *  only to tell the admin where the book will land, never to decide it. */
+const isAmazonLink = (url?: string) =>
+  !!url && /^https?:\/\/([^/]*\.)?amazon\.[a-z.]+\//i.test(url.trim());
+
+/**
+ * Editable book cover. Its own component (not inline in the item loop) so each row can keep
+ * its own "this URL did not load" state without storing render state on the order item.
+ */
+function CoverField({
+  url,
+  onChange,
+}: {
+  url: string;
+  onChange: (v: string) => void;
+}) {
+  const [broken, setBroken] = useState(false);
+  const trimmed = (url ?? '').trim();
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+      <div className="flex items-start gap-3">
+        <div className="h-16 w-12 shrink-0 overflow-hidden rounded border border-slate-200 bg-white">
+          {trimmed && !broken ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={trimmed}
+              src={trimmed}
+              alt="book cover"
+              className="h-full w-full object-cover"
+              onError={() => setBroken(true)}
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-center text-[9px] leading-tight text-slate-400">
+              {trimmed ? 'লোড হয়নি' : 'কভার নেই'}
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <span className={label}>কভার ছবির লিংক</span>
+          <div className="flex gap-2">
+            <input
+              value={url ?? ''}
+              onChange={(e) => {
+                setBroken(false);
+                onChange(e.target.value);
+              }}
+              className={input}
+              placeholder="https://… (ফেচ করলে নিজে থেকে বসে, বদলাতে পারেন)"
+            />
+            {trimmed && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBroken(false);
+                  onChange('');
+                }}
+                className="h-10 shrink-0 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-red-500 hover:bg-red-50"
+              >
+                সরান
+              </button>
+            )}
+          </div>
+          <p className="mt-1 text-[11px] text-slate-400">
+            {broken ? (
+              <span className="font-semibold text-amber-600">
+                ⚠️ এই লিংক থেকে ছবি দেখা যাচ্ছে না — অন্য লিংক দিন।
+              </span>
+            ) : trimmed ? (
+              <span className="font-semibold text-[#1f7a52]">
+                ✓ প্রোডাক্টের সাথে যোগ হবে (সার্ভারে ডাউনলোড হয়ে)
+              </span>
+            ) : (
+              'ফাঁকা রাখলে বইটি কভার ছাড়াই তৈরি হবে।'
+            )}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface Item {
   key: number;
   product_id?: number;
@@ -53,6 +136,7 @@ interface Item {
   weight_kg: string;
   price: string; // what we sell it at (BDT)
   quantity: number;
+  stock_qty: string; // stock the NEW product is created with (blank ⇒ backend default)
   fetching?: boolean;
   note?: string;
 }
@@ -67,6 +151,7 @@ const blankItem = (key: number): Item => ({
   weight_kg: '',
   price: '',
   quantity: 1,
+  stock_qty: '1',
 });
 
 export default function PreorderCreate() {
@@ -224,6 +309,8 @@ export default function PreorderCreate() {
           title: it.title,
           price: Number(it.price),
           quantity: Number(it.quantity) || 1,
+          stock_qty:
+            it.stock_qty === '' ? undefined : Math.max(0, Number(it.stock_qty) || 0),
           source_url: it.source_url || undefined,
           image_url: it.image_url || undefined,
           author: it.author || undefined,
@@ -470,27 +557,20 @@ export default function PreorderCreate() {
               </button>
             </div>
 
-            {/* Fetched cover — shown so the admin can see it was captured; it's downloaded
-                onto the product server-side when the pre-order is created. */}
-            {it.image_url && (
-              <div className="mt-3 flex items-center gap-3">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={it.image_url}
-                  alt="book cover"
-                  className="h-16 w-12 shrink-0 rounded border border-slate-200 object-cover"
-                />
-                <p className="text-[11px] text-slate-500">
-                  <span className="font-semibold text-[#1f7a52]">✓ কভার এসেছে</span> — প্রোডাক্টের
-                  সাথে যোগ হবে।
-                  <button
-                    onClick={() => patch(it.key, { image_url: '' })}
-                    className="ml-2 font-semibold text-red-500 hover:underline"
-                  >
-                    সরান
-                  </button>
-                </p>
-              </div>
+            {/* Cover. The fetch fills this in, but it stays editable: Amazon often bot-blocks
+                the og:image, and when it does the admin needs to paste a working URL rather
+                than publish a pre-order with no cover. Downloaded onto the product
+                server-side when the pre-order is created. */}
+            <CoverField
+              url={it.image_url}
+              onChange={(v) => patch(it.key, { image_url: v })}
+            />
+
+            {/* Amazon links land in the AmazonBooks shop; anything else in the main shop. */}
+            {isAmazonLink(it.source_url) && (
+              <p className="mt-1.5 text-[11px] text-slate-400">
+                🛒 এই বইটি <span className="font-semibold">AmazonBooks</span> শপে যোগ হবে।
+              </p>
             )}
 
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -554,6 +634,25 @@ export default function PreorderCreate() {
                 />
               </div>
             </div>
+              {/* Stock for the product that gets CREATED — separate from the order quantity
+                  above. This used to be a hardcoded 100 on the backend, so every pre-order
+                  book advertised 100 copies in stock. */}
+              {!it.product_id && (
+                <div>
+                  <span className={label}>স্টক (নতুন বইয়ের)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={it.stock_qty}
+                    onChange={(e) => patch(it.key, { stock_qty: e.target.value })}
+                    className={input}
+                    placeholder="1"
+                  />
+                  <p className="mt-1 text-[10px] leading-tight text-slate-400">
+                    ক্যাটালগে কত কপি দেখাবে
+                  </p>
+                </div>
+              )}
 
             {it.note && <p className="mt-2 text-[11px] text-slate-400">{it.note}</p>}
           </div>

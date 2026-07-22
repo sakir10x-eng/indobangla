@@ -2661,6 +2661,36 @@ class IntegrationController extends CoreController
      * Category-wise book rails for the home page: the top book categories, each with a
      * handful of in-stock books that actually have a cover image.
      */
+    /**
+     * Book categories with their in-stock counts — for the header mega-menu and genre grid.
+     * homeCategories() also returns categories, but it loads a products page for each one; a
+     * navigation menu only needs the names, so this stays a single counted query.
+     */
+    public function bookCategories(Request $request)
+    {
+        $limit = min(max((int) $request->input('limit', 24), 1), 60);
+
+        $cats = \Marvel\Database\Models\Category::query()
+            ->where('type_id', 8)
+            ->withCount(['products' => fn ($q) => $q->where('status', 'publish')
+                ->where('type_id', 8)->where('quantity', '>', 0)])
+            ->orderByDesc('products_count')
+            ->limit($limit)
+            ->get(['id', 'name', 'slug']);
+
+        return [
+            'status'     => 'success',
+            // Categories with nothing in stock are dropped: a menu entry that opens an empty
+            // results page is worse than no entry.
+            'categories' => $cats->filter(fn ($c) => $c->products_count > 0)->map(fn ($c) => [
+                'id'    => $c->id,
+                'name'  => $c->name,
+                'slug'  => $c->slug,
+                'count' => (int) $c->products_count,
+            ])->values(),
+        ];
+    }
+
     public function homeCategories(Request $request)
     {
         $catLimit = min((int) ($request->input('categories', 5)), 8);
@@ -2731,9 +2761,41 @@ class IntegrationController extends CoreController
             $query->where('quantity', '>', 0);
         }
 
+        // "New arrivals" surfaces must be able to drop pre-orders: those books have a stock
+        // number but are not actually on the shelf yet, so listing them as newly arrived
+        // promises something the shop cannot ship today.
+        if ($request->boolean('exclude_preorder')) {
+            $query->where(fn ($q) => $q->whereNull('is_preorder')->orWhere('is_preorder', false));
+        }
+
         if ($cat = $request->input('category')) {
             $query->whereHas('categories', fn ($c) => $c->where('categories.slug', $cat));
         }
+
+        // ---- advanced-search filters (header panel). Each is optional and independent, so a
+        // half-filled form narrows only by what was actually typed.
+        if ($author = trim((string) $request->input('author', ''))) {
+            $query->whereHas('author', fn ($a) => $a->where('name', 'like', '%' . $author . '%'));
+        }
+        if ($publisher = trim((string) $request->input('publisher', ''))) {
+            $query->whereHas('manufacturer', fn ($m) => $m->where('name', 'like', '%' . $publisher . '%'));
+        }
+        // Compare against the price the customer actually pays: sale_price when there is one,
+        // otherwise price. Filtering on `price` alone would drop discounted books out of a
+        // budget range they genuinely fall inside.
+        $effectivePrice = 'COALESCE(NULLIF(sale_price, 0), price)';
+        if (($min = $request->input('min_price')) !== null && $min !== '') {
+            $query->whereRaw("$effectivePrice >= ?", [(float) $min]);
+        }
+        if (($max = $request->input('max_price')) !== null && $max !== '') {
+            $query->whereRaw("$effectivePrice <= ?", [(float) $max]);
+        }
+        // On a text search out-of-stock books are included by default (above); this lets the
+        // advanced panel ask for in-stock only anyway.
+        if ($request->boolean('in_stock')) {
+            $query->where('quantity', '>', 0);
+        }
+
         if ($text !== '') {
             // Smart search: whole-phrase match (name / bangla / slug / author / category)
             // PLUS per-word + phonetic (SOUNDEX) matching for typo/spelling tolerance,
@@ -6942,6 +7004,9 @@ class IntegrationController extends CoreController
             'items.*.title'         => 'required_without:items.*.product_id|nullable|string',
             'items.*.price'         => 'required|numeric|min:1',
             'items.*.quantity'      => 'nullable|integer|min:1',
+            // How many copies the new pre-order PRODUCT carries in stock. Distinct from
+            // `quantity`, which is how many copies this customer is ordering.
+            'items.*.stock_qty'     => 'nullable|integer|min:0|max:100000',
             'items.*.source_url'    => 'nullable|string',
             'items.*.image_url'     => 'nullable|string',
             'items.*.author'        => 'nullable|string',
@@ -7097,6 +7162,20 @@ class IntegrationController extends CoreController
     }
 
     /** A book the admin typed in (or pulled off Amazon) becomes a real pre-order product. */
+    private function preorderShopIdFor(?string $sourceUrl): ?int
+    {
+        $url = trim((string) $sourceUrl);
+        if ($url !== '' && preg_match('#^https?://([^/]*\.)?amazon\.[a-z.]+/#i', $url)) {
+            $shop = Shop::where('slug', 'amazonbooks')->first(['id']);
+            if ($shop) {
+                return (int) $shop->id;
+            }
+        }
+        // Falls back to the main shop if that shop was renamed or deleted — a missing shop must
+        // never block a pre-order, and a null shop_id hides the product from the storefront.
+        return $this->mainShopId();
+    }
+
     private function createPreorderProduct(array $item, float $price, array $cfg): Product
     {
         // Same book, same link → same product. Keeps repeat pre-orders from cloning the catalogue.
@@ -7117,11 +7196,17 @@ class IntegrationController extends CoreController
         $product->name = $name;
         $product->slug = $slug;
         $product->type_id = 8;
-        $product->shop_id = $this->mainShopId();
+        // Books sourced from an Amazon link belong to the dedicated AmazonBooks storefront, so
+        // imported titles stay separable from our own stock. Anything else lands in the main shop.
+        $product->shop_id = $this->preorderShopIdFor($item['source_url'] ?? null);
         $product->price = $price;
         $product->min_price = $price;
         $product->max_price = $price;
-        $product->quantity = 100;
+        // Stock comes from the form. It used to be a hardcoded 100, which advertised a hundred
+        // copies of a book the shop had not bought yet.
+        $product->quantity = isset($item['stock_qty']) && $item['stock_qty'] !== ''
+            ? max(0, (int) $item['stock_qty'])
+            : 100;
         $product->status = 'publish';
         $product->product_type = 'simple';
         $product->external_product_url = $item['source_url'] ?? null;
@@ -8483,5 +8568,249 @@ class IntegrationController extends CoreController
         } catch (\Throwable $e) {
             // swallow — logging a blocked attempt must never affect the login response
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Restored 2026-07-22. These ten methods still had live routes but the
+    // methods themselves were lost when an older copy of this controller was
+    // uploaded over the newer one (commit f3307a89), so every one of those
+    // endpoints answered with 'Call to undefined method' — which is why
+    // /admin/analytics never updated, POS drafts would not save, the product
+    // recycle bin could not restore, and invoice links 500'd.
+    // ------------------------------------------------------------------
+
+    /** Admin: storefront analytics summary for the last N days — visitors, funnel, journeys. */
+    public function analyticsSummary(Request $request)
+    {
+        $days  = max(1, min(90, (int) $request->input('days', 7)));
+        $since = now()->subDays($days);
+        $ev    = fn () => DB::table('analytics_events')->where('created_at', '>=', $since);
+
+        $visitors     = $ev()->where('session_id', '!=', 'login')->distinct()->count('session_id');
+        $pageViews    = $ev()->where('event', 'page_view')->count();
+        $productViews = $ev()->where('event', 'page_view')->where('path', 'like', '/products/%')->count();
+        $cartAdds     = $ev()->where('event', 'add_to_cart')->count();
+        $loginBlocked = $ev()->where('event', 'login_blocked')->count();
+
+        $topPages = $ev()->where('event', 'page_view')
+            ->select('path', DB::raw('count(*) as views'), DB::raw('count(distinct session_id) as visitors'))
+            ->groupBy('path')->orderByDesc('views')->limit(15)->get();
+
+        // Recent sessions with their in-order page journey.
+        $recent = $ev()->where('session_id', '!=', 'login')
+            ->select('session_id', DB::raw('max(created_at) as last_at'), DB::raw('min(created_at) as first_at'), DB::raw('count(*) as events'))
+            ->groupBy('session_id')->orderByDesc('last_at')->limit(30)->get();
+
+        $sessions = $recent->map(function ($s) use ($since) {
+            $evs = DB::table('analytics_events')
+                ->where('session_id', $s->session_id)->where('created_at', '>=', $since)
+                ->orderBy('created_at')->limit(60)->get(['event', 'path', 'created_at', 'user_id']);
+            $uid  = optional($evs->firstWhere('user_id', '!=', null))->user_id;
+            $user = $uid ? DB::table('users')->where('id', $uid)->first(['name', 'email', 'mobile_number']) : null;
+            return [
+                'session'    => substr((string) $s->session_id, 0, 8),
+                'user'       => $user ? ($user->name ?: $user->mobile_number ?: $user->email) : null,
+                'events'     => (int) $s->events,
+                'duration_s' => max(0, strtotime((string) $s->last_at) - strtotime((string) $s->first_at)),
+                'started_at' => $s->first_at,
+                'journey'    => $evs->map(fn ($e) => [
+                    'event' => $e->event,
+                    'path'  => $e->path,
+                    'at'    => $e->created_at,
+                ])->values(),
+            ];
+        });
+
+        $blocks = $ev()->where('event', 'login_blocked')
+            ->orderByDesc('created_at')->limit(25)->get(['path', 'meta', 'ip', 'created_at']);
+
+        return [
+            'status'  => 'success',
+            'days'    => $days,
+            // since-when data exists + events in the chosen window, so a new store
+            // understands why 1/7/30 days can read the same.
+            'meta'    => [
+                'first_event_at' => DB::table('analytics_events')->min('created_at'),
+                'from'           => $since->toDateString(),
+                'window_events'  => $ev()->count(),
+            ],
+            'kpis'    => [
+                'visitors'      => $visitors,
+                'page_views'    => $pageViews,
+                'product_views' => $productViews,
+                'cart_adds'     => $cartAdds,
+                'login_blocked' => $loginBlocked,
+            ],
+            'funnel'        => ['page_views' => $pageViews, 'product_views' => $productViews, 'cart_adds' => $cartAdds],
+            'top_pages'     => $topPages,
+            'sessions'      => $sessions,
+            'login_blocked' => $blocks,
+        ];
+    }
+
+    /** Public: record a storefront event. Kept fire-and-forget — it must never break a page. */
+    public function track(Request $request)
+    {
+        $sid   = substr((string) $request->input('sid', ''), 0, 64);
+        $event = substr((string) $request->input('event', ''), 0, 32);
+        $allowed = ['page_view', 'product_view', 'product_click', 'add_to_cart', 'checkout_start', 'order_placed'];
+        if ($sid === '' || !in_array($event, $allowed, true)) {
+            return ['status' => 'ok'];
+        }
+        try {
+            DB::table('analytics_events')->insert([
+                'session_id'  => $sid,
+                'user_id'     => optional(auth('sanctum')->user())->id,
+                'event'       => $event,
+                'path'        => substr((string) $request->input('path', ''), 0, 512) ?: null,
+                'product_id'  => $request->filled('product_id') ? (int) $request->input('product_id') : null,
+                'referrer'    => substr((string) $request->input('referrer', ''), 0, 512) ?: null,
+                'duration_ms' => $request->filled('duration_ms') ? (int) $request->input('duration_ms') : null,
+                'meta'        => $request->filled('meta') ? json_encode($request->input('meta')) : null,
+                'ip'          => substr((string) $request->ip(), 0, 64),
+                'user_agent'  => substr((string) $request->userAgent(), 0, 512),
+                'created_at'  => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // swallow — a tracking hiccup must not surface to the shopper
+        }
+        return ['status' => 'ok'];
+    }
+
+    /** Admin: park the current POS order as a draft (not placed) so it can be resumed later. */
+    public function saveOrderDraft(Request $request)
+    {
+        $label = substr(trim((string) $request->input('label', '')), 0, 191) ?: 'খসড়া অর্ডার';
+        $id = DB::table('order_drafts')->insertGetId([
+            'label'      => $label,
+            'payload'    => json_encode($request->input('payload', [])),
+            'created_by' => optional($request->user())->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        return ['status' => 'success', 'id' => $id, 'label' => $label];
+    }
+
+    /** Admin: the 5 most recent drafts for the create-order header. */
+    public function listOrderDrafts(Request $request)
+    {
+        $drafts = DB::table('order_drafts')->orderByDesc('id')->limit(5)->get(['id', 'label', 'created_at']);
+        return ['status' => 'success', 'drafts' => $drafts];
+    }
+
+    /** Admin: one draft's saved state, to reload it into the POS form. */
+    public function getOrderDraft(Request $request, $id)
+    {
+        $row = DB::table('order_drafts')->where('id', (int) $id)->first();
+        if (!$row) {
+            throw new MarvelException('খসড়াটি পাওয়া যায়নি।');
+        }
+        return ['status' => 'success', 'id' => $row->id, 'label' => $row->label, 'payload' => json_decode($row->payload, true)];
+    }
+
+    /** Admin: drop a draft (e.g. once its order has been placed). */
+    public function deleteOrderDraft(Request $request, $id)
+    {
+        DB::table('order_drafts')->where('id', (int) $id)->delete();
+        return ['status' => 'success'];
+    }
+
+
+    public function forceDeleteProduct(Request $request, $id)
+    {
+        $p = Product::onlyTrashed()->where('type_id', 8)->findOrFail($id);
+        $p->categories()->detach();
+        $p->tags()->detach();
+        $p->forceDelete();
+        return ['success' => true, 'id' => (int) $id];
+    }
+
+    // Recycle bin: restore a soft-deleted product, or purge it for good.
+    public function restoreTrashedProduct(Request $request, $id)
+    {
+        $p = Product::onlyTrashed()->where('type_id', 8)->findOrFail($id);
+        $p->restore();
+        return ['success' => true, 'id' => (int) $id];
+    }
+
+    /** Public: the read-only invoice behind /invoice/{token}. Always viewable — paid or not. */
+    public function invoiceInfo(Request $request)
+    {
+        $token = (string) $request->input('token', '');
+        $order = $token === ''
+            ? null
+            : Order::whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.invoice_token')) = ?", [$token])->first();
+        if (!$order) {
+            throw new MarvelException('Invoice not found.');
+        }
+        $order->loadMissing('products');
+        $ops = (array) ($order->ops_meta ?? []);
+        $paid = $order->payment_status === 'payment-success' || (float) $order->paid_total >= (float) $order->total;
+        // Surface a live pay link only while one is genuinely payable (unpaid + not expired), so
+        // the invoice can carry a "Pay now" button for a due amount without ever reviving a dead
+        // link.
+        $payLink = null;
+        if (!$paid && !empty($ops['pay_token'])) {
+            $expired = !empty($ops['pay_expires_at']) && now()->gt(Carbon::parse($ops['pay_expires_at']));
+            if (!$expired) {
+                $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.bd', '/');
+                $payLink = $base . '/pay/' . $ops['pay_token'];
+            }
+        }
+        $opts = (array) (Settings::getData()->options ?? []);
+        return [
+            'status'  => 'success',
+            'invoice' => [
+                'tracking_number' => $order->tracking_number,
+                'customer_name'   => $order->customer_name,
+                'customer_contact' => $order->customer_contact,
+                'shipping_address' => $order->shipping_address,
+                'placed_at'       => optional($order->created_at)->format('j M Y'),
+                'order_status'    => $order->order_status,
+                'payment_status'  => $order->payment_status,
+                'paid'            => $paid,
+                'subtotal'        => (float) $order->amount,
+                'delivery_fee'    => (float) $order->delivery_fee,
+                'weight_charge'   => (int) ($ops['weight_charge'] ?? 0),
+                'weight_kg'       => (float) ($ops['weight_kg'] ?? 0),
+                'discount'        => (float) $order->discount,
+                'total'           => (float) $order->total,
+                'paid_total'      => (float) $order->paid_total,
+                'due'             => round((float) $order->total - (float) $order->paid_total),
+                'pay_method'      => $ops['pay_method'] ?? null,
+                'pay_link'        => $payLink,
+                'items'           => $order->products->map(fn ($p) => [
+                    'name'         => $p->name,
+                    'manufacturer' => optional($p->manufacturer)->name,
+                    'quantity'     => (int) ($p->pivot->order_quantity ?? 0),
+                    'price'        => (float) ($p->pivot->subtotal ?? $p->pivot->unit_price ?? 0),
+                ]),
+            ],
+            'shop' => [
+                'name' => $opts['siteTitle'] ?? 'IndoBangla',
+            ],
+        ];
+    }
+
+    /**
+     * Admin: mint (once) a stable, non-expiring invoice link the desk can send so the buyer can
+     * view their invoice without opening the order. Unlike the pay token this never rotates, so
+     * a link shared today keeps working.
+     */
+    public function orderInvoiceLink(Request $request)
+    {
+        $order = Order::findOrFail($request->order_id);
+        $ops = (array) ($order->ops_meta ?? []);
+        if (empty($ops['invoice_token'])) {
+            $ops['invoice_token'] = 'inv_' . Str::random(24);
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+        }
+        $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.bd', '/');
+        return [
+            'status'        => 'success',
+            'invoice_token' => $ops['invoice_token'],
+            'invoice_link'  => $base . '/invoice/' . $ops['invoice_token'],
+        ];
     }
 }

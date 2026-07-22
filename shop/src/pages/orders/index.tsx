@@ -1,11 +1,9 @@
-import OrderList, { useSelectedOrder } from '@/components/orders/order-list';
+import IndoMyOrders from '@/components/orders/indo-my-orders';
 import Seo from '@/components/seo/seo';
 import ErrorMessage from '@/components/ui/error-message';
 import { useOrders } from '@/framework/order';
 import Spinner from '@/components/ui/loaders/spinner/spinner';
 import isEmpty from 'lodash/isEmpty';
-import OrderDetails from '@/components/orders/order-details';
-import OrderListMobile from '@/components/orders/order-list-mobile';
 import NotFound from '@/components/ui/not-found';
 import { getLayout as getSiteLayout } from '@/components/layouts/layout';
 import DashboardSidebar from '@/components/dashboard/sidebar';
@@ -30,8 +28,6 @@ export default function OrdersPage() {
     isLoadingMore,
     isFetching,
   } = useOrders();
-  const [selectedOrder] = useSelectedOrder();
-  const isLoadingStatus = !isLoadingMore && !isLoading && isFetching;
 
   const ordersItem: any = orders;
 
@@ -51,28 +47,13 @@ export default function OrdersPage() {
   return (
     <>
       <Seo noindex={true} nofollow={true} />
-      <div className="hidden w-full overflow-hidden lg:flex">
-        <OrderList
-          orders={ordersItem}
-          isLoadingMore={isLoadingMore}
-          loadMore={loadMore}
-          hasMore={hasMore}
-        />
-        {selectedOrder && (
-          <OrderDetails
-            order={
-              ordersItem.find((order: any) => order.id === selectedOrder.id)!
-            }
-            loadingStatus={isLoadingStatus}
-          />
-        )}
-      </div>
-      <OrderListMobile
-        isLoadingMore={isLoadingMore}
-        onLoadMore={loadMore}
-        hasNextPage={hasMore}
+      {/* One responsive list for every screen — the old split of OrderList (desktop) +
+          OrderListMobile + a side OrderDetails panel is replaced by the expandable cards. */}
+      <IndoMyOrders
         orders={ordersItem}
-        loadingStatus={isLoadingStatus}
+        isLoadingMore={isLoadingMore}
+        loadMore={loadMore}
+        hasMore={hasMore}
       />
     </>
   );
