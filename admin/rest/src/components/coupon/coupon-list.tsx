@@ -9,14 +9,18 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { useTranslation } from 'next-i18next';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import TitleWithSort from '@/components/ui/title-with-sort';
 import { Coupon, MappedPaginatorInfo, Attachment } from '@/types';
 import { Routes } from '@/config/routes';
 import LanguageSwitcher from '@/components/ui/lang-action/action';
+import { Switch } from '@headlessui/react';
+import {
+  useApproveCouponMutation,
+  useDisApproveCouponMutation,
+} from '@/data/coupon';
 import { NoDataFound } from '@/components/icons/no-data-found';
 import { useIsRTL } from '@/utils/locals';
-import Badge from '../ui/badge/badge';
 import { getAuthCredentials } from '@/utils/auth-utils';
 import { useRouter } from 'next/router';
 import { PriceCell } from '@/components/ui/price-cell';
@@ -230,15 +234,10 @@ const CouponList = ({
       align: 'center',
       width: 150,
       onHeaderCell: () => onHeaderClick('is_approve'),
-      render: (is_approve: boolean) => (
-        <Badge
-          textKey={is_approve ? 'Approved' : 'Disapprove'}
-          color={
-            is_approve
-              ? 'bg-accent/10 !text-accent'
-              : 'bg-status-failed/10 text-status-failed'
-          }
-        />
+      // Was a read-only badge: turning a coupon off meant editing it, or nothing at all.
+      // The approve/disapprove endpoints already existed — this just wires them up.
+      render: (is_approve: boolean, record: any) => (
+        <CouponToggle id={record?.id} isApproved={Boolean(is_approve)} />
       ),
     },
     {
@@ -298,3 +297,47 @@ const CouponList = ({
 };
 
 export default CouponList;
+
+/** On/off switch for a single coupon. Optimistic so the row does not sit still while the
+ *  request flies; the list refetches on settle, which corrects it if the call failed. */
+function CouponToggle({ id, isApproved }: { id: number; isApproved: boolean }) {
+  const [on, setOn] = useState(isApproved);
+  const { mutate: approve, isLoading: approving } = useApproveCouponMutation();
+  const { mutate: disapprove, isLoading: disapproving } =
+    useDisApproveCouponMutation();
+  const busy = approving || disapproving;
+
+  useEffect(() => setOn(isApproved), [isApproved]);
+
+  const toggle = (next: boolean) => {
+    if (!id || busy) return;
+    setOn(next);
+    const revert = () => setOn(!next);
+    const args = { id: String(id) };
+    if (next) approve(args, { onError: revert });
+    else disapprove(args, { onError: revert });
+  };
+
+  return (
+    <div className="flex items-center justify-center gap-2">
+      <Switch
+        checked={on}
+        onChange={toggle}
+        disabled={busy}
+        className={`${
+          on ? 'bg-accent' : 'bg-gray-300'
+        } relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50`}
+      >
+        <span className="sr-only">কুপন চালু/বন্ধ</span>
+        <span
+          className={`${
+            on ? 'ltr:translate-x-6 rtl:-translate-x-6' : 'ltr:translate-x-1 rtl:-translate-x-1'
+          } inline-block h-4 w-4 transform rounded-full bg-light transition-transform`}
+        />
+      </Switch>
+      <span className={`text-xs font-semibold ${on ? 'text-accent' : 'text-gray-400'}`}>
+        {on ? 'চালু' : 'বন্ধ'}
+      </span>
+    </div>
+  );
+}

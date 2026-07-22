@@ -246,6 +246,9 @@ export default function PreorderCreate() {
 
   // books
   const [items, setItems] = useState<Item[]>([blankItem(1)]);
+  /** Bulk paste: one Amazon link per line, fetched into rows. */
+  const [bulkLinks, setBulkLinks] = useState('');
+  const [bulkBusy, setBulkBusy] = useState('');
 
   // bill
   const [deliveryFee, setDeliveryFee] = useState('');
@@ -421,6 +424,47 @@ export default function PreorderCreate() {
           : msg || 'কাস্টমার তৈরি করা যায়নি',
       );
     }
+  };
+
+  /**
+   * Paste many Amazon links and turn each into its own book row. Fetches ONE link at a time
+   * on purpose: each extraction is a slow LLM call, and firing 20 at once is what blew past
+   * the gateway timeout on the AI-batch page. A link that fails still gets a row with the URL
+   * kept, so the admin can fill it in by hand rather than lose it.
+   */
+  const fetchBulk = async () => {
+    const links = bulkLinks
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .slice(0, 20);
+    if (!links.length) {
+      toast.error('অন্তত একটি লিংক দিন');
+      return;
+    }
+
+    // Drop the empty starter row so the first fetched book does not land under a blank one.
+    const base = items.filter((it) => it.title || it.source_url || it.price);
+    const rows: Item[] = links.map((url, i) => ({
+      ...blankItem(Date.now() + i),
+      source_url: url,
+    }));
+    setItems([...base, ...rows]);
+    setBulkLinks('');
+
+    for (let i = 0; i < rows.length; i++) {
+      setBulkBusy(`${i + 1} / ${rows.length}`);
+      try {
+        await fetchFromLink(rows[i]);
+      } catch {
+        // fetchFromLink reports its own failures; keep going so one bad link cannot
+        // stop the batch.
+      }
+    }
+    setBulkBusy('');
+    // No success count here on purpose: fetchFromLink swallows its own errors, so counting
+    // completed calls would claim every link worked. The rows themselves show what landed.
+    toast.success(`${rows.length} টি সারি তৈরি হয়েছে — নাম ও দাম মিলিয়ে নিন`);
   };
 
   const submit = () => {
@@ -672,6 +716,33 @@ export default function PreorderCreate() {
       {/* ---------------- books ---------------- */}
       <div className="mb-5 rounded-xl border border-slate-100 bg-white p-5 shadow-sm">
         <h3 className="mb-3 text-sm font-bold text-slate-800">২. বই</h3>
+
+        {/* Bulk link paste — one row per link, so a multi-book pre-order does not have to be
+            typed in one book at a time. */}
+        <div className="mb-4 rounded-lg border border-dashed border-slate-300 bg-slate-50/60 p-4">
+          <span className={label}>একসাথে অনেক লিংক (এক লাইনে একটি, সর্বোচ্চ ২০)</span>
+          <textarea
+            rows={3}
+            value={bulkLinks}
+            onChange={(e) => setBulkLinks(e.target.value)}
+            disabled={!!bulkBusy}
+            className="w-full rounded-lg border border-slate-200 p-3 text-sm outline-none focus:border-accent disabled:opacity-60"
+            placeholder={'https://www.amazon.in/dp/…\nhttps://www.amazon.in/dp/…'}
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={fetchBulk}
+              disabled={!!bulkBusy}
+              className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {bulkBusy ? `আনছি… ${bulkBusy}` : '✨ সবগুলো ফেচ করুন'}
+            </button>
+            <span className="text-[11px] text-slate-400">
+              প্রতিটি লিংকের জন্য আলাদা সারি তৈরি হবে; নাম, দাম, ওজন ও কভার নিজে থেকে বসবে।
+            </span>
+          </div>
+        </div>
 
         {items.map((it, idx) => (
           <div key={it.key} className="mb-4 rounded-lg border border-slate-100 bg-slate-50/60 p-4">

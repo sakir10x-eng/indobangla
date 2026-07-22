@@ -54,6 +54,14 @@ const defaultValues = {
 type IProps = {
   initialValues?: Coupon;
 };
+/** react-datepicker throws on an Invalid Date, which is what `new Date(undefined)` gives
+ *  when a coupon has no date yet. Return undefined instead so the picker just stays open. */
+function safeDate(v: any): Date | undefined {
+  if (!v) return undefined;
+  const d = v instanceof Date ? v : new Date(v);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
 export default function CreateOrUpdateCouponForm({ initialValues }: IProps) {
   const router = useRouter();
   const { locale } = useRouter();
@@ -284,10 +292,13 @@ export default function CreateOrUpdateCouponForm({ initialValues }: IProps) {
                 control={control}
                 name="active_from"
                 dateFormat="dd/MM/yyyy"
-                minDate={new Date()}
-                maxDate={new Date(expire_at)}
-                startDate={new Date(active_from)}
-                endDate={new Date(expire_at)}
+                // Only a NEW coupon may not start in the past. On an existing one the start
+                // date already IS in the past, so a minDate of today made every selectable
+                // day invalid and the field looked frozen — you could not edit the dates at all.
+                minDate={initialValues ? undefined : new Date()}
+                maxDate={safeDate(expire_at)}
+                startDate={safeDate(active_from)}
+                endDate={safeDate(expire_at)}
                 label={t('form:coupon-active-from')}
                 className="border border-border-base"
                 disabled={isTranslateCoupon}
@@ -300,9 +311,9 @@ export default function CreateOrUpdateCouponForm({ initialValues }: IProps) {
                 name="expire_at"
                 dateFormat="dd/MM/yyyy"
                 control={control}
-                startDate={new Date(active_from)}
-                endDate={new Date(expire_at)}
-                minDate={new Date(active_from)}
+                startDate={safeDate(active_from)}
+                endDate={safeDate(expire_at)}
+                minDate={safeDate(active_from)}
                 className="border border-border-base"
                 disabled={isTranslateCoupon}
                 error={t(errors.expire_at?.message!)}
