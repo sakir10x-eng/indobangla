@@ -102,7 +102,9 @@ class ProductCreateRequest extends FormRequest
             'variations'                   => ['array'],
             'variation_options'            => ['array'],
             'quantity'                     => ['nullable', 'integer'],
-            'unit'                         => ['required', 'string'],
+            // Not required: the admin form defaults it to "1" and a missing unit must never
+            // block saving a book. See ProductUpdateRequest for the same rule.
+            'unit'                         => ['nullable', 'string'],
             'description'                  => ['nullable', 'string', 'max:10000'],
             'sku'                          => ['nullable', 'string', 'unique:variation_options,sku'],
             'image'                        => ['array'],

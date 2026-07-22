@@ -56,6 +56,10 @@ export const productValidationSchema = (rules: FieldRules = {}) =>
     .notRequired()
     .positive('form:error-sale-price-must-positive')
     .lessThan(yup.ref('price'), 'Sale Price should be less than ${less}'),
+  // Quantity is optional and 0 is valid. It used to be `.positive().required()`, which meant a
+  // sold-out book could not be edited at all: the form refused to save until stock was raised
+  // above zero, so fixing a typo in the title required faking stock. 0 = out of stock, which is
+  // a real and common state for this catalogue.
   quantity: yup.mixed().when('product_type', {
     is: (productType: {
       name: string;
@@ -65,15 +69,19 @@ export const productValidationSchema = (rules: FieldRules = {}) =>
     then: () =>
       yup
         .number()
+        .transform((value, original) =>
+          original === '' || original === null || original === undefined
+            ? 0
+            : value,
+        )
         .typeError('form:error-quantity-must-number')
-        .positive('form:error-quantity-must-positive')
+        .min(0, 'form:error-quantity-must-positive')
         .integer('form:error-quantity-must-integer')
-        .required('form:error-quantity-required'),
+        .nullable()
+        .notRequired(),
   }),
-  unit:
-    rules?.unit === false
-      ? yup.string().nullable()
-      : yup.string().required('form:error-unit-required'),
+  // Unit is never blocking either — the form defaults it to "1".
+  unit: yup.string().nullable().notRequired(),
   type: yup.object().nullable().required('form:error-type-required'),
   status: yup.string().nullable().required('form:error-status-required'),
   variation_options: yup.array().of(
@@ -97,12 +105,20 @@ export const productValidationSchema = (rules: FieldRules = {}) =>
         .notRequired()
         .positive('form:error-sale-price-must-positive')
         .lessThan(yup.ref('price'), 'Sale Price should be less than ${less}'),
+      // Same reasoning as the simple-product quantity above: a sold-out variation must stay
+      // editable.
       quantity: yup
         .number()
+        .transform((value, original) =>
+          original === '' || original === null || original === undefined
+            ? 0
+            : value,
+        )
         .typeError('form:error-quantity-must-number')
-        .positive('form:error-quantity-must-positive')
+        .min(0, 'form:error-quantity-must-positive')
         .integer('form:error-quantity-must-integer')
-        .required('form:error-quantity-required'),
+        .nullable()
+        .notRequired(),
       sku: yup.string().required('form:error-sku-required'),
       is_digital: yup.boolean(),
       digital_file_input: yup.object().when('is_digital', {

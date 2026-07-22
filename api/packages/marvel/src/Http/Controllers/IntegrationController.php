@@ -882,6 +882,14 @@ class IntegrationController extends CoreController
         $amount  = $request->filled('amount_bdt') ? (float) $request->input('amount_bdt')
             : ($request->filled('amount') ? (float) $request->input('amount') : null);
         $purpose = (string) ($request->input('purpose') ?: $request->input('type') ?: 'full');
+        // COD / cash / pending orders carry paid_total = total by Pickbazar convention even
+        // though nothing was collected, which makes a pay-link's due zero and bKash reject it
+        // with "Invalid amount". Mirror the online-gateway stampPayLink path and zero it so the
+        // link can collect the real outstanding amount (settlePayment credits it back on pay).
+        if ((float) $order->paid_total >= (float) $order->total
+            && in_array($order->payment_status, ['payment-cash-on-delivery', 'payment-cash', 'payment-pending'], true)) {
+            $order->paid_total = 0;
+        }
         $due = round((float) $order->total - (float) $order->paid_total);
         if ($amount !== null) {
             if ($amount > $due + 0.5) {
@@ -901,16 +909,31 @@ class IntegrationController extends CoreController
         // pay_amount and force pay_purpose='full' — which silently turned a 50% pre-order
         // advance into a full-price bKash bill, because bkashCreate falls back to
         // $order->total when pay_amount is gone.
+        // bKash service charge: when the desk opts to pass the gateway fee on to the buyer,
+        // add bKash's standard 1.85% to what the link collects and record the split so
+        // /pay/{token} can show an itemised bill (book amount + bKash charge).
+        $payBase = (float) ($ops['pay_amount'] ?? $due);
+        if ($request->boolean('bkash_charge') && $payBase > 0) {
+            $charge = (int) round($payBase * self::BKASH_CHARGE_PCT / 100);
+            $ops['bkash_charge'] = $charge;
+            $ops['bkash_charge_base'] = (int) round($payBase);
+            $ops['pay_amount'] = (int) round($payBase + $charge);
+        } else {
+            unset($ops['bkash_charge'], $ops['bkash_charge_base']);
+        }
+
         $order->ops_meta = $ops;
         $order->saveQuietly();
 
         $base = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');
         return [
-            'status'     => 'success',
-            'token'      => $ops['pay_token'],
-            'pay_link'   => $base . '/pay/' . $ops['pay_token'],
-            'amount_bdt' => $ops['pay_amount'] ?? $due,
-            'purpose'    => $ops['pay_purpose'],
+            'status'       => 'success',
+            'token'        => $ops['pay_token'],
+            'pay_link'     => $base . '/pay/' . $ops['pay_token'],
+            'amount_bdt'   => $ops['pay_amount'] ?? $due,
+            'bkash_charge' => $ops['bkash_charge'] ?? 0,
+            'base_bdt'     => $ops['bkash_charge_base'] ?? ($ops['pay_amount'] ?? $due),
+            'purpose'      => $ops['pay_purpose'],
         ];
     }
 
@@ -1206,14 +1229,29 @@ class IntegrationController extends CoreController
         // the whole order. Switching back to 'advance' now restores the stamped advance.
         $wanted = (string) $request->input('purpose', '');
         $advanceBdt = isset($meta['advance']['advance_bdt']) ? round((float) $meta['advance']['advance_bdt']) : null;
+        // A link created with the desk's "bKash charge" box carries bkash_charge in meta. The
+        // full/advance re-stamp below recomputes pay_amount from the order, so re-apply the
+        // 1.85% on the new base — otherwise picking 100%/advance silently drops the charge.
+        $chargeOn = (int) ($meta['bkash_charge'] ?? 0) > 0;
+        $restamp = function (array $m, float $base) use ($chargeOn) {
+            if ($chargeOn && $base > 0) {
+                $charge = (int) round($base * self::BKASH_CHARGE_PCT / 100);
+                $m['bkash_charge']      = $charge;
+                $m['bkash_charge_base'] = (int) round($base);
+                $m['pay_amount']        = (int) round($base + $charge);
+            } else {
+                $m['pay_amount'] = round($base);
+            }
+            return $m;
+        };
         if ($wanted === 'full') {
             $meta['pay_purpose'] = 'full';
-            $meta['pay_amount'] = round((float) $order->total - (float) $order->paid_total);
+            $meta = $restamp($meta, (float) $order->total - (float) $order->paid_total);
             $order->ops_meta = $meta;
             $order->saveQuietly();
         } elseif ($wanted === 'advance' && $advanceBdt !== null) {
             $meta['pay_purpose'] = 'advance';
-            $meta['pay_amount'] = $advanceBdt;
+            $meta = $restamp($meta, (float) $advanceBdt);
             $order->ops_meta = $meta;
             $order->saveQuietly();
         }
@@ -1735,9 +1773,20 @@ class IntegrationController extends CoreController
             $order->note = $request->note;
         }
         // Extra weight charge for heavy books — persisted so it survives later adjustments.
+        // Computed as rate (৳/kg) × weight (kg); the pieces are kept so the invoice can show the
+        // weight and the desk can re-edit. A bare weight_charge (no kg) is still honoured as a flat
+        // amount for older orders.
         $ops = (array) ($order->ops_meta ?? []);
-        if ($request->filled('weight_charge')) {
+        if ($request->filled('weight_kg') || $request->filled('weight_rate')) {
+            $wKg   = round((float) $request->input('weight_kg', 0), 3);
+            $wRate = round((float) $request->input('weight_rate', 0), 2);
+            $ops['weight_kg']     = $wKg;
+            $ops['weight_rate']   = $wRate;
+            $ops['weight_charge'] = (int) round($wKg * $wRate);
+            $order->ops_meta = $ops;
+        } elseif ($request->filled('weight_charge')) {
             $ops['weight_charge'] = round((float) $request->weight_charge);
+            unset($ops['weight_kg'], $ops['weight_rate']);
             $order->ops_meta = $ops;
         }
         $weightCharge = (float) ($ops['weight_charge'] ?? 0);
@@ -1751,6 +1800,11 @@ class IntegrationController extends CoreController
         if ($request->boolean('mark_paid')) {
             $order->paid_total = $order->total;
         }
+        // #paid — let the desk correct the amount actually received, independent of the total
+        // (e.g. record a partial payment). Clamped to 0…total.
+        if ($request->filled('paid_total')) {
+            $order->paid_total = min((float) $order->total, max(0, round((float) $request->input('paid_total'), 2)));
+        }
         $order->save();
         return [
             'status' => 'success',
@@ -1758,6 +1812,8 @@ class IntegrationController extends CoreController
                 'id' => $order->id, 'total' => $order->total, 'paid_total' => $order->paid_total,
                 'discount' => $order->discount, 'delivery_fee' => $order->delivery_fee, 'note' => $order->note,
                 'weight_charge' => $weightCharge,
+                'weight_kg' => (float) ($ops['weight_kg'] ?? 0),
+                'weight_rate' => (float) ($ops['weight_rate'] ?? 0),
             ],
         ];
     }
@@ -7121,6 +7177,19 @@ class IntegrationController extends CoreController
         $ops['pay_expires_at'] = $expiresAt->toIso8601String();
         $ops['pay_amount'] = round($advance);
         $ops['pay_purpose'] = 'advance';
+
+        // Optional bKash service charge, same rule and same meta keys the order board's
+        // "copy pay link" box uses (orderPayLink), so the pay screen and payConfirm already
+        // know how to read it. Off unless the admin ticks it.
+        if ($request->boolean('bkash_charge') && $advance > 0) {
+            $charge = (int) round($advance * self::BKASH_CHARGE_PCT / 100);
+            $ops['bkash_charge']      = $charge;
+            $ops['bkash_charge_base'] = (int) round($advance);
+            $ops['pay_amount']        = (int) round($advance + $charge);
+        } else {
+            unset($ops['bkash_charge'], $ops['bkash_charge_base']);
+        }
+
         $order->ops_meta = $ops;
         $order->save();
 
@@ -7621,6 +7690,9 @@ class IntegrationController extends CoreController
     /* ------------------------------------------------- live visitors (command centre) */
 
     /** A visitor counts as "here" if they pinged within this many seconds. */
+    /** bKash's service charge. One source of truth — it was a bare 1.85 in three places. */
+    private const BKASH_CHARGE_PCT = 1.85;
+
     private const PRESENCE_WINDOW = 120;
 
     /**

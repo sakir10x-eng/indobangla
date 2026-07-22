@@ -11,7 +11,9 @@ import {
   usePreorderQuoteMutation,
   useCreatePreorderMutation,
 } from '@/data/integrations';
-import { useExtractProductMutation } from '@/data/ai';
+import { useExtractProductMutation, useFetchImageMutation } from '@/data/ai';
+import { useUploadMutation } from '@/data/upload';
+import { useRegisterMutation } from '@/data/user';
 import { userClient } from '@/data/client/user';
 
 const bdt = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-IN');
@@ -59,7 +61,51 @@ function CoverField({
   onChange: (v: string) => void;
 }) {
   const [broken, setBroken] = useState(false);
+  const { mutate: upload, isLoading: uploading } = useUploadMutation();
+  const { mutate: fetchImage, isLoading: fetchingImg } = useFetchImageMutation();
   const trimmed = (url ?? '').trim();
+
+  /** Pull the URL out of whatever shape the attachment/fetch endpoints answer with. */
+  const urlOf = (d: any) =>
+    (Array.isArray(d) ? d[0] : d)?.original ??
+    (Array.isArray(d) ? d[0] : d)?.thumbnail ??
+    (Array.isArray(d) ? d[0] : d)?.image?.original ??
+    null;
+
+  const onPick = (file?: File | null) => {
+    if (!file) return;
+    setBroken(false);
+    upload([file], {
+      onSuccess: (d: any) => {
+        const u = urlOf(d);
+        if (u) {
+          onChange(u);
+          toast.success('কভার আপলোড হয়েছে');
+        } else {
+          toast.error('আপলোড হয়েছে কিন্তু লিংক পাওয়া যায়নি');
+        }
+      },
+      onError: () => toast.error('আপলোড করা যায়নি'),
+    });
+  };
+
+  /** Copy a remote image onto our own storage — fixes hotlink-blocked sources (Amazon). */
+  const storeRemote = () => {
+    if (!trimmed) return;
+    fetchImage(trimmed, {
+      onSuccess: (d: any) => {
+        const u = urlOf(d);
+        if (u) {
+          setBroken(false);
+          onChange(u);
+          toast.success('ছবিটি আমাদের সার্ভারে নেওয়া হয়েছে');
+        } else {
+          toast.error('ছবিটি আনা যায়নি');
+        }
+      },
+      onError: () => toast.error('ছবিটি আনা যায়নি'),
+    });
+  };
 
   return (
     <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
@@ -103,6 +149,34 @@ function CoverField({
                 className="h-10 shrink-0 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-red-500 hover:bg-red-50"
               >
                 সরান
+              </button>
+            )}
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {/* Upload from the device — the answer when the source blocks hotlinking and
+                there is no usable URL to paste at all. */}
+            <label className="cursor-pointer rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-600 hover:border-accent hover:text-accent">
+              {uploading ? 'আপলোড হচ্ছে…' : '⬆ ছবি আপলোড'}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={uploading}
+                onChange={(e) => {
+                  onPick(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+            {trimmed && (
+              <button
+                type="button"
+                onClick={storeRemote}
+                disabled={fetchingImg}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-600 hover:border-accent hover:text-accent disabled:opacity-60"
+              >
+                {fetchingImg ? 'আনছি…' : '⤓ আমাদের সার্ভারে নিন'}
               </button>
             )}
           </div>
@@ -158,6 +232,8 @@ export default function PreorderCreate() {
   const { config } = usePreorderSettingsQuery();
   const { mutateAsync: quote } = usePreorderQuoteMutation();
   const { mutateAsync: extract } = useExtractProductMutation();
+  const { mutateAsync: registerUser, isLoading: creatingCustomer } =
+    useRegisterMutation();
   const { mutate: createPreorder, isLoading: creating } = useCreatePreorderMutation();
 
   // customer
@@ -175,6 +251,9 @@ export default function PreorderCreate() {
   const [deliveryFee, setDeliveryFee] = useState('');
   const [discount, setDiscount] = useState('0');
   const [advanceMode, setAdvanceMode] = useState<'pct' | 'bdt'>('pct');
+  /** Adds bKash's 1.85% service charge on top of the advance, so the fee is not
+   *  eaten out of the book's price. Off by default — the admin opts in. */
+  const [bkashCharge, setBkashCharge] = useState(false);
   const [advancePct, setAdvancePct] = useState('');
   const [advanceBdt, setAdvanceBdt] = useState('');
   const [payHours, setPayHours] = useState('');
@@ -238,10 +317,21 @@ export default function PreorderCreate() {
       const srcPrice = String(p.source_price ?? p.mrp ?? p.price ?? '');
       // item_weight arrives as free text ("500 g", "0.45 kg") — pull out the kilograms.
       const weight = parseWeightKg(p.item_weight);
+      // The extractor is inconsistent about where the cover lands — sometimes image_url,
+      // sometimes a full attachment object, sometimes a bare string. Reading only image_url
+      // silently dropped covers that had in fact been found.
+      const cover =
+        p.image_url ||
+        p.image?.original ||
+        p.image?.thumbnail ||
+        (typeof p.image === 'string' ? p.image : '') ||
+        (Array.isArray(p.images) ? p.images[0] : '') ||
+        it.image_url;
+
       const next: Partial<Item> = {
         title: p.name ?? it.title,
         author: Array.isArray(p.authors) ? p.authors[0] ?? '' : p.authors ?? it.author,
-        image_url: p.image_url ?? it.image_url,
+        image_url: cover,
         source_price: srcPrice,
         weight_kg: weight,
       };
@@ -287,6 +377,52 @@ export default function PreorderCreate() {
     }));
   };
 
+  /**
+   * Create the customer account up front instead of waiting for submit to do it implicitly.
+   * Mirrors what the backend would create anyway: when no email is given it synthesises one
+   * from the phone number, exactly like preorderCreate does, so the same person never ends up
+   * with two accounts depending on which path made them.
+   */
+  const createCustomer = async () => {
+    const phone = contact.trim();
+    if (!phone) {
+      toast.error('আগে ফোন নম্বর দিন');
+      return;
+    }
+    if (!name.trim()) {
+      toast.error('কাস্টমারের নাম দিন');
+      return;
+    }
+    const mail = email.trim() || `po_${phone.replace(/\D/g, '')}@indobangla.tech`;
+    try {
+      const res: any = await registerUser({
+        name: name.trim(),
+        email: mail,
+        // The admin never sees this; the customer signs in by phone OTP.
+        password: Math.random().toString(36).slice(2) + 'Aa1!',
+      } as any);
+      const created = res?.user ?? res;
+      if (created?.id) {
+        setCustomer({
+          value: created.id,
+          label: `${created.name} — ${created.email}`,
+          user: created,
+        });
+        setEmail(created.email ?? mail);
+        toast.success('কাস্টমার তৈরি হয়েছে');
+      } else {
+        toast.error('তৈরি হয়েছে কিনা নিশ্চিত হওয়া যায়নি — উপরে খুঁজে দেখুন।');
+      }
+    } catch (e: any) {
+      const msg = e?.response?.data?.message ?? '';
+      toast.error(
+        /email|already|taken/i.test(msg)
+          ? 'এই ইমেইলে অ্যাকাউন্ট আছে — উপরের বক্সে খুঁজে নিন।'
+          : msg || 'কাস্টমার তৈরি করা যায়নি',
+      );
+    }
+  };
+
   const submit = () => {
     const ready = items.filter((it) => it.title && Number(it.price) > 0);
     if (!ready.length) {
@@ -318,6 +454,7 @@ export default function PreorderCreate() {
         })),
         delivery_fee: Number(deliveryFee) || 0,
         discount: Number(discount) || 0,
+        bkash_charge: bkashCharge,
         ...(advanceMode === 'bdt'
           ? { advance_bdt: Number(advanceBdt) || 0 }
           : { advance_percent: Number(advancePct) || 0 }),
@@ -491,7 +628,8 @@ export default function PreorderCreate() {
         {!customer && (
           <>
             <p className="mt-4 text-xs text-slate-400">
-              নতুন কাস্টমার — নিচের তথ্য দিলে অ্যাকাউন্ট নিজে থেকেই তৈরি হয়ে যাবে।
+              নতুন কাস্টমার — সাবমিট করলেই অ্যাকাউন্ট তৈরি হয়ে যাবে। এখনই তৈরি করতে চাইলে
+              নিচের বাটনটি দিন।
             </p>
             <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
@@ -503,6 +641,14 @@ export default function PreorderCreate() {
                 <input value={email} onChange={(e) => setEmail(e.target.value)} className={input} />
               </div>
             </div>
+            <button
+              type="button"
+              onClick={createCustomer}
+              disabled={creatingCustomer}
+              className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-accent hover:text-accent disabled:opacity-60"
+            >
+              {creatingCustomer ? 'তৈরি হচ্ছে…' : '+ নতুন কাস্টমার তৈরি করুন'}
+            </button>
           </>
         )}
 
@@ -725,6 +871,21 @@ export default function PreorderCreate() {
         </div>
 
         <div className="mt-3">
+          <span className={label}>বিকাশ সার্ভিস চার্জ</span>
+          <select
+            value={bkashCharge ? 'on' : 'off'}
+            onChange={(e) => setBkashCharge(e.target.value === 'on')}
+            className={`${input} cursor-pointer pr-8 md:w-72`}
+          >
+            <option value="off">যোগ করবেন না (আমরা বহন করব)</option>
+            <option value="on">যোগ করুন — অগ্রিমের উপর ১.৮৫%</option>
+          </select>
+          <p className="mt-1 text-[11px] text-slate-400">
+            চালু করলে পেমেন্ট লিংকে চার্জসহ অঙ্ক দেখাবে, আর বিকাশে ওই টাকাই কাটবে।
+          </p>
+        </div>
+
+        <div className="mt-3">
           <span className={label}>পেমেন্ট লিংক কত ঘণ্টা কাজ করবে</span>
           <input
             type="number"
@@ -772,6 +933,20 @@ export default function PreorderCreate() {
             </span>
             <span className="font-semibold text-accent">{bdt(advance)}</span>
           </div>
+          {/* bKash charge — shown as its own line so the customer's pay link and this
+              summary agree on what will actually be collected. */}
+          {bkashCharge && advance > 0 && (
+            <div className="flex justify-between text-slate-500">
+              <span>বিকাশ সার্ভিস চার্জ (১.৮৫%)</span>
+              <span>{bdt(Math.round((advance * 1.85) / 100))}</span>
+            </div>
+          )}
+          {bkashCharge && advance > 0 && (
+            <div className="flex justify-between font-semibold text-slate-700">
+              <span>বিকাশে দিতে হবে</span>
+              <span>{bdt(advance + Math.round((advance * 1.85) / 100))}</span>
+            </div>
+          )}
           <div className="flex justify-between text-slate-400">
             <span>ডেলিভারিতে বাকি</span>
             <span>{bdt(due)}</span>

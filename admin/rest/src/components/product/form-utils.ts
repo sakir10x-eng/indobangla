@@ -113,6 +113,9 @@ export function getProductDefaultValues(
       max_price: 0.0,
       categories: [],
       tags: [],
+      // Books are sold one at a time, so "1" is right for essentially every product here and
+      // the field no longer blocks saving when it is left alone.
+      unit: '1',
       in_stock: true,
       is_taxable: false,
       image: [],
