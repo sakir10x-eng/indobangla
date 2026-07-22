@@ -3037,6 +3037,36 @@ class IntegrationController extends CoreController
      * Category-wise book rails for the home page: the top book categories, each with a
      * handful of in-stock books that actually have a cover image.
      */
+    /**
+     * Book categories with their in-stock counts — for the header mega-menu and genre grid.
+     * homeCategories() also returns categories, but it loads a products page for each one; a
+     * navigation menu only needs the names, so this stays a single counted query.
+     */
+    public function bookCategories(Request $request)
+    {
+        $limit = min(max((int) $request->input('limit', 24), 1), 60);
+
+        $cats = \Marvel\Database\Models\Category::query()
+            ->where('type_id', 8)
+            ->withCount(['products' => fn ($q) => $q->where('status', 'publish')
+                ->where('type_id', 8)->where('quantity', '>', 0)])
+            ->orderByDesc('products_count')
+            ->limit($limit)
+            ->get(['id', 'name', 'slug']);
+
+        return [
+            'status'     => 'success',
+            // Categories with nothing in stock are dropped: a menu entry that opens an empty
+            // results page is worse than no entry.
+            'categories' => $cats->filter(fn ($c) => $c->products_count > 0)->map(fn ($c) => [
+                'id'    => $c->id,
+                'name'  => $c->name,
+                'slug'  => $c->slug,
+                'count' => (int) $c->products_count,
+            ])->values(),
+        ];
+    }
+
     public function homeCategories(Request $request)
     {
         $catLimit = min((int) ($request->input('categories', 5)), 8);
@@ -3107,8 +3137,39 @@ class IntegrationController extends CoreController
             $query->where('quantity', '>', 0);
         }
 
+        // "New arrivals" surfaces must be able to drop pre-orders: those books have a stock
+        // number but are not actually on the shelf yet, so listing them as newly arrived
+        // promises something the shop cannot ship today.
+        if ($request->boolean('exclude_preorder')) {
+            $query->where(fn ($q) => $q->whereNull('is_preorder')->orWhere('is_preorder', false));
+        }
+
         if ($cat = $request->input('category')) {
             $query->whereHas('categories', fn ($c) => $c->where('categories.slug', $cat));
+        }
+
+        // ---- advanced-search filters (header panel). Each is optional and independent, so a
+        // half-filled form narrows only by what was actually typed.
+        if ($author = trim((string) $request->input('author', ''))) {
+            $query->whereHas('author', fn ($a) => $a->where('name', 'like', '%' . $author . '%'));
+        }
+        if ($publisher = trim((string) $request->input('publisher', ''))) {
+            $query->whereHas('manufacturer', fn ($m) => $m->where('name', 'like', '%' . $publisher . '%'));
+        }
+        // Compare against the price the customer actually pays: sale_price when there is one,
+        // otherwise price. Filtering on `price` alone would drop discounted books out of a
+        // budget range they genuinely fall inside.
+        $effectivePrice = 'COALESCE(NULLIF(sale_price, 0), price)';
+        if (($min = $request->input('min_price')) !== null && $min !== '') {
+            $query->whereRaw("$effectivePrice >= ?", [(float) $min]);
+        }
+        if (($max = $request->input('max_price')) !== null && $max !== '') {
+            $query->whereRaw("$effectivePrice <= ?", [(float) $max]);
+        }
+        // On a text search out-of-stock books are included by default (above); this lets the
+        // advanced panel ask for in-stock only anyway.
+        if ($request->boolean('in_stock')) {
+            $query->where('quantity', '>', 0);
         }
         if ($text !== '') {
             // Smart search: whole-phrase match (name / bangla / slug / author / category)
@@ -7323,6 +7384,9 @@ class IntegrationController extends CoreController
             'items.*.title'         => 'required_without:items.*.product_id|nullable|string',
             'items.*.price'         => 'required|numeric|min:1',
             'items.*.quantity'      => 'nullable|integer|min:1',
+            // How many copies the new pre-order PRODUCT carries in stock. Distinct from
+            // `quantity`, which is how many copies this customer is ordering.
+            'items.*.stock_qty'     => 'nullable|integer|min:0|max:100000',
             'items.*.source_url'    => 'nullable|string',
             'items.*.image_url'     => 'nullable|string',
             'items.*.author'        => 'nullable|string',
@@ -7478,6 +7542,20 @@ class IntegrationController extends CoreController
     }
 
     /** A book the admin typed in (or pulled off Amazon) becomes a real pre-order product. */
+    private function preorderShopIdFor(?string $sourceUrl): ?int
+    {
+        $url = trim((string) $sourceUrl);
+        if ($url !== '' && preg_match('#^https?://([^/]*\.)?amazon\.[a-z.]+/#i', $url)) {
+            $shop = Shop::where('slug', 'amazonbooks')->first(['id']);
+            if ($shop) {
+                return (int) $shop->id;
+            }
+        }
+        // Falls back to the main shop if that shop was renamed or deleted — a missing shop must
+        // never block a pre-order, and a null shop_id hides the product from the storefront.
+        return $this->mainShopId();
+    }
+
     private function createPreorderProduct(array $item, float $price, array $cfg): Product
     {
         // Same book, same link → same product. Keeps repeat pre-orders from cloning the catalogue.
@@ -7498,11 +7576,17 @@ class IntegrationController extends CoreController
         $product->name = $name;
         $product->slug = $slug;
         $product->type_id = 8;
-        $product->shop_id = $this->mainShopId();
+        // Books sourced from an Amazon link belong to the dedicated AmazonBooks storefront, so
+        // imported titles stay separable from our own stock. Anything else lands in the main shop.
+        $product->shop_id = $this->preorderShopIdFor($item['source_url'] ?? null);
         $product->price = $price;
         $product->min_price = $price;
         $product->max_price = $price;
-        $product->quantity = 100;
+        // Stock comes from the form. It used to be a hardcoded 100, which advertised a hundred
+        // copies of a book the shop had not bought yet.
+        $product->quantity = isset($item['stock_qty']) && $item['stock_qty'] !== ''
+            ? max(0, (int) $item['stock_qty'])
+            : 100;
         $product->status = 'publish';
         $product->product_type = 'simple';
         $product->external_product_url = $item['source_url'] ?? null;

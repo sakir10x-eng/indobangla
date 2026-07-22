@@ -121,9 +121,18 @@ function initials(name?: string) {
 /* ---------- New arrivals strip (client-side, real catalog) ---------- */
 function ArrivalsShowcase() {
   const { data, isLoading } = useQuery(['profile-new-arrivals'], () =>
-    HttpClient.get<any>('books-listing', { page: 1, limit: 10 }),
+    // exclude_preorder: a pre-order carries a stock number but is not on the shelf yet, so it
+    // does not belong under "নতুন বই এসেছে". The client-side guards below are a second net —
+    // the endpoint is edge-cached, so a book can sell out between the cache fill and this render.
+    HttpClient.get<any>('books-listing', {
+      page: 1,
+      limit: 12,
+      exclude_preorder: 1,
+    }),
   );
-  const books: any[] = ((data as any)?.data ?? []).slice(0, 10);
+  const books: any[] = ((data as any)?.data ?? [])
+    .filter((b: any) => Number(b?.quantity) > 0 && !b?.is_preorder)
+    .slice(0, 10);
 
   return (
     <section className="mb-6 rounded-2xl border border-border-100 bg-light p-5 shadow-sm sm:p-6">

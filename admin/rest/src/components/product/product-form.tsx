@@ -273,9 +273,14 @@ export default function CreateOrUpdateProductForm({
     </span>
   );
 
+  // These images are what the storefront renders under "📖 বইয়ের ভেতরে এক ঝলক" on the book
+  // page (book-details.tsx). The stock label just said "Gallery", so it was not discoverable as
+  // the control for that section.
   const galleryImageInformation = (
     <span>
-      {t('form:gallery-help-text')} <br />
+      বইয়ের ভেতরের পাতার ছবি — বইয়ের পেজে{' '}
+      <span className="font-bold">“📖 বইয়ের ভেতরে এক ঝলক”</span> সেকশনে এগুলোই দেখানো হয়।
+      ছবি না থাকলে সেকশনটি লুকানো থাকে। <br />
       {t('form:size-help-text')} &nbsp;
       <span className="font-bold">{upload_max_filesize} MB </span>
     </span>
@@ -325,7 +330,7 @@ export default function CreateOrUpdateProductForm({
 
           <div className="flex flex-wrap pb-8 my-5 border-b border-dashed border-border-base sm:my-8">
             <Description
-              title={t('form:gallery-title')}
+              title="ভেতরের পাতার ছবি (Gallery)"
               details={galleryImageInformation}
               className="w-full px-0 pb-5 sm:w-4/12 sm:py-8 sm:pe-4 md:w-1/3 md:pe-5"
             />

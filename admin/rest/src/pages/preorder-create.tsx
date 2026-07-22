@@ -53,6 +53,7 @@ interface Item {
   weight_kg: string;
   price: string; // what we sell it at (BDT)
   quantity: number;
+  stock_qty: string; // stock the NEW product is created with (blank ⇒ backend default)
   fetching?: boolean;
   note?: string;
 }
@@ -67,6 +68,7 @@ const blankItem = (key: number): Item => ({
   weight_kg: '',
   price: '',
   quantity: 1,
+  stock_qty: '1',
 });
 
 export default function PreorderCreate() {
@@ -224,6 +226,8 @@ export default function PreorderCreate() {
           title: it.title,
           price: Number(it.price),
           quantity: Number(it.quantity) || 1,
+          stock_qty:
+            it.stock_qty === '' ? undefined : Math.max(0, Number(it.stock_qty) || 0),
           source_url: it.source_url || undefined,
           image_url: it.image_url || undefined,
           author: it.author || undefined,
@@ -470,6 +474,29 @@ export default function PreorderCreate() {
               </button>
             </div>
 
+            {/* Fetched cover — shown so the admin can see it was captured; it's downloaded
+                onto the product server-side when the pre-order is created. */}
+            {it.image_url && (
+              <div className="mt-3 flex items-center gap-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={it.image_url}
+                  alt="book cover"
+                  className="h-16 w-12 shrink-0 rounded border border-slate-200 object-cover"
+                />
+                <p className="text-[11px] text-slate-500">
+                  <span className="font-semibold text-[#1f7a52]">✓ কভার এসেছে</span> — প্রোডাক্টের
+                  সাথে যোগ হবে।
+                  <button
+                    onClick={() => patch(it.key, { image_url: '' })}
+                    className="ml-2 font-semibold text-red-500 hover:underline"
+                  >
+                    সরান
+                  </button>
+                </p>
+              </div>
+            )}
+
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <span className={label}>বইয়ের নাম *</span>
@@ -530,6 +557,25 @@ export default function PreorderCreate() {
                   className={input}
                 />
               </div>
+              {/* Stock for the product that gets CREATED — separate from the order quantity
+                  above. This used to be a hardcoded 100 on the backend, so every pre-order
+                  book advertised 100 copies in stock. */}
+              {!it.product_id && (
+                <div>
+                  <span className={label}>স্টক (নতুন বইয়ের)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={it.stock_qty}
+                    onChange={(e) => patch(it.key, { stock_qty: e.target.value })}
+                    className={input}
+                    placeholder="1"
+                  />
+                  <p className="mt-1 text-[10px] leading-tight text-slate-400">
+                    ক্যাটালগে কত কপি দেখাবে
+                  </p>
+                </div>
+              )}
             </div>
 
             {it.note && <p className="mt-2 text-[11px] text-slate-400">{it.note}</p>}

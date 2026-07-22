@@ -237,6 +237,7 @@ Route::post('replygenie/agent', [IntegrationController::class, 'replygenieAgent'
 Route::get('deal-of-the-day', [IntegrationController::class, 'dealOfTheDay'])->middleware('catalog.cache:600');
 Route::get('popular-books', [IntegrationController::class, 'popularBooks'])->middleware('catalog.cache:600');
 Route::get('home-categories', [IntegrationController::class, 'homeCategories']);
+Route::get('book-categories', [IntegrationController::class, 'bookCategories'])->middleware('catalog.cache:900');
 Route::get('books-listing', [IntegrationController::class, 'booksListing'])->middleware('catalog.cache:300');
 Route::get('related-books', [IntegrationController::class, 'relatedBooks'])->middleware('catalog.cache:900');
 Route::get('image-sizes', [IntegrationController::class, 'imageSizes']);

@@ -14,6 +14,13 @@ export default function IndoBookSearch() {
   const { query } = useRouter();
   const text = (query?.text as string) ?? '';
   const category = (query?.category as string) ?? '';
+  // Extra narrowing sent by the header's advanced-search panel. Every one is optional and is
+  // forwarded verbatim to books-listing, which applies only the ones that arrive.
+  const author = (query?.author as string) ?? '';
+  const publisher = (query?.publisher as string) ?? '';
+  const minPrice = (query?.min_price as string) ?? '';
+  const maxPrice = (query?.max_price as string) ?? '';
+  const inStock = (query?.in_stock as string) ?? '';
 
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(20);
@@ -21,16 +28,32 @@ export default function IndoBookSearch() {
   // reset to page 1 whenever the search terms change
   useEffect(() => {
     setPage(1);
-  }, [text, category]);
+  }, [text, category, author, publisher, minPrice, maxPrice, inStock]);
 
   const { data, isLoading, isFetching } = useQuery(
-    ['indo-book-search', text, category, page, perPage],
+    [
+      'indo-book-search',
+      text,
+      category,
+      author,
+      publisher,
+      minPrice,
+      maxPrice,
+      inStock,
+      page,
+      perPage,
+    ],
     () =>
       HttpClient.get<any>('books-listing', {
         limit: perPage,
         page,
         ...(text && { text }),
         ...(category && { category }),
+        ...(author && { author }),
+        ...(publisher && { publisher }),
+        ...(minPrice && { min_price: minPrice }),
+        ...(maxPrice && { max_price: maxPrice }),
+        ...(inStock && { in_stock: 1 }),
       }),
     { keepPreviousData: true, staleTime: 5 * 60 * 1000 },
   );
