@@ -989,7 +989,11 @@ class IntegrationController extends CoreController
                 'pay_amount'      => $payAmount,
                 'pay_purpose'     => $isAdvance ? 'advance' : 'full',
                 'already_paid'    => (float) $order->paid_total,
-                'due'             => round((float) $order->total - (float) $order->paid_total),
+                // An order marked paid by its payment_status has a due of ZERO even when paid_total
+                // was never raised to match — marking an order paid from the status control sets
+                // payment_status only, and reading `total - paid_total` regardless made the invoice
+                // and the pay screen announce 'paid' while still demanding the full amount.
+                'due'             => $paid ? 0 : max(0, round((float) $order->total - (float) $order->paid_total)),
                 'subtotal'        => (float) $order->amount,
                 'delivery_fee'    => (float) $order->delivery_fee,
                 'discount'        => (float) $order->discount,
@@ -8897,7 +8901,11 @@ class IntegrationController extends CoreController
                 'discount'        => (float) $order->discount,
                 'total'           => (float) $order->total,
                 'paid_total'      => (float) $order->paid_total,
-                'due'             => round((float) $order->total - (float) $order->paid_total),
+                // An order marked paid by its payment_status has a due of ZERO even when paid_total
+                // was never raised to match — marking an order paid from the status control sets
+                // payment_status only, and reading `total - paid_total` regardless made the invoice
+                // and the pay screen announce 'paid' while still demanding the full amount.
+                'due'             => $paid ? 0 : max(0, round((float) $order->total - (float) $order->paid_total)),
                 'pay_method'      => $ops['pay_method'] ?? null,
                 'pay_link'        => $payLink,
                 'items'           => $order->products->map(fn ($p) => [

@@ -202,7 +202,14 @@ export function printInvoice(o: any, coupon?: InvoiceCoupon) {
         ${discount ? `<div class="row">Discount <b>- ${bdt(discount)}</b></div>` : ''}
         <div class="row">Delivery Fee <b>${bdt(delivery)}</b></div>
         ${walletPaid ? `<div class="row">Wallet Points Used <b>- ${bdt(walletPaid)}</b></div>` : ''}
-        ${isPartial
+        ${paid
+          ? // A settled order must never print a payable figure: the pill said PAID while the
+            // grand total still read "Total Payable", and a courier reading the slip would
+            // collect the money a second time.
+            `<div class="row">Total <b>${bdt(payable)}</b></div>
+        <div class="row">Paid <b style="color:var(--green);">- ${bdt(payable)}</b></div>
+        <div class="row grand"><span>Due on Delivery</span><span>${bdt(0)}</span></div>`
+          : isPartial
           ? `<div class="row">Total <b>${bdt(payable)}</b></div>
         <div class="row">Advance Paid <b style="color:var(--green);">- ${bdt(advancePaid)}</b></div>
         <div class="row grand"><span>Due on Delivery</span><span>${bdt(dueNow)}</span></div>`
