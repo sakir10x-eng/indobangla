@@ -179,8 +179,10 @@ export default function ProductSimpleForm({ initialValues, settings }: IProps) {
         />
 
         <Input
-          label={`${t('form:input-label-quantity')}*`}
+          // No asterisk: quantity is optional now, and 0 is a valid value (out of stock).
+          label={t('form:input-label-quantity')}
           type="number"
+          min={0}
           {...register('quantity')}
           error={t(errors.quantity?.message!)}
           variant="outline"
