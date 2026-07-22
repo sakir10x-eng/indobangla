@@ -2230,7 +2230,48 @@ class IntegrationController extends CoreController
         $order->amount = $amount;
         $order->total = max(0, $amount + (float) ($order->sales_tax ?? 0)
             + (float) ($order->delivery_fee ?? 0) - (float) ($order->discount ?? 0));
+
+        // Money received can never exceed what the order now costs. Removing a line used to
+        // leave paid_total at the OLD, higher total — and both payInfo and invoiceInfo read
+        // `paid_total >= total` as "paid", so an order with a real balance owing showed as
+        // settled and the pay screen offered no way to pay it.
+        $order->paid_total = min((float) $order->paid_total, (float) $order->total);
         $order->save();
+
+        // The pay link and the invoice quote a figure stamped into ops_meta at the time the
+        // link was made. Editing the items has to re-stamp it, otherwise the customer keeps
+        // being asked for the pre-edit amount however many times the order is corrected.
+        $ops = (array) ($order->ops_meta ?? []);
+        $due = max(0, round((float) $order->total - (float) $order->paid_total));
+        if (!empty($ops['pay_token'])) {
+            $advanceBdt = isset($ops['advance']['advance_bdt'])
+                ? (float) $ops['advance']['advance_bdt'] : null;
+            // An advance is a negotiated number, so it survives an edit — but it can never
+            // be more than what is actually left to pay.
+            $base = ($advanceBdt !== null && ($ops['pay_purpose'] ?? '') !== 'full')
+                ? min($advanceBdt, $due)
+                : $due;
+
+            $ops['pay_amount'] = (int) round($base);
+            // Re-derive the bKash service charge on the new base; leaving the old one would
+            // collect a charge calculated against an amount that no longer exists.
+            if ((int) ($ops['bkash_charge'] ?? 0) > 0 && $base > 0) {
+                $charge = (int) round($base * self::BKASH_CHARGE_PCT / 100);
+                $ops['bkash_charge']      = $charge;
+                $ops['bkash_charge_base'] = (int) round($base);
+                $ops['pay_amount']        = (int) round($base + $charge);
+            } else {
+                unset($ops['bkash_charge'], $ops['bkash_charge_base']);
+            }
+
+            if (isset($ops['advance']) && is_array($ops['advance'])) {
+                $ops['advance']['advance_bdt'] = (int) round($base);
+                $ops['advance']['due_bdt']     = (int) round((float) $order->total - $base);
+            }
+
+            $order->ops_meta = $ops;
+            $order->save();
+        }
 
         return [
             'status' => 'success',
@@ -2238,6 +2279,10 @@ class IntegrationController extends CoreController
                 'id'     => $order->id,
                 'amount' => $order->amount,
                 'total'  => $order->total,
+                // So the admin sees immediately what the customer will now be asked for.
+                'paid_total' => (float) $order->paid_total,
+                'due'        => $due,
+                'pay_amount' => isset($ops['pay_amount']) ? (int) $ops['pay_amount'] : null,
                 'products' => $order->products->map(fn ($p) => [
                     'id'   => $p->id,
                     'name' => $p->name,
