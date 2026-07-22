@@ -469,7 +469,7 @@ export function useResetPassword() {
   const { actions } = useStateMachine({ actions: { updateFormState } });
 
   return useMutation(client.users.resetPassword, {
-    onSuccess: (data) => {
+    onSuccess: (data: any) => {
       if (data?.success) {
         toast.success('Successfully Reset Password!');
         actions.updateFormState({
@@ -478,6 +478,16 @@ export function useResetPassword() {
         openModal('LOGIN_VIEW');
         return;
       }
+      // A failed reset used to fall out of here silently: no toast, no modal change, so it
+      // looked like nothing had been clicked. The API answers failures as HTTP 200 with
+      // {success:false}, which is why onError never fires for them.
+      toast.error(
+        data?.message ||
+          'পাসওয়ার্ড বদলানো যায়নি — লিংকটির মেয়াদ শেষ হয়ে থাকতে পারে। আবার চেষ্টা করুন।',
+      );
+    },
+    onError: () => {
+      toast.error('পাসওয়ার্ড বদলানো যায়নি। আবার চেষ্টা করুন।');
     },
     onSettled: () => {
       queryClient.clear();

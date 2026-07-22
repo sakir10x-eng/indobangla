@@ -620,17 +620,17 @@ class UserController extends CoreController
         if (count($user) < 1) {
             return ['message' => NOT_FOUND, 'success' => false];
         }
+        // Always issue a FRESH token. This used to reuse whatever row already existed for the
+        // address and never touched created_at, so a second "forgot password" mailed out the
+        // same old token — and any link from an earlier request stayed valid indefinitely.
+        DB::table('password_resets')->where('email', $request->email)->delete();
+        DB::table('password_resets')->insert([
+            'email' => $request->email,
+            'token' => Str::random(16),
+            'created_at' => Carbon::now(),
+        ]);
         $tokenData = DB::table('password_resets')
             ->where('email', $request->email)->first();
-        if (!$tokenData) {
-            DB::table('password_resets')->insert([
-                'email' => $request->email,
-                'token' => Str::random(16),
-                'created_at' => Carbon::now()
-            ]);
-            $tokenData = DB::table('password_resets')
-                ->where('email', $request->email)->first();
-        }
 
         if ($this->repository->sendResetEmail($request->email, $tokenData->token)) {
             return ['message' => CHECK_INBOX_FOR_PASSWORD_RESET_EMAIL, 'success' => true];
@@ -668,7 +668,13 @@ class UserController extends CoreController
                 return ['message' => 'Invalid or expired reset token', 'success' => false];
             }
 
-            $user = $this->repository->where('email', $request->email)->first();
+            // One address can own several rows here (guest checkout and OTP re-registration
+            // both mint users). `first()` took the lowest id — which may be a deactivated
+            // leftover, and a password set on an account that cannot log in is a password
+            // nobody can use: the reset reports success and the login then says wrong
+            // password. Prefer an account that is actually able to sign in.
+            $candidates = User::where('email', $request->email)->orderBy('id')->get();
+            $user = $candidates->firstWhere('is_active', true) ?: $candidates->first();
             if (!$user) {
                 return ['message' => 'User not found', 'success' => false];
             }
