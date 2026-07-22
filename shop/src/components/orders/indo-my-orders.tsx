@@ -167,7 +167,8 @@ export default function IndoMyOrders({
                     </span>
                   </div>
                   <p className="mt-0.5 text-sm text-body">
-                    {bn(m.items.length)}টি বই · {bnDate(o?.created_at)}
+                    {m.hasItems ? `${bn(m.items.length)}টি বই · ` : ''}
+                    {bnDate(o?.created_at)}
                   </p>
                   <p
                     className={`mt-1 text-sm font-semibold ${

@@ -280,6 +280,10 @@ export function JourneyMap({
  */
 export function orderMoney(order: any) {
   const items: any[] = order?.products ?? [];
+  // `products` is only present when the endpoint eager-loaded it. When it is missing we must
+  // not present item-derived figures at all — a "0 books / ৳0" line is a wrong statement about
+  // the order, where showing nothing is merely incomplete.
+  const hasItems = Array.isArray(order?.products);
   const sub = Number(order?.amount) || 0;
   const ship = Number(order?.delivery_fee) || 0;
   const disc = Number(order?.discount) || 0;
@@ -300,5 +304,5 @@ export function orderMoney(order: any) {
     if (regular > paid) itemSave += (regular - paid) * qty;
   });
 
-  return { items, sub, ship, disc, tax, wallet, total, mrpTotal, itemSave, saved: itemSave + disc };
+  return { items, hasItems, sub, ship, disc, tax, wallet, total, mrpTotal, itemSave, saved: itemSave + disc };
 }

@@ -111,7 +111,12 @@ class OrderController extends CoreController
                 // appear in their profile. Match on the last 10 digits so 0 / 88 / +88 formatting
                 // never hides an order. Falls back to id-only when the profile has no phone.
                 $contactDigits = substr(preg_replace('/\D/', '', (string) optional($user->profile)->contact), -10);
-                $query = $this->repository->with('children')->where('parent_id', '=', null);
+                // Load the books too. The customer's My Orders screen lists each book with its
+                // cover, quantity and line price; with only `children` eager-loaded every order
+                // rendered as "0 books" and its bill lines came out empty. The admin branches
+                // above do not need this — their list never shows line items.
+                $query = $this->repository->with(['children', 'products', 'wallet_point'])
+                    ->where('parent_id', '=', null);
                 if (strlen($contactDigits) === 10) {
                     $query->where(function ($w) use ($user, $contactDigits) {
                         $w->where('customer_id', '=', $user->id)
