@@ -8935,6 +8935,12 @@ class IntegrationController extends CoreController
                     'manufacturer' => optional($p->manufacturer)->name,
                     'quantity'     => (int) ($p->pivot->order_quantity ?? 0),
                     'price'        => (float) ($p->pivot->subtotal ?? $p->pivot->unit_price ?? 0),
+                    // A book with no cover stores JSON null/{} rather than SQL NULL, so read the
+                    // key instead of trusting the column to be empty.
+                    'image'        => is_array($p->image)
+                        ? ($p->image['thumbnail'] ?? $p->image['original'] ?? null)
+                        : null,
+                    'slug'         => $p->slug,
                 ]),
             ],
             'shop' => [

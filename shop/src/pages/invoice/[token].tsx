@@ -129,6 +129,29 @@ export default function InvoicePage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {(inv.items || []).map((it: any, i: number) => (
                     <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'center', background: '#f7faf8', border: '1px solid #d7e9df', borderRadius: 14, padding: '11px 14px' }}>
+                      {/* Cover. Hidden entirely when the book has none, rather than leaving a
+                          grey placeholder box on what is a receipt. */}
+                      {it.image ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={it.image}
+                          alt={it.name}
+                          width={44}
+                          height={58}
+                          style={{
+                            width: 44,
+                            height: 58,
+                            objectFit: 'cover',
+                            borderRadius: 6,
+                            border: '1px solid #d7e9df',
+                            background: '#fff',
+                            flexShrink: 0,
+                          }}
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      ) : null}
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.4 }}>{it.name}</div>
                         {it.manufacturer && (
