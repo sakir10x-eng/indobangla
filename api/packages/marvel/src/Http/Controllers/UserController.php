@@ -683,7 +683,27 @@ class UserController extends CoreController
 
             DB::table('password_resets')->where('email', $user->email)->delete();
 
-            return ['message' => PASSWORD_RESET_SUCCESSFUL, 'success' => true];
+            // Sign them in straight away. Sending someone back to the login form after a reset
+            // is where this goes wrong in practice: the browser refills the form with the
+            // password it had SAVED — the old one — and the login fails with "wrong password"
+            // on a password that was just set correctly. Clicking the emailed link is already
+            // proof of control over the address, which is the same proof a login provides.
+            $token = null;
+            try {
+                $token = $user->createToken('auth_token', ['*'], $this->authTokenExpiry($user))
+                    ->plainTextToken;
+            } catch (\Throwable $e) {
+                // Never fail the reset over this — the password IS changed by now. Without a
+                // token the shop just shows the login form, which is the old behaviour.
+            }
+
+            return [
+                'message'     => PASSWORD_RESET_SUCCESSFUL,
+                'success'     => true,
+                'token'       => $token,
+                'permissions' => $user->getPermissionNames(),
+                'role'        => $user->getRoleNames()->first(),
+            ];
         } catch (\Exception $th) {
             return ['message' => SOMETHING_WENT_WRONG, 'success' => false];
         }

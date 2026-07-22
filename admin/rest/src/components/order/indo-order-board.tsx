@@ -419,7 +419,17 @@ function OrderCard({ o, act, busy, coupon }: any) {
   const p = PRINT[o.print];
 
   return (
-    <div className={`overflow-hidden rounded-2xl border-l-4 bg-white shadow-sm ring-1 ring-slate-200 transition-all hover:shadow-md ${st?.bar || ag.accent}`}>
+    <div
+      className={`overflow-hidden rounded-2xl border-l-4 shadow-sm ring-1 transition-all hover:shadow-md ${
+        st?.bar || ag.accent
+      } ${
+        // Delivered orders wash green so a long list reads at a glance: anything tinted is
+        // finished and needs no attention.
+        o.bucket === 'delivered'
+          ? 'bg-emerald-50/60 ring-emerald-200'
+          : 'bg-white ring-slate-200'
+      }`}
+    >
       {/* header */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-100 px-4 py-2.5">
         <div className={`flex items-baseline gap-1 rounded-lg px-2 py-0.5 font-bold ${ag.pill}`}>
@@ -445,6 +455,17 @@ function OrderCard({ o, act, busy, coupon }: any) {
           </span>
         ) : null}
         <span className="font-mono text-sm font-bold text-slate-800">#{o.id}</span>
+        {/* Pre-orders are handled differently (advance taken, book not in hand yet), so they
+            have to be tellable apart without opening the card. The flag was already computed
+            here and simply never rendered. */}
+        {o.isPreorder ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-bold text-violet-700 ring-1 ring-violet-300"
+            title="Pre-order — advance taken, book arrives later"
+          >
+            📘 PRE-ORDER
+          </span>
+        ) : null}
         <span className="hidden text-[11px] text-slate-400 sm:inline">{o.by}</span>
         {attn ? (
           <button
@@ -970,7 +991,10 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
     // Archived orders (void auto-archives) are out of the working list — mirror the
     // backend, whose 'void'/'archived' tabs are the only ones that look past it.
     const working = mapped.filter((o) => !o.archived_at);
-    const c: any = { all: working.length, attention: working.filter(needsAttention).length, printstuck: working.filter((o) => o.print === 'sent').length };
+    const c: any = { all: working.length, attention: working.filter(needsAttention).length, printstuck: working.filter((o) => o.print === 'sent').length,
+      // Pre-orders cut across the delivery buckets — a pre-order can be pending or
+      // shipped — so they get their own tab rather than a bucket.
+      preorder: working.filter((o) => o.isPreorder).length };
     ['pending', 'ready', 'shipped', 'transit', 'hold', 'delivered', 'partial', 'returned'].forEach((k) => (c[k] = working.filter((o) => o.bucket === k).length));
     c.void = mapped.filter((o) => o.bucket === 'void').length;
     c.archived = mapped.filter((o) => o.archived_at).length;
@@ -989,6 +1013,7 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
       if (!showsArchived && (o.archived_at || o.bucket === 'void')) return false;
       if (tab === 'attention') return needsAttention(o);
       if (tab === 'printstuck') return o.print === 'sent';
+      if (tab === 'preorder') return o.isPreorder;
       if (tab === 'all') return true;
       if (tab === 'archived') return !!o.archived_at || o.bucket === 'void';
       return o.bucket === tab;
@@ -1003,7 +1028,7 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
   }), [shown]);
 
   const tabs: [string, string, number][] = [
-    ['all', 'All', counts.all], ['attention', '⚠️ Attention', counts.attention], ['printstuck', '🖨️ Slip pending', counts.printstuck],
+    ['all', 'All', counts.all], ['attention', '⚠️ Attention', counts.attention], ['printstuck', '🖨️ Slip pending', counts.printstuck], ['preorder', '📘 Pre-order', counts.preorder],
     ['pending', 'Pending', counts.pending], ['ready', 'Ready', counts.ready], ['shipped', 'Shipped', counts.shipped],
     ['transit', 'Transit', counts.transit], ['hold', '⏸️ On-Hold', counts.hold], ['delivered', 'Delivered', counts.delivered],
     ['partial', 'Partial', counts.partial], ['returned', 'Returned', counts.returned],
@@ -1092,7 +1117,7 @@ export default function IndoOrderBoard({ orders = [], loading }: { orders: any[]
       <div className="-mx-1 mb-4 overflow-x-auto px-1">
         <div className="flex w-max gap-1.5 sm:w-auto sm:flex-wrap">
           {tabs.map(([key, label, n]) => (
-            <button key={key} onClick={() => setTab(key)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors ${tab === key ? (key === 'attention' ? 'bg-rose-600 text-white' : key === 'printstuck' ? 'bg-amber-500 text-white' : 'bg-slate-900 text-white') : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
+            <button key={key} onClick={() => setTab(key)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors ${tab === key ? (key === 'attention' ? 'bg-rose-600 text-white' : key === 'printstuck' ? 'bg-amber-500 text-white' : key === 'preorder' ? 'bg-violet-600 text-white' : 'bg-slate-900 text-white') : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
               {label}<span className={`rounded-full px-1.5 text-[11px] font-bold ${tab === key ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-500'}`}>{n}</span>
             </button>
           ))}

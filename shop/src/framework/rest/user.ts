@@ -465,16 +465,31 @@ export function useForgotPassword() {
 
 export function useResetPassword() {
   const queryClient = useQueryClient();
-  const { openModal } = useModalAction();
+  const { openModal, closeModal } = useModalAction();
+  const [, setAuthorized] = useAtom(authorizationAtom);
+  const { setToken } = useToken();
   const { actions } = useStateMachine({ actions: { updateFormState } });
 
   return useMutation(client.users.resetPassword, {
     onSuccess: (data: any) => {
       if (data?.success) {
-        toast.success('Successfully Reset Password!');
         actions.updateFormState({
           ...initialState,
         });
+        // Sign in with the session the reset just issued instead of sending them back to
+        // the login form — that form gets refilled by the browser with the OLD saved
+        // password, which is exactly how a correct reset ends in "wrong password".
+        if (data?.token) {
+          setToken(data.token);
+          setAuthCredentials(data.token, data.permissions);
+          setAuthorized(true);
+          toast.success('পাসওয়ার্ড বদলানো হয়েছে — আপনি লগইন হয়ে গেছেন।');
+          closeModal();
+          return;
+        }
+        // No token came back (older API, or the token could not be issued) — fall back to
+        // the login form rather than leaving them on a dead screen.
+        toast.success('Successfully Reset Password!');
         openModal('LOGIN_VIEW');
         return;
       }
