@@ -2613,6 +2613,114 @@ class IntegrationController extends CoreController
      * A plain GET because bKash drives the browser here; it carries no auth, so the paymentID
      * is the only credential and every claim is re-checked against bKash itself.
      */
+    /**
+     * Safety net for bKash tokenized checkout. The customer pays on bKash's screen and bKash
+     * redirects their BROWSER back to /bkash-callback — which is where execute + settle happen.
+     * If that redirect is lost (closed tab, dead network, phone switched apps) the money has
+     * left the customer's account and our order still says unpaid.
+     *
+     * This re-asks bKash about every recent unsettled payment and settles the ones that really
+     * completed. It is the same verification the callback uses — statusCode 0000 +
+     * transactionStatus Completed + a trxID — and it credits bKash's own figure, never ours.
+     *
+     * The command file for this has been scheduled every 15 minutes since it was written, but
+     * the method itself was never committed, so the job has only ever thrown
+     * "Method … does not exist" and no lost-redirect payment was ever recovered.
+     *
+     * Conservative by design: it only ever moves an order from unpaid to paid on an explicit
+     * Completed from bKash. Anything else is recorded and left for a human.
+     */
+    public function reconcileBkashPayments(int $days = 2, int $limit = 200): array
+    {
+        $out = ['checked' => 0, 'settled' => 0, 'captured' => 0, 'details' => []];
+
+        if (!$this->bkashConfig()) {
+            return $out; // bKash not configured on this box — nothing to reconcile against.
+        }
+
+        $orders = Order::query()
+            ->where('created_at', '>=', now()->subDays(max(1, $days)))
+            ->where('payment_status', '!=', 'payment-success')
+            // Only orders that actually started a bKash payment carry a payment_id.
+            ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(ops_meta, '$.bkash.payment_id')) IS NOT NULL")
+            ->orderByDesc('id')
+            ->limit(max(1, $limit))
+            ->get();
+
+        foreach ($orders as $order) {
+            $ops = (array) ($order->ops_meta ?? []);
+            $paymentId = (string) ($ops['bkash']['payment_id'] ?? '');
+            if ($paymentId === '') {
+                continue;
+            }
+            // Already executed by the callback — leave it alone. settlePayment is idempotent
+            // too, but re-querying a settled payment is pointless traffic.
+            if (!empty($ops['bkash']['executed'])) {
+                continue;
+            }
+
+            $out['checked']++;
+
+            try {
+                $body = (array) BkashPaymentTokenize::queryPayment($paymentId);
+            } catch (\Throwable $e) {
+                // A network blip must not mark anything either way; the next run retries.
+                $out['details'][] = ['id' => $order->tracking_number, 'action' => 'query-failed', 'trx' => null];
+                continue;
+            }
+
+            $status = (string) ($body['transactionStatus'] ?? '');
+            $ok = ($body['statusCode'] ?? null) === '0000'
+                && $status === 'Completed'
+                && !empty($body['trxID']);
+
+            if (!$ok) {
+                // Not paid (or still pending at bKash). Record what bKash said and move on —
+                // an order is never marked failed here, because a pending payment can still
+                // complete and the next run will catch it.
+                $ops['bkash']['last_status'] = $status ?: 'unknown';
+                $ops['bkash']['last_checked_at'] = now()->toIso8601String();
+                $order->ops_meta = $ops;
+                $order->saveQuietly();
+                $out['details'][] = ['id' => $order->tracking_number, 'action' => 'not-paid:' . ($status ?: 'unknown'), 'trx' => null];
+                continue;
+            }
+
+            // bKash says the money is ours. Mark it executed BEFORE settling so a crash midway
+            // cannot double-credit on the next run.
+            $ops['bkash'] = array_merge($ops['bkash'] ?? [], [
+                'executed'    => true,
+                'last_status' => $status,
+                'trx_id'      => $body['trxID'] ?? null,
+                'executed_at' => now()->toIso8601String(),
+                'recovered_by' => 'reconcile',
+            ]);
+            $order->ops_meta = $ops;
+            $order->saveQuietly();
+
+            $paid = isset($body['amount'])
+                ? (float) $body['amount']
+                : (float) ($ops['bkash']['amount_bdt'] ?? $order->total);
+
+            $this->settlePayment($order, 'bkash', $paid);
+
+            $out['captured']++;
+            $out['settled']++;
+            $out['details'][] = [
+                'id' => $order->tracking_number,
+                'action' => 'recovered — settled ' . round($paid),
+                'trx' => $body['trxID'] ?? null,
+            ];
+
+            \Marvel\Helpers\AdminNotifier::send(
+                "✅ <b>bKash পেমেন্ট উদ্ধার</b> #{$order->tracking_number} — ৳" . round($paid) .
+                " (trx {$body['trxID']}). কাস্টমার টাকা দিয়েছিলেন, কিন্তু ফিরে আসার লিংকটি হারিয়ে গিয়েছিল।"
+            );
+        }
+
+        return $out;
+    }
+
     public function bkashCallback(Request $request)
     {
         $shop = rtrim(config('shop.shop_url') ?? 'https://indobangla.tech', '/');

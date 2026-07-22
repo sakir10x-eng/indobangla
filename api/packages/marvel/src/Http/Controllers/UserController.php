@@ -752,6 +752,10 @@ class UserController extends CoreController
         $token = $request->access_token;
         $this->validateProvider($provider);
 
+        // Declared up front so the catch below can reference it even when the very first call
+        // (userFromToken) is what threw.
+        $user = null;
+
         try {
             $user = Socialite::driver($provider)->userFromToken($token);
             $userExist = User::where('email',  $user->email)->exists();
@@ -799,6 +803,15 @@ class UserController extends CoreController
                 "role" => $userCreated->getRoleNames()->first()
             ];
         } catch (\Exception $e) {
+            // The real reason was thrown away here, so every social-login failure — a bad
+            // token, a Socialite misconfiguration, a database constraint — reached the user as
+            // "invalid credentials" and left nothing to debug from. Record it, then keep the
+            // same generic message outward so nothing internal leaks to the browser.
+            \Marvel\Http\Controllers\IntegrationController::logLoginBlocked(
+                (string) ($user->email ?? $request->input('email', '')),
+                'social:' . $provider . ':' . \Illuminate\Support\Str::limit($e->getMessage(), 160),
+                $request
+            );
             throw new MarvelException(INVALID_CREDENTIALS);
         }
     }
