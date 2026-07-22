@@ -23,6 +23,27 @@ Axios.interceptors.request.use((config) => {
   return config;
 });
 
+/**
+ * Pages that cannot show anything useful without a session. A 401 anywhere else must leave
+ * the reader exactly where they are.
+ */
+const AUTH_ONLY_PREFIXES = [
+  '/orders',
+  '/profile',
+  '/wishlists',
+  '/checkout',
+  '/cards',
+  '/downloads',
+  '/messages',
+  '/refunds',
+  '/reports',
+  '/questions',
+  '/change-password',
+  '/notification',
+  '/reseller',
+  '/resell',
+];
+
 // Change response data/error here
 Axios.interceptors.response.use(
   (response) => response,
@@ -34,10 +55,25 @@ Axios.interceptors.response.use(
         error.response.data.message === 'INDOBANGLA_ERROR.NOT_AUTHORIZED')
     ) {
       Cookies.remove(AUTH_TOKEN_KEY);
-      // Only redirect on the client — Router has no instance during SSR/SSG,
-      // and calling it there crashes the static build.
+      // Clearing the dead session is right. NAVIGATING is not.
+      //
+      // This used to `Router.replace(Routes.home)` for every 401/403 from ANY request —
+      // including background ones a reader never asked for, like the wishlist heart on a
+      // product card or purchase-check on the book page. So once a logged-in reader's token
+      // went stale (admin sessions now expire after 3 days) they were yanked off whatever
+      // page they were reading, and on the home page the replace also reset their scroll
+      // position back to the banner while they were part-way down.
+      //
+      // Only move someone off a page that genuinely cannot render without a session; a
+      // public page just carries on as a logged-out visitor.
       if (typeof window !== 'undefined') {
-        Router.replace(Routes.home);
+        const path = window.location.pathname;
+        const needsAuth = AUTH_ONLY_PREFIXES.some(
+          (p) => path === p || path.startsWith(`${p}/`),
+        );
+        if (needsAuth && path !== Routes.home) {
+          Router.replace(Routes.home);
+        }
       }
     }
     return Promise.reject(error);
