@@ -175,7 +175,13 @@ export default function LoginView() {
 
   function doEmailLogin() {
     let bad = false;
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email.trim())) { setEmailErr(true); bad = true; }
+    // Accept a phone number here too: many accounts were created by OTP or guest checkout
+    // and have no email their owner would remember, but everyone knows their own number.
+    // The API decides which one it is; this only stops obvious typos.
+    const id = email.trim();
+    const isEmail = /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(id);
+    const isPhone = /^(\+?88)?0?1[3-9]\d{8}$/.test(id.replace(/[\s-]/g, ''));
+    if (!isEmail && !isPhone) { setEmailErr(true); bad = true; }
     if (!password) { setPwErr(true); bad = true; }
     if (bad) return;
     if (remember) savePrefs({ ...loadPrefs(), email: email.trim(), method: 'email' });
@@ -239,7 +245,7 @@ export default function LoginView() {
             <Divider label="অথবা" />
             <div className="flex gap-2.5">
               <button style={outBtn} onClick={() => signIn('google')}>Google</button>
-              <button style={outBtn} onClick={() => setStep('email')}>ইমেইল</button>
+              <button style={outBtn} onClick={() => setStep('email')}>পাসওয়ার্ড</button>
             </div>
             {isCheckout && guestCheckout && (
               <div className="mt-4 border-t pt-4 text-center" style={{ borderColor: '#e4e1dc' }}>
@@ -260,7 +266,7 @@ export default function LoginView() {
             <button style={backBtn} onClick={() => setStep('phone')}>← সব অপশন</button>
             <div className="mb-4 text-center">
               <h1 className="font-serif text-[22px] font-bold text-charcoal">আবার স্বাগতম</h1>
-              <p className="mt-1 text-[13px] text-body">ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন</p>
+              <p className="mt-1 text-[13px] text-body">ইমেইল বা মোবাইল নম্বর ও পাসওয়ার্ড দিয়ে লগইন করুন</p>
             </div>
             {known?.email ? (
               <div className="mb-3.5 flex items-center gap-2.5 rounded-xl px-3 py-2.5" style={{ background: '#f3f0ea' }}>
@@ -273,12 +279,12 @@ export default function LoginView() {
               </div>
             ) : (
               <div className="mb-3">
-                <label className="mb-1.5 block text-[12px] font-semibold text-body">ইমেইল</label>
-                <input type="email" autoComplete="username" placeholder="apnar@email.com" value={email}
+                <label className="mb-1.5 block text-[12px] font-semibold text-body">ইমেইল বা মোবাইল</label>
+                <input type="text" inputMode="email" autoComplete="username" placeholder="ইমেইল বা মোবাইল নম্বর" value={email}
                   onChange={(e) => { setEmail(e.target.value); setEmailErr(false); }}
                   onKeyDown={(e) => e.key === 'Enter' && doEmailLogin()}
                   style={{ ...inp, borderColor: emailErr ? RED : '#cfcbc4' }} />
-                {emailErr && <p style={errText}>সঠিক ইমেইল ঠিকানা দিন</p>}
+                {emailErr && <p style={errText}>সঠিক ইমেইল বা মোবাইল নম্বর দিন</p>}
               </div>
             )}
             <div>

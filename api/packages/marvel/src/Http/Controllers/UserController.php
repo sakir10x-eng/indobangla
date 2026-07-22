@@ -259,10 +259,37 @@ class UserController extends CoreController
 
     public function token(Request $request)
     {
+        // The field is still called `email` because that is what both front-ends send, but a
+        // customer may type their phone number into it instead. Many accounts here were made
+        // by OTP or guest checkout and have no email the customer would remember, while the
+        // phone number is the thing they always know.
         $request->validate([
-            'email'    => 'required|email',
+            'email'    => 'required|string',
             'password' => 'required',
         ]);
+
+        $identifier = trim((string) $request->email);
+        $looksLikeEmail = filter_var($identifier, FILTER_VALIDATE_EMAIL) !== false;
+
+        if (!$looksLikeEmail) {
+            // Reuse the same shape-tolerant contact match the OTP flow uses, so 01…, 8801…
+            // and +8801… all find the same person.
+            $profile = $this->findProfileByContact($identifier);
+            $phoneUser = $profile ? User::find($profile->customer_id) : null;
+            if (!$phoneUser) {
+                \Marvel\Http\Controllers\IntegrationController::logLoginBlocked($identifier, 'no-account-by-phone', $request);
+                return ["token" => null, "permissions" => []];
+            }
+            if (!$phoneUser->is_active || !$phoneUser->password
+                || !Hash::check($request->password, $phoneUser->password) || !$this->applicationIsValid) {
+                $reason = !$this->applicationIsValid ? 'app-invalid'
+                    : (!$phoneUser->is_active ? 'account-inactive-blocked'
+                    : (!$phoneUser->password ? 'no-password-set' : 'wrong-password'));
+                \Marvel\Http\Controllers\IntegrationController::logLoginBlocked($identifier, $reason . ':phone', $request);
+                return ["token" => null, "permissions" => []];
+            }
+            return $this->issueLoginToken($phoneUser);
+        }
 
         // One email can legitimately map to SEVERAL rows here: guest checkout and OTP
         // re-registration both mint fresh users, so the same person ends up with more than one
@@ -274,7 +301,11 @@ class UserController extends CoreController
         // choose the account. This is not a weaker check — the correct password for that specific
         // account is still required.
         $candidates = User::where('email', $request->email)->orderBy('id')->limit(10)->get();
-        $matched = $candidates->first(fn ($u) => Hash::check($request->password, $u->password));
+        // `password` is NULL for accounts created by Google/OTP — Hash::check would warn on
+        // null in PHP 8, and such an account simply has no password to match.
+        $matched = $candidates->first(
+            fn ($u) => !empty($u->password) && Hash::check($request->password, $u->password)
+        );
         $user = ($matched && $matched->is_active) ? $matched : null;
 
         if (!$user || !$this->applicationIsValid) {
@@ -284,11 +315,19 @@ class UserController extends CoreController
             \Marvel\Http\Controllers\IntegrationController::logLoginBlocked($request->email, $reason, $request);
             return ["token" => null, "permissions" => []];
         }
-        $email_verified = $user->hasVerifiedEmail();
-
-        // Admin 2FA: a non-customer login must clear an SMS OTP before a token is issued. Gated by
-        // the `adminOtpEnabled` setting (default off) so it can be rolled out — and killed — from
+        // Admin 2FA (inside issueLoginToken): a non-customer login must clear an SMS OTP before
+        // a token is issued, gated by the `adminOtpEnabled` setting so it can be turned off from
         // the DB without a redeploy. Customers logging into the shop are never challenged.
+        return $this->issueLoginToken($user);
+    }
+
+    /**
+     * Issue the session for a verified login. Shared by the email and phone-number branches so
+     * both go through the same admin-OTP gate and return the same shape — a second copy of this
+     * would be a place for the two to drift apart.
+     */
+    private function issueLoginToken($user): array
+    {
         if ($this->adminOtpEnabled() && $this->isAdminUser($user)) {
             return $this->beginAdminOtp($user);
         }
@@ -297,7 +336,7 @@ class UserController extends CoreController
         return [
             "token" => $user->createToken('auth_token', ['*'], $this->authTokenExpiry($user))->plainTextToken,
             "permissions" => $user->getPermissionNames(),
-            "email_verified" => $email_verified,
+            "email_verified" => $user->hasVerifiedEmail(),
             "role" => $user->getRoleNames()->first(),
             "admin_role_id" => $user->admin_role_id,
             "managed_sections" => $this->resolveManagedSections($user),
