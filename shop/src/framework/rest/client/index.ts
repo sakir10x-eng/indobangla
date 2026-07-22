@@ -414,6 +414,17 @@ class Client {
       HttpClient.post<AuthResponse>(API_ENDPOINTS.USERS_LOGIN, input),
     socialLogin: (input: SocialLoginInputType) =>
       HttpClient.post<AuthResponse>(API_ENDPOINTS.SOCIAL_LOGIN, input),
+    // A super-admin account signing in on the STOREFRONT hits the same admin-OTP gate the
+    // admin panel does — /token answers {otp_required, ticket, choices} with no token. The shop
+    // had no way to continue from there, so a correct password was reported as wrong.
+    adminOtpRequest: (input: {
+      ticket: string;
+      phone?: string;
+      index?: number;
+      channel?: 'sms' | 'email';
+    }) => HttpClient.post<any>('/admin-login-otp/request', input),
+    adminOtpVerify: (input: { ticket: string; code: string }) =>
+      HttpClient.post<any>('/admin-login-otp/verify', input),
     sendOtpCode: (input: SendOtpCodeInputType) =>
       HttpClient.post<OTPResponse>(API_ENDPOINTS.SEND_OTP_CODE, input),
     verifyOtpCode: (input: VerifyOtpInputType) =>

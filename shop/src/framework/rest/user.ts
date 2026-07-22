@@ -170,9 +170,19 @@ export function useLogin() {
   const { setToken } = useToken();
   const queryClient = useQueryClient();
   let [serverError, setServerError] = useState<string | null>(null);
+  // Set when the account needs the admin SMS step; the form swaps to the OTP panel.
+  const [otpChallenge, setOtpChallenge] = useState<any>(null);
 
   const { mutate, isLoading } = useMutation(client.users.login, {
-    onSuccess: (data) => {
+    onSuccess: (data: any) => {
+      // A super-admin signing in here gets an OTP challenge instead of a token. That is not a
+      // failure — reporting it as "wrong credentials" (the old behaviour) told the owner their
+      // correct password was wrong, which is what made this look unfixable.
+      if (data?.otp_required) {
+        setServerError(null);
+        setOtpChallenge(data);
+        return;
+      }
       if (!data.token) {
         setServerError('error-credential-wrong');
         return;
@@ -190,7 +200,34 @@ export function useLogin() {
     },
   });
 
-  return { mutate, isLoading, serverError, setServerError };
+  /** Finish an OTP challenge: send the code, then verify it and open the session. */
+  const otpSend = (opts: { index?: number; phone?: string; channel?: 'sms' | 'email' }) =>
+    client.users.adminOtpRequest({ ticket: otpChallenge?.ticket, ...opts });
+
+  const otpVerify = async (code: string) => {
+    const data: any = await client.users.adminOtpVerify({
+      ticket: otpChallenge?.ticket,
+      code,
+    });
+    if (!data?.token) throw new Error('otp-failed');
+    setToken(data.token);
+    setAuthCredentials(data.token, data.permissions);
+    setAuthorized(true);
+    setOtpChallenge(null);
+    closeModal();
+    return data;
+  };
+
+  return {
+    mutate,
+    isLoading,
+    serverError,
+    setServerError,
+    otpChallenge,
+    setOtpChallenge,
+    otpSend,
+    otpVerify,
+  };
 }
 
 export function useSocialLogin() {

@@ -56,7 +56,21 @@ export default function LoginView() {
   const isCheckout = router.pathname.includes('checkout');
   const guestCheckout = (settings as any)?.guestCheckout;
 
-  const { mutate: emailLogin, isLoading: emailLoading, serverError, setServerError } = useLogin();
+  const {
+    mutate: emailLogin,
+    isLoading: emailLoading,
+    serverError,
+    setServerError,
+    otpChallenge,
+    setOtpChallenge,
+    otpSend,
+    otpVerify,
+  } = useLogin();
+  // Admin-OTP step state (only reached by accounts that carry an admin permission).
+  const [aCode, setACode] = useState('');
+  const [aBusy, setABusy] = useState(false);
+  const [aErr, setAErr] = useState('');
+  const [aSent, setASent] = useState(false);
 
   const [step, setStep] = useState<Step>('phone');
   const [phone, setPhone] = useState(''); // local 11-digit 01XXXXXXXXX
@@ -224,7 +238,7 @@ export default function LoginView() {
         )}
 
         {/* ---------------- STEP: PHONE ---------------- */}
-        {step === 'phone' && (
+        {step === 'phone' && !otpChallenge && (
           <div>
             <div className="mb-4 text-center">
               <h1 className="font-serif text-[22px] font-bold text-charcoal">স্বাগতম</h1>
@@ -261,7 +275,76 @@ export default function LoginView() {
         )}
 
         {/* ---------------- STEP: EMAIL ---------------- */}
-        {step === 'email' && (
+        {/* Admin SMS step. Shown only when /token answered with a challenge, which happens for
+            accounts that carry an admin permission — a normal customer never sees this. */}
+        {otpChallenge && (
+          <div>
+            <button style={backBtn} onClick={() => { setOtpChallenge(null); setACode(''); setAErr(''); setASent(false); }}>
+              ← ফিরে যান
+            </button>
+            <h2 className="text-[19px] font-bold text-charcoal">নিরাপত্তা যাচাই</h2>
+            <p className="mt-1 text-[13px] text-body">
+              এই অ্যাকাউন্টটি অ্যাডমিন, তাই একটি SMS কোড দিয়ে নিশ্চিত করতে হবে।
+            </p>
+
+            {!aSent ? (
+              <>
+                {(otpChallenge.choices ?? []).map((c: any) => (
+                  <button
+                    key={c.index}
+                    style={{ ...dashBtn, marginTop: 10 }}
+                    disabled={aBusy}
+                    onClick={async () => {
+                      setABusy(true); setAErr('');
+                      try { await otpSend({ index: c.index }); setASent(true); }
+                      catch { setAErr('কোড পাঠানো যায়নি। আবার চেষ্টা করুন।'); }
+                      finally { setABusy(false); }
+                    }}
+                  >
+                    {aBusy ? 'পাঠাচ্ছি…' : `${c.label} — কোড পাঠান`}
+                  </button>
+                ))}
+                {(otpChallenge.choices ?? []).length === 0 && (
+                  <p style={{ ...errText, marginTop: 10 }}>
+                    কোনো নম্বর সেট করা নেই — অ্যাডমিন প্যানেল থেকে লগইন করুন।
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <label className="mb-1.5 mt-4 block text-[12px] font-semibold text-body">SMS কোড</label>
+                <input
+                  value={aCode}
+                  onChange={(e) => { setACode(e.target.value); setAErr(''); }}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  placeholder="৬ সংখ্যার কোড"
+                  style={inp}
+                />
+                <button
+                  style={primaryBtn}
+                  disabled={aBusy || !aCode.trim()}
+                  onClick={async () => {
+                    setABusy(true); setAErr('');
+                    try { await otpVerify(aCode.trim()); }
+                    catch { setAErr('কোডটি মেলেনি বা মেয়াদ শেষ। আবার চেষ্টা করুন।'); }
+                    finally { setABusy(false); }
+                  }}
+                >
+                  {aBusy ? 'যাচাই হচ্ছে…' : 'যাচাই করে লগইন'}
+                </button>
+                <button style={{ ...link, marginTop: 10 }} onClick={() => { setASent(false); setACode(''); }}>
+                  অন্য নম্বরে পাঠান
+                </button>
+              </>
+            )}
+            {aErr && <p style={errText}>{aErr}</p>}
+          </div>
+        )}
+
+        {step === 'email' && !otpChallenge && (
           <div>
             <button style={backBtn} onClick={() => setStep('phone')}>← সব অপশন</button>
             <div className="mb-4 text-center">
@@ -326,7 +409,7 @@ export default function LoginView() {
         )}
 
         {/* ---------------- STEP: OTP ---------------- */}
-        {step === 'otp' && (
+        {step === 'otp' && !otpChallenge && (
           <div>
             <button style={backBtn} onClick={() => { setCooldown(0); setStep('phone'); }}>← নম্বর বদলান</button>
             <div className="mb-4 text-center">
