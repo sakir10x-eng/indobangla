@@ -3044,7 +3044,10 @@ class IntegrationController extends CoreController
     public function couponAnalytics(Request $request)
     {
         $coupons = \Marvel\Database\Models\Coupon::query()
-            ->select('id', 'code', 'type', 'amount', 'active_from', 'expire_at', 'created_at')
+            // is_approve drives the on/off switch on /admin/coupons. `active` below is a
+            // DATE window (not expired); a coupon can be inside its window and still be
+            // switched off, so the two are reported separately.
+            ->select('id', 'code', 'type', 'amount', 'active_from', 'expire_at', 'created_at', 'is_approve')
             ->orderByDesc('created_at')
             ->get();
 
@@ -3066,6 +3069,7 @@ class IntegrationController extends CoreController
                 'type'           => $c->type,
                 'amount'         => (float) $c->amount,
                 'active'         => (bool) $active,
+                'is_approve'     => (bool) $c->is_approve,
                 'expire_at'      => $c->expire_at ? (string) $c->expire_at : null,
                 'uses'           => $s ? (int) $s->uses : 0,
                 'sales'          => $s ? (float) $s->sales : 0,

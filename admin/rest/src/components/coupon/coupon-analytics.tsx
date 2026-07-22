@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { useQuery } from 'react-query';
+import { useQuery, useQueryClient } from 'react-query';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { HttpClient } from '@/data/client/http-client';
@@ -8,6 +8,10 @@ import { API_ENDPOINTS } from '@/data/client/api-endpoints';
 import { useModalAction } from '@/components/ui/modal/modal.context';
 import Loader from '@/components/ui/loader/loader';
 import ErrorMessage from '@/components/ui/error-message';
+import {
+  useApproveCouponMutation,
+  useDisApproveCouponMutation,
+} from '@/data/coupon';
 
 dayjs.extend(relativeTime);
 
@@ -18,12 +22,65 @@ dayjs.extend(relativeTime);
  * average book-margin. Keeps admin edit & delete actions.
  */
 
+/**
+ * On/off switch for one coupon, using the approve/disapprove endpoints that already existed.
+ * Optimistic, and it invalidates COUPON_ANALYTICS explicitly — the shared mutations only
+ * invalidate COUPONS, so this list would otherwise keep showing the old state.
+ */
+function ApproveToggle({ id, on: initial }: { id: number; on: boolean }) {
+  const [on, setOn] = useState(initial);
+  const qc = useQueryClient();
+  const { mutate: approve, isLoading: a } = useApproveCouponMutation();
+  const { mutate: disapprove, isLoading: d } = useDisApproveCouponMutation();
+  const busy = a || d;
+
+  const flip = () => {
+    if (busy) return;
+    const next = !on;
+    setOn(next);
+    const done = { 
+      onSuccess: () => qc.invalidateQueries(API_ENDPOINTS.COUPON_ANALYTICS),
+      onError: () => setOn(!next),
+    };
+    if (next) approve({ id: String(id) }, done);
+    else disapprove({ id: String(id) }, done);
+  };
+
+  return (
+    <button
+      onClick={flip}
+      disabled={busy}
+      title={on ? 'কুপনটি বন্ধ করুন' : 'কুপনটি চালু করুন'}
+      aria-label={on ? 'turn coupon off' : 'turn coupon on'}
+      className={`flex h-9 items-center gap-2 rounded-lg border px-2.5 transition disabled:opacity-50 ${
+        on
+          ? 'border-[var(--spine)] bg-[var(--spine-soft)] text-[var(--spine)]'
+          : 'border-[var(--line)] bg-[var(--paper)] text-[var(--ink-soft)]'
+      }`}
+    >
+      <span
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+          on ? 'bg-[var(--spine)]' : 'bg-[#cdc6b8]'
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+            on ? 'translate-x-[1.15rem]' : 'translate-x-[3px]'
+          }`}
+        />
+      </span>
+      <span className="text-[12px] font-bold">{on ? 'চালু' : 'বন্ধ'}</span>
+    </button>
+  );
+}
+
 type Raw = {
   id: number;
   code: string;
   type: string;
   amount: number;
-  active: boolean;
+  active: boolean;          // inside its date window
+  is_approve: boolean;      // switched on by the admin
   expire_at: string | null;
   uses: number;
   sales: number;
@@ -360,6 +417,7 @@ const CouponAnalytics = () => {
 
               {/* actions */}
               <div className="flex gap-2">
+                <ApproveToggle id={r.id} on={r.is_approve} />
                 <button
                   onClick={() => router.push(`/coupons/${r.code}/edit`)}
                   className="grid h-9 w-9 place-items-center rounded-lg border border-[var(--line)] bg-[var(--paper)] text-[var(--ink-soft)] transition hover:border-[var(--gold)] hover:text-[var(--ink)]"
