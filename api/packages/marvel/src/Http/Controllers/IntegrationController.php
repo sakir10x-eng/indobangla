@@ -958,8 +958,7 @@ class IntegrationController extends CoreController
         if (!$alreadyPaid && !empty($ops['pay_expires_at']) && now()->gt(Carbon::parse($ops['pay_expires_at']))) {
             throw new MarvelException('এই পেমেন্ট লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন লিংকের জন্য যোগাযোগ করুন।');
         }
-        $paid = $order->payment_status === 'payment-success'
-            || (float) $order->paid_total >= (float) $order->total;
+        $paid = self::orderIsPaid($order);
         // Only offer what the shop can actually collect money through. The live settings row
         // predates both keys, so the fallbacks — not the seeder — decide what happens today:
         // Nagad off until its credentials land, bank transfer on with the details above.
@@ -1803,6 +1802,10 @@ class IntegrationController extends CoreController
             + $adjustment);
         if ($request->boolean('mark_paid')) {
             $order->paid_total = $order->total;
+            // Set the field that actually means "money received" — every screen reads
+            // payment_status, so without this the desk could mark an order paid and see
+            // no change at all.
+            $order->payment_status = 'payment-success';
         }
         // #paid — let the desk correct the amount actually received, independent of the total
         // (e.g. record a partial payment). Clamped to 0…total.
@@ -6198,7 +6201,9 @@ class IntegrationController extends CoreController
         // paid, mirroring the board: settled gateway, or enough money already taken.
         $unpaid = $this->boardTab($base(), $tab)
             ->whereNotIn('orders.order_status', self::BOARD_CLOSED_STATUSES)
-            ->whereRaw("NOT (orders.payment_status = 'payment-success' OR (orders.paid_total >= orders.total AND orders.total > 0))")
+            // Same reasoning as orderIsPaid(): paid_total >= total is true for every COD
+            // order by construction, which hid them all from the unpaid count.
+            ->where('orders.payment_status', '!=', 'payment-success')
             ->count('orders.id');
 
         $page = $this->boardTab($base(), $tab)
@@ -7744,6 +7749,23 @@ class IntegrationController extends CoreController
 
     /** A visitor counts as "here" if they pinged within this many seconds. */
     /** bKash's service charge. One source of truth — it was a bare 1.85 in three places. */
+    /**
+     * Has money actually been received for this order?
+     *
+     * ONLY payment_status answers that. `paid_total >= total` cannot: storeOrder seeds
+     * paid_total = total (Pickbazar means "total payable" by it), and only stampPayLink /
+     * stampPreorder zero it — neither of which a COD order goes through. So that test was
+     * true for EVERY cod order from the moment it was created, and every COD invoice link
+     * announced PAID for an order where nothing had been collected.
+     *
+     * settlePayment sets payment_status = payment-success the moment enough money lands, and
+     * the admin's "mark paid" now sets it too, so this is the one field that means what it says.
+     */
+    private static function orderIsPaid($order): bool
+    {
+        return $order->payment_status === 'payment-success';
+    }
+
     private const BKASH_CHARGE_PCT = 1.85;
 
     private const PRESENCE_WINDOW = 120;
@@ -8870,7 +8892,7 @@ class IntegrationController extends CoreController
         }
         $order->loadMissing('products');
         $ops = (array) ($order->ops_meta ?? []);
-        $paid = $order->payment_status === 'payment-success' || (float) $order->paid_total >= (float) $order->total;
+        $paid = self::orderIsPaid($order);
         // Surface a live pay link only while one is genuinely payable (unpaid + not expired), so
         // the invoice can carry a "Pay now" button for a due amount without ever reviving a dead
         // link.
