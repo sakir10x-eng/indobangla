@@ -68,11 +68,6 @@ const IconTag = (p: any) => (
     <path d="M20.6 12.6 12.4 20.8a2 2 0 0 1-2.8 0l-6.4-6.4a2 2 0 0 1-.6-1.4V4.6A1.6 1.6 0 0 1 4.2 3h8.4a2 2 0 0 1 1.4.6l6.6 6.6a2 2 0 0 1 0 2.4z" /><circle cx="7.5" cy="7.5" r="1.3" />
   </svg>
 );
-const IconGrid = (p: any) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={ic} {...p}>
-    <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
-  </svg>
-);
 const IconSliders = (p: any) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={ic} {...p}>
     <path d="M4 6h16M7 12h10M10 18h4" />
@@ -419,12 +414,13 @@ function OffersMenu() {
 /* ------------------------------------------------------------------ *
  * Categories mega-menu + genre grid — both fed by real book categories
  * ------------------------------------------------------------------ */
+/**
+ * The one "all categories" menu. The card grid reads better than the three-column list that
+ * used to carry this name, so that older mega-menu was removed rather than kept beside it —
+ * two menus over the same categories only made the reader choose between identical things.
+ */
 function CategoriesMenu({ cats }: { cats: Cat[] }) {
   const { open, setOpen, ref } = useDropdown();
-  // Three balanced columns, ordered by how much stock each category actually has.
-  const cols: Cat[][] = [[], [], []];
-  cats.slice(0, 18).forEach((c, i) => cols[i % 3].push(c));
-
   return (
     <div className="static shrink-0 lg:relative" ref={ref}>
       <button
@@ -442,72 +438,12 @@ function CategoriesMenu({ cats }: { cats: Cat[] }) {
       </button>
 
       {open && cats.length > 0 && (
-        <div className={cn(panelBase, 'lg:left-0 lg:w-[min(94vw,740px)]')}>
-          <div className="grid max-h-[70vh] grid-cols-1 gap-x-6 gap-y-1 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
-            {cols.map((col, i) => (
-              <ul key={i} className="flex flex-col gap-0.5">
-                {col.map((c) => (
-                  <li key={c.id}>
-                    <Link
-                      href={`/books/search?category=${c.slug}`}
-                      onClick={() => setOpen(false)}
-                      className="flex items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-sm text-heading transition hover:bg-accent/10 hover:text-accent"
-                    >
-                      <span className="truncate">{c.name}</span>
-                      <span className="shrink-0 font-mono text-[11.5px] text-gray-400">
-                        {c.count.toLocaleString('en-IN')}
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            ))}
-          </div>
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-3">
-            <div>
-              <b className="text-[14.5px] text-heading">সব বই এক জায়গায়</b>
-              <p className="mt-0.5 text-[13px] text-body">লেখক ও প্রকাশনী ধরে ব্রাউজ করুন</p>
-            </div>
-            <div className="flex gap-2">
-              <Link href="/authors" onClick={() => setOpen(false)} className="rounded-lg border border-border-200 px-3 py-2 text-[13.5px] font-semibold text-heading transition hover:border-accent hover:text-accent">
-                লেখক
-              </Link>
-              <Link href="/manufacturers" onClick={() => setOpen(false)} className="rounded-lg bg-accent px-4 py-2 text-[13.5px] font-bold text-white transition hover:bg-accent-hover">
-                প্রকাশনী
-              </Link>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function GenreMenu({ cats }: { cats: Cat[] }) {
-  const { open, setOpen, ref } = useDropdown();
-  return (
-    <div className="static shrink-0 lg:relative" ref={ref}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          'inline-flex items-center gap-2 whitespace-nowrap rounded-lg px-3 py-2.5 text-[14.5px] font-semibold transition',
-          open ? 'bg-accent/10 text-accent' : 'text-heading hover:bg-accent/10 hover:text-accent',
-        )}
-      >
-        <IconGrid className="h-[17px] w-[17px]" />
-        জঁর ব্রাউজ
-        <IconCaret className={cn('h-2.5 w-2.5 transition-transform', open && 'rotate-180')} />
-      </button>
-
-      {open && cats.length > 0 && (
         <div className={cn(panelBase, 'lg:left-0 lg:w-[min(94vw,600px)]')}>
           <h5 className="mb-3 border-b border-border-100 pb-2.5 text-[13px] font-semibold text-body">
-            ধরন অনুযায়ী বই খুঁজুন
+            বিভাগ অনুযায়ী বই খুঁজুন
           </h5>
           <div className="grid max-h-[60vh] grid-cols-2 gap-2 overflow-y-auto sm:grid-cols-3">
-            {cats.slice(0, 12).map((c) => (
+            {cats.slice(0, 18).map((c) => (
               <Link
                 key={c.id}
                 href={`/books/search?category=${c.slug}`}
@@ -789,7 +725,6 @@ const IndoHeader = () => {
             নতুন স্টক
             <span className="rounded bg-accent px-1.5 py-0.5 font-mono text-[9px] font-extrabold text-white">NEW</span>
           </Link>
-          <GenreMenu cats={cats} />
           <Link
             href="/authors"
             className="inline-flex shrink-0 items-center whitespace-nowrap rounded-lg px-3 py-2.5 text-[14.5px] font-semibold text-heading transition hover:bg-accent/10 hover:text-accent"
