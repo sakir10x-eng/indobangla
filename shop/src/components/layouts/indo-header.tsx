@@ -116,8 +116,10 @@ function useDropdown() {
   return { open, setOpen, ref };
 }
 
+// On mobile the panel spans the nav row (its positioning ancestor) so it can never hang
+// off the side of the screen; from lg it anchors to its own button again.
 const panelBase =
-  'absolute top-full z-50 mt-2 rounded-2xl border border-border-200 bg-white p-5 shadow-2xl';
+  'absolute top-full z-50 mt-2 left-4 right-4 w-auto rounded-2xl border border-border-200 bg-white p-5 shadow-2xl lg:right-auto';
 
 /* ------------------------------------------------------------------ *
  * Search — scope select + live suggestions
@@ -337,7 +339,7 @@ function OffersMenu() {
     c?.type === 'percentage' ? `${bn(c.amount)}% ছাড়` : `৳${bn(c.amount)} ছাড়`;
 
   return (
-    <div className="relative shrink-0" ref={ref}>
+    <div className="static shrink-0 lg:relative" ref={ref}>
       <button
         type="button"
         aria-expanded={open}
@@ -353,7 +355,7 @@ function OffersMenu() {
       </button>
 
       {open && (
-        <div className={cn(panelBase, 'left-0 w-[min(92vw,420px)]')}>
+        <div className={cn(panelBase, 'lg:left-0 lg:w-[min(92vw,420px)]')}>
           <h5 className="mb-3 border-b border-border-100 pb-2.5 text-[13px] font-semibold text-body">
             এখন চলছে এমন অফার
           </h5>
@@ -424,7 +426,7 @@ function CategoriesMenu({ cats }: { cats: Cat[] }) {
   cats.slice(0, 18).forEach((c, i) => cols[i % 3].push(c));
 
   return (
-    <div className="relative shrink-0" ref={ref}>
+    <div className="static shrink-0 lg:relative" ref={ref}>
       <button
         type="button"
         aria-expanded={open}
@@ -440,7 +442,7 @@ function CategoriesMenu({ cats }: { cats: Cat[] }) {
       </button>
 
       {open && cats.length > 0 && (
-        <div className={cn(panelBase, 'left-0 w-[min(94vw,740px)]')}>
+        <div className={cn(panelBase, 'lg:left-0 lg:w-[min(94vw,740px)]')}>
           <div className="grid max-h-[70vh] grid-cols-1 gap-x-6 gap-y-1 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
             {cols.map((col, i) => (
               <ul key={i} className="flex flex-col gap-0.5">
@@ -484,7 +486,7 @@ function CategoriesMenu({ cats }: { cats: Cat[] }) {
 function GenreMenu({ cats }: { cats: Cat[] }) {
   const { open, setOpen, ref } = useDropdown();
   return (
-    <div className="relative shrink-0" ref={ref}>
+    <div className="static shrink-0 lg:relative" ref={ref}>
       <button
         type="button"
         aria-expanded={open}
@@ -500,7 +502,7 @@ function GenreMenu({ cats }: { cats: Cat[] }) {
       </button>
 
       {open && cats.length > 0 && (
-        <div className={cn(panelBase, 'left-0 w-[min(94vw,600px)]')}>
+        <div className={cn(panelBase, 'lg:left-0 lg:w-[min(94vw,600px)]')}>
           <h5 className="mb-3 border-b border-border-100 pb-2.5 text-[13px] font-semibold text-body">
             ধরন অনুযায়ী বই খুঁজুন
           </h5>
@@ -553,7 +555,7 @@ function AdvancedSearch({ cats }: { cats: Cat[] }) {
   const lbl = 'mb-1.5 block text-[12.5px] font-semibold text-body';
 
   return (
-    <div className="relative shrink-0" ref={ref}>
+    <div className="static shrink-0 lg:relative" ref={ref}>
       <button
         type="button"
         aria-expanded={open}
@@ -568,7 +570,7 @@ function AdvancedSearch({ cats }: { cats: Cat[] }) {
       </button>
 
       {open && (
-        <div className={cn(panelBase, 'right-0 w-[min(94vw,620px)]')}>
+        <div className={cn(panelBase, 'lg:left-auto lg:right-0 lg:w-[min(94vw,620px)]')}>
           <h5 className="mb-3 border-b border-border-100 pb-2.5 text-[13px] font-semibold text-body">
             নির্দিষ্ট করে খুঁজুন
           </h5>
@@ -703,7 +705,11 @@ const IndoHeader = () => {
 
           <Logo className="shrink-0" />
 
-          <div className="order-last w-full min-w-0 flex-1 lg:order-none lg:w-auto">
+          {/* basis-full, not w-full: `flex-1` sets flex-basis:0%, and in a flex row the basis
+              beats width — so with w-full the search box did NOT wrap to its own line on
+              mobile, it squeezed in between the logo and the icons and came out unusably
+              narrow. basis-full forces the wrap; from lg it shares the row again. */}
+          <div className="order-last min-w-0 grow basis-full lg:order-none lg:basis-0">
             <SearchBox />
             {/* Popular categories double as the "trending" chips — always real, always clickable. */}
             {cats.length > 0 && (
@@ -768,7 +774,11 @@ const IndoHeader = () => {
       {/* Sticky only from lg up: below that the main bar wraps the search onto its own row, so
           its height is not a fixed number the offset could be pinned to. */}
       <div className="z-40 border-b border-border-200 bg-white shadow-sm lg:sticky lg:top-[92px]">
-        <div className="mx-auto flex h-14 max-w-[1500px] items-center gap-1 overflow-x-auto px-4 sm:px-6 lg:overflow-visible lg:px-10">
+        {/* Wraps on mobile instead of scrolling horizontally. An `overflow-x-auto` strip CLIPS
+            absolutely-positioned children, so every dropdown in this row (categories, offers,
+            genres, advanced search) would open into nothing on small screens and the buttons
+            would look dead — the same trap the previous header carried a warning about. */}
+        <div className="relative mx-auto flex max-w-[1500px] flex-wrap items-center gap-1 px-4 py-2 sm:px-6 lg:h-14 lg:flex-nowrap lg:py-0 lg:px-10">
           <CategoriesMenu cats={cats} />
           <DealsButton />
           <OffersMenu />
