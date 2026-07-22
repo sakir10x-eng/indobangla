@@ -309,6 +309,13 @@ export function IndoOtpRegister() {
             <input
               type={showPw ? 'text' : 'password'}
               autoComplete="new-password"
+              // This is where a password is first SET. With the eye open the field is
+              // type="text", and a mobile keyboard capitalises the first letter and
+              // autocorrects the word — so the password stored is not the one the person
+              // believes they chose, and every later login fails.
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               placeholder="কমপক্ষে ৬ অক্ষর"
               value={password}
               onChange={(e) => { setPassword(e.target.value); setPwErr(false); }}

@@ -280,7 +280,10 @@ export default function LoginView() {
             ) : (
               <div className="mb-3">
                 <label className="mb-1.5 block text-[12px] font-semibold text-body">ইমেইল বা মোবাইল</label>
-                <input type="text" inputMode="email" autoComplete="username" placeholder="ইমেইল বা মোবাইল নম্বর" value={email}
+                {/* autoCapitalize/autoCorrect off explicitly: type="email" used to imply both,
+                    and switching to type="text" (so a phone number can be typed) silently gave
+                    the mobile keyboard permission to capitalise and "correct" what was typed. */}
+                <input type="text" inputMode="email" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="ইমেইল বা মোবাইল নম্বর" value={email}
                   onChange={(e) => { setEmail(e.target.value); setEmailErr(false); }}
                   onKeyDown={(e) => e.key === 'Enter' && doEmailLogin()}
                   style={{ ...inp, borderColor: emailErr ? RED : '#cfcbc4' }} />
@@ -293,7 +296,10 @@ export default function LoginView() {
                 <button style={{ ...link, fontSize: 12 }} onClick={() => openModal('FORGOT_VIEW')}>পাসওয়ার্ড ভুলে গেছেন?</button>
               </div>
               <div className="relative">
-                <input type={showPw ? 'text' : 'password'} autoComplete="current-password" placeholder="••••••••" value={password}
+                {/* The eye toggle makes this type="text", and a mobile keyboard then capitalises
+                    the first letter and autocorrects the word — so a password typed with the
+                    eye open goes in altered, works on desktop and fails on the phone. */}
+                <input type={showPw ? 'text' : 'password'} autoComplete="current-password" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="••••••••" value={password}
                   onChange={(e) => { setPassword(e.target.value); setPwErr(false); }}
                   onKeyDown={(e) => e.key === 'Enter' && doEmailLogin()}
                   style={{ ...inp, paddingRight: 44, borderColor: pwErr ? RED : '#cfcbc4' }} />
