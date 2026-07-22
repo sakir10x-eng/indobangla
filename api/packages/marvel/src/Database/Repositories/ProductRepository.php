@@ -310,7 +310,32 @@ class ProductRepository extends BaseRepository
     public function checkProductForPublish($request, $product)
     {
         $status = '';
-        if ($product->shop['owner']['id'] == $request->user()->id) {
+        // Super admin is checked FIRST, and deliberately so. On this install the owner also
+        // owns the shop, so the vendor branch below claimed them — and that branch forces a
+        // DRAFT product back to DRAFT whatever the form sent. The status radio therefore
+        // looked broken: you could pick "Published", save, and it silently came back a draft.
+        // A super admin is not a vendor waiting on approval; they are the approver, and the
+        // shop's own AI-batch and pre-order tools create the drafts they need to publish.
+        if ($request->user()->hasPermissionTo(Permission::SUPER_ADMIN)) {
+            if ($request->status == ProductStatus::APPROVED) {
+                $status = ProductStatus::PUBLISH;
+                event(new ProductReviewApproved($product));
+            } elseif ($request->status == ProductStatus::REJECTED) {
+                $status = ProductStatus::REJECTED;
+                event(new ProductReviewRejected($product));
+            } elseif ($request->status == ProductStatus::PUBLISH) {
+                $status = ProductStatus::PUBLISH;
+            } elseif ($request->status == ProductStatus::UNPUBLISH) {
+                $status = ProductStatus::UNPUBLISH;
+            } elseif ($request->status == ProductStatus::DRAFT) {
+                $status = ProductStatus::DRAFT;
+            } elseif ($request->status == ProductStatus::UNDER_REVIEW) {
+                $status = ProductStatus::UNDER_REVIEW;
+            } else {
+                // Unknown value: keep what the product already has rather than rejecting it.
+                $status = $product->status;
+            }
+        } elseif ($product->shop['owner']['id'] == $request->user()->id) {
             if ($product->status == ProductStatus::DRAFT || $product->status == ProductStatus::UNDER_REVIEW || $product->status == ProductStatus::REJECTED) {
                 if ($request->status == ProductStatus::DRAFT) {
                     $status = ProductStatus::DRAFT;
@@ -327,20 +352,6 @@ class ProductRepository extends BaseRepository
                 } else {
                     $status = ProductStatus::UNPUBLISH;
                 }
-            }
-        } elseif ($request->user()->hasPermissionTo(Permission::SUPER_ADMIN)) {
-            if ($request->status == ProductStatus::APPROVED) {
-                $status = ProductStatus::PUBLISH;
-                event(new ProductReviewApproved($product));
-            } elseif ($request->status == ProductStatus::REJECTED) {
-                $status = ProductStatus::REJECTED;
-                event(new ProductReviewRejected($product));
-            } elseif ($request->status == ProductStatus::PUBLISH) {
-                return ProductStatus::PUBLISH;
-            } elseif ($request->status == ProductStatus::UNPUBLISH) {
-                $status = ProductStatus::UNPUBLISH;
-            } else {
-                $status = ProductStatus::REJECTED;
             }
         } else {
             $status = ProductStatus::REJECTED;

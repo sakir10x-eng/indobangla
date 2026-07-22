@@ -220,7 +220,17 @@ export default function CreateOrUpdateProductForm({
           },
         ];
       } else {
+        // A draft used to offer ONLY "Draft" here, and the radios were disabled on top of it,
+        // so an admin could never publish a draft at all. That rule comes from Pickbazar's
+        // vendor-approval flow, where a draft belongs to a vendor who has not submitted it
+        // yet — but in this shop the owner's own AI batch and pre-order tools create drafts,
+        // so the owner is exactly the person who has to publish them.
         statusList = [
+          {
+            label: 'form:input-label-published',
+            id: 'published',
+            value: ProductStatus.Publish,
+          },
           {
             label: 'form:input-label-draft',
             id: 'draft',
@@ -495,12 +505,6 @@ export default function CreateOrUpdateProductForm({
                         id={status?.id}
                         value={status?.value}
                         className="mb-2"
-                        disabled={
-                          permission &&
-                          initialValues?.status === ProductStatus?.Draft
-                            ? true
-                            : false
-                        }
                       />
                     ))
                   : ''}
