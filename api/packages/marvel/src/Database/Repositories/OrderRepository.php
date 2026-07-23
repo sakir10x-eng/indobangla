@@ -456,6 +456,12 @@ class OrderRepository extends BaseRepository
         // Hand the gift back, unrounded, so it cancels the gift line in `amount` exactly.
         $request['discount'] += $giftValue;
 
+        // SECURITY: sales_tax arrives straight from the client and was never validated or clamped,
+        // so a negative value ('sales_tax': -4999) dragged the whole total below the goods price —
+        // letting an attacker pay ~1 taka for any order. Never let it credit the bill. (This store
+        // computes no server-side tax today; when it does, recompute the figure here instead.)
+        $request['sales_tax'] = max(0, (float) ($request['sales_tax'] ?? 0));
+
         // The total is computed server-side so the client can't understate the bill.
         $computedTotal = round($request['amount'] + $request['sales_tax'] + $request['delivery_fee'] - $request['discount'], 2);
         $request['total'] = $computedTotal;

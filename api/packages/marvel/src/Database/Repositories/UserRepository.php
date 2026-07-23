@@ -2,6 +2,7 @@
 
 namespace Marvel\Database\Repositories;
 
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -86,21 +87,37 @@ class UserRepository extends BaseRepository
             if (isset($request['address']) && count($request['address'])) {
                 foreach ($request['address'] as $address) {
                     if (isset($address['id'])) {
-                        Address::findOrFail($address['id'])->update($address);
+                        // Scope to the owner: the address id comes straight from the request body,
+                        // so without this a caller could update ANY user's address by its id.
+                        $existing = Address::where('id', $address['id'])
+                            ->where('customer_id', $user->id)
+                            ->first();
+                        if ($existing) {
+                            $existing->update(Arr::except($address, ['id', 'customer_id']));
+                        }
                     } else {
                         $address['customer_id'] = $user->id;
-                        Address::create($address);
+                        Address::create(Arr::except($address, ['id']));
                     }
                 }
             }
 
             if (isset($request['profile'])) {
+                // `contact` is the phone the order-history / order-view "owns-by-phone" check
+                // trusts, so it may only change through the OTP-verified /update-contact flow —
+                // never a plain profile edit. Strip it (and the ids) from the payload.
+                $profileData = Arr::except($request['profile'], ['id', 'customer_id', 'contact']);
                 if (isset($request['profile']['id'])) {
-                    Profile::findOrFail($request['profile']['id'])->update($request['profile']);
+                    // Same ownership scope as addresses above.
+                    $existing = Profile::where('id', $request['profile']['id'])
+                        ->where('customer_id', $user->id)
+                        ->first();
+                    if ($existing) {
+                        $existing->update($profileData);
+                    }
                 } else {
-                    $profile = $request['profile'];
-                    $profile['customer_id'] = $user->id;
-                    Profile::create($profile);
+                    $profileData['customer_id'] = $user->id;
+                    Profile::create($profileData);
                 }
             }
             $user->update($request->only($this->dataArray));

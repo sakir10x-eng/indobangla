@@ -77,15 +77,17 @@ Route::post('/token', [UserController::class, 'token'])->middleware('throttle:20
 Route::post('/admin-login-otp/request', [UserController::class, 'adminOtpRequest'])->middleware('throttle:8,1');
 Route::post('/admin-login-otp/verify', [UserController::class, 'adminOtpVerify'])->middleware('throttle:15,1');
 Route::post('/logout', [UserController::class, 'logout']);
-Route::post('/forget-password', [UserController::class, 'forgetPassword']);
-Route::post('/verify-forget-password-token', [UserController::class, 'verifyForgetPasswordToken']);
-Route::post('/reset-password', [UserController::class, 'resetPassword']);
+Route::post('/forget-password', [UserController::class, 'forgetPassword'])->middleware('throttle:10,1');
+Route::post('/verify-forget-password-token', [UserController::class, 'verifyForgetPasswordToken'])->middleware('throttle:20,1');
+Route::post('/reset-password', [UserController::class, 'resetPassword'])->middleware('throttle:10,1');
 Route::post('/contact-us', [UserController::class, 'contactAdmin']);
-Route::post('/social-login-token', [UserController::class, 'socialLogin']);
-Route::post('/send-otp-code', [UserController::class, 'sendOtpCode']);
-Route::post('/verify-otp-code', [UserController::class, 'verifyOtpCode']);
-Route::post('/otp-login', [UserController::class, 'otpLogin']);
-Route::post('/reset-password-otp', [IntegrationController::class, 'resetPasswordByOtp']);
+Route::post('/social-login-token', [UserController::class, 'socialLogin'])->middleware('throttle:20,1');
+// OTP send/verify/login/reset are the phone-account attack surface: a 4-digit code plus an
+// unthrottled send let an attacker SMS-bomb a number and brute-force their way in. Cap each.
+Route::post('/send-otp-code', [UserController::class, 'sendOtpCode'])->middleware('throttle:5,1');
+Route::post('/verify-otp-code', [UserController::class, 'verifyOtpCode'])->middleware('throttle:15,1');
+Route::post('/otp-login', [UserController::class, 'otpLogin'])->middleware('throttle:10,1');
+Route::post('/reset-password-otp', [IntegrationController::class, 'resetPasswordByOtp'])->middleware('throttle:10,1');
 Route::get('top-authors', [AuthorController::class, 'topAuthor']);
 Route::get('top-manufacturers', [ManufacturerController::class, 'topManufacturer']);
 Route::get('popular-products', [ProductController::class, 'popularProducts']);
@@ -180,16 +182,22 @@ Route::apiResource('manufacturers', ManufacturerController::class, [
 ]);
 Route::post('orders/checkout/verify', [CheckoutController::class, 'verify']);
 Route::apiResource('orders', OrderController::class, [
-    'only' => ['show', 'store'],
+    'only' => ['store'],
 ]);
+// Public single-order view (guest order confirmation reads this after checkout). Throttled to
+// blunt sequential-tracking-number enumeration of guest orders; the controller strips ops_meta
+// (pay tokens / payment ids) from guest / non-owner reads.
+Route::get('orders/{order}', [OrderController::class, 'show'])->middleware('throttle:40,1');
 
 Route::post('/email/verification-notification', [UserController::class, 'sendVerificationEmail'])
     ->middleware(['auth:sanctum', 'throttle:6,1'])
     ->name('verification.send');
 
 Route::post('orders/payment', [OrderController::class, 'submitPayment']);
-// #9 — description generator now uses the admin's OpenRouter/AI-Settings key+model.
-Route::post('generate-descriptions', [AiExtractController::class, 'generateDescription']);
+// #9 — description generator now uses the admin's OpenRouter/AI-Settings key+model. Gated +
+// throttled so a public caller can't drain the store's paid AI key or use it as a free proxy.
+Route::post('generate-descriptions', [AiExtractController::class, 'generateDescription'])
+    ->middleware(['auth:sanctum', 'permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF, 'throttle:30,1']);
 
 // IndoBangla public product search API (for ReplyGenie / FB bots)
 Route::get('product-search-api', [IntegrationController::class, 'productSearch']);
@@ -457,7 +465,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('live-users', [IntegrationController::class, 'liveUsers'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::get('product-reports', [IntegrationController::class, 'productReports'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::put('product-reports/{id}', [IntegrationController::class, 'productReportUpdate'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
-    Route::post('admin-create-customer', [IntegrationController::class, 'adminCreateCustomer']);
+    Route::post('admin-create-customer', [IntegrationController::class, 'adminCreateCustomer'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::post('order-customer-stats', [IntegrationController::class, 'orderCustomerStats'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::get('order-search', [IntegrationController::class, 'orderSearch'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
 
@@ -823,7 +831,16 @@ Route::group(['middleware' => ['permission:' . Permission::SUPER_ADMIN, 'auth:sa
         'only' => ['update', 'destroy'],
     ]);
 });
-Route::apiResource('became-seller', BecameSellerController::class);
-Route::apiResource('custom-page', CustomPageController::class, [
-    'only' => ['store', 'update', 'destroy'],
+// Public reads for the storefront; writes (seller page + commission tiers, CMS pages) require an
+// admin session — they were previously registered outside every middleware group, i.e. fully public.
+Route::apiResource('became-seller', BecameSellerController::class, [
+    'only' => ['index', 'show'],
 ]);
+Route::group(['middleware' => ['permission:' . Permission::SUPER_ADMIN, 'auth:sanctum']], function () {
+    Route::apiResource('became-seller', BecameSellerController::class, [
+        'only' => ['store', 'update', 'destroy'],
+    ]);
+    Route::apiResource('custom-page', CustomPageController::class, [
+        'only' => ['store', 'update', 'destroy'],
+    ]);
+});

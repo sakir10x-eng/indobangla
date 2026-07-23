@@ -227,6 +227,17 @@ export function useCreateOrder() {
   const { t } = useTranslation();
   const { mutate: createOrder, isLoading } = useMutation(client.orders.create, {
     onSuccess: (order: any) => {
+      // The Marvel API returns business errors as HTTP 200 { errors:[{message}] }, so a failed
+      // order-create (stock race, invalid/expired coupon, wallet or preorder-quota error) lands
+      // HERE, not in onError. Without this the button just stopped spinning with no toast and no
+      // navigation — the customer got zero feedback on the highest-value action. Surface it.
+      if (order?.errors?.length) {
+        toast.error(
+          order.errors[0]?.message ||
+            'অর্ডার সম্পন্ন করা যায়নি। একটু পরে আবার চেষ্টা করুন।'
+        );
+        return;
+      }
       const { tracking_number, payment_gateway, payment_intent } = order ?? {};
       // A pre-order is held until its advance is paid, so send the customer straight to
       // the payment link that was minted with the order instead of the order page.

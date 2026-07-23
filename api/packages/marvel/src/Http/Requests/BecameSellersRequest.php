@@ -5,18 +5,21 @@ namespace Marvel\Http\Requests;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Marvel\Enums\Permission;
 
 
 class BecameSellersRequest extends FormRequest
 {
     /**
      * Determine if the user is authorized to make this request.
+     * Only used by store/update (writes) — index/show take a plain Request. These rewrite the
+     * seller page and platform commission tiers, so they must be a super-admin action.
      *
      * @return bool
      */
     public function authorize()
     {
-        return true;
+        return (bool) ($this->user()?->can(Permission::SUPER_ADMIN));
     }
 
     /**
