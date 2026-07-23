@@ -3092,7 +3092,7 @@ class IntegrationController extends CoreController
         $pid = $request->input('product_id');
         $product = Product::with('categories:id')->find($pid);
         if (!$product) {
-            return ['status' => 'success', 'by_author' => [], 'by_category' => [], 'recommended' => []];
+            return ['status' => 'success', 'by_author' => [], 'by_publisher' => [], 'by_category' => [], 'recommended' => []];
         }
         $base = fn () => Product::query()
             ->where('status', 'publish')->where('type_id', 8)
@@ -3111,13 +3111,22 @@ class IntegrationController extends CoreController
                 ->inRandomOrder()->limit(16)->get()
             : collect();
 
+        // Same publisher (manufacturer) — a reader who wants this edition usually wants the
+        // rest of that house's list. Excludes the same-author rows so the two lists don't repeat.
+        $byPublisher = $product->manufacturer_id
+            ? $base()->where('manufacturer_id', $product->manufacturer_id)
+                ->where(fn ($q) => $product->author_id ? $q->where('author_id', '!=', $product->author_id)->orWhereNull('author_id') : $q)
+                ->inRandomOrder()->limit(16)->get()
+            : collect();
+
         $recommended = $base()->orderByDesc('sold_quantity')->limit(16)->get();
 
         return [
-            'status'      => 'success',
-            'by_author'   => $byAuthor->values(),
-            'by_category' => $byCategory->values(),
-            'recommended' => $recommended->values(),
+            'status'       => 'success',
+            'by_author'    => $byAuthor->values(),
+            'by_publisher' => $byPublisher->values(),
+            'by_category'  => $byCategory->values(),
+            'recommended'  => $recommended->values(),
         ];
     }
 
@@ -7631,7 +7640,7 @@ class IntegrationController extends CoreController
         // Anything else is a bespoke, single-product design (e.g. 'anandamela' for the
         // Anandamela 1433 Puja annual) whose look is hard-coded in the shop — the generic
         // config fields are then decorative only.
-        $templates    = ['default', 'anandamela'];
+        $templates    = ['default', 'anandamela', 'soviet4'];
         $wantTemplate = $cfg['template'] ?? 'default';
         $template     = in_array($wantTemplate, $templates, true) ? $wantTemplate : 'default';
 

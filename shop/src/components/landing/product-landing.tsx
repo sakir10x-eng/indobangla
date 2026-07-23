@@ -8,6 +8,7 @@ import { useCart } from '@/store/quick-cart/cart.context';
 import { generateCartItem } from '@/store/quick-cart/generate-cart-item';
 import { useSettings } from '@/framework/settings';
 import ProductLandingAnandamela from '@/components/landing/product-landing-anandamela';
+import ProductLandingSoviet4 from '@/components/landing/product-landing-soviet4';
 
 const bdt = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-IN');
 
@@ -103,10 +104,13 @@ export default function ProductLanding({ data }: { data: any }) {
     { enabled: !!product.id && cfg.show_related !== false },
   );
   const related: any[] = useMemo(() => {
+    // Same author and same publisher lead — those are the books a reader of THIS title
+    // actually wants next. Category, then best-sellers, only fill the row if it is short.
     const all = [
-      ...((relRes as any)?.recommended ?? []),
       ...((relRes as any)?.by_author ?? []),
+      ...((relRes as any)?.by_publisher ?? []),
       ...((relRes as any)?.by_category ?? []),
+      ...((relRes as any)?.recommended ?? []),
     ];
     const seen = new Set<any>();
     return all.filter((p: any) => {
@@ -168,6 +172,27 @@ export default function ProductLanding({ data }: { data: any }) {
         giftMax={Number((product as any)?.gift_max) || 0}
         giftPerCopy={(product as any)?.gift_per_copy !== false}
         gifts={(product as any)?.gift_products ?? []}
+      />
+    );
+  }
+
+  if (cfg.template === 'soviet4') {
+    return (
+      <ProductLandingSoviet4
+        name={name}
+        author={author}
+        publisher={publisher}
+        cover={cover}
+        unit={unit}
+        rawPrice={rawPrice}
+        hasSaving={hasSaving}
+        stock={stock}
+        inStock={inStock}
+        buyNow={buyNow}
+        addToCart={addToCart}
+        waLink={waLink}
+        productHref={`/products/${product.slug}`}
+        bdt={bdt}
       />
     );
   }
