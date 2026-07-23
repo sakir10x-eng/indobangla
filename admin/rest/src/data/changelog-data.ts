@@ -13,6 +13,20 @@ export type Release = {
 
 export const RELEASES: Release[] = [
   {
+    version: '2026.07.24',
+    date: '24 Jul 2026',
+    title: 'Security hardening across sign-in, checkout and admin, plus checkout & page fixes',
+    items: [
+      { type: 'fixed', text: 'Placing an order that could not go through — a coupon that had just expired, or a book that had just sold out — left the button spinning with no message. It now tells the customer why instead of quietly failing' },
+      { type: 'fixed', text: '“Pay now” now sends the customer straight to the payment page for every online (bKash) order, not just pre-orders — a normal online order no longer got stranded on an empty payment screen' },
+      { type: 'fixed', text: 'The order thank-you page and the Library page could show a blank screen on certain orders/accounts. Both are guarded now, and any unexpected page error shows a “try again” panel instead of a white screen' },
+      { type: 'improved', text: 'Sign-in, OTP and password reset are hardened: reset links now expire, sign-in / OTP / reset requests are rate-limited against guessing and SMS abuse, a password change or reset now signs out other devices, and social sign-in is verified more strictly' },
+      { type: 'improved', text: 'Order and payment amounts are fully recomputed on the server so a total cannot be tampered with, and customers’ contact and order details are better protected from being read by anyone else' },
+      { type: 'improved', text: 'Stored integration secrets in the admin panel (payment / courier / notification tokens) are now shown only to a full super-admin — a section-restricted sub-admin sees a masked value, and saving no longer risks wiping them' },
+      { type: 'improved', text: 'Stock is now reserved atomically at checkout, so the same last copy can’t be sold twice or pushed into negative stock' },
+    ],
+  },
+  {
     version: '2026.07.22',
     date: '22 Jul 2026',
     title: 'New storefront header & order pages, support tickets, and a run of payment fixes',
