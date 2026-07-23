@@ -824,6 +824,49 @@ class AiExtractController extends CoreController
         return ['status' => 'success', 'image' => $this->storeImageFromUrl($request->image_url)];
     }
 
+    /**
+     * SSRF guard for every remote URL this controller fetches. Allows only real public http(s)
+     * URLs: resolves the host and rejects any private / reserved / loopback / link-local target,
+     * so a crafted URL can't make the server reach internal services (localhost, 169.254 cloud
+     * metadata, RFC1918 hosts).
+     */
+    private function assertPublicHttpUrl(string $url): void
+    {
+        $parts  = parse_url($url);
+        $scheme = strtolower($parts['scheme'] ?? '');
+        if (!$parts || !in_array($scheme, ['http', 'https'], true)) {
+            throw new MarvelException('Only http(s) URLs are allowed.');
+        }
+        $host = $parts['host'] ?? '';
+        if ($host === '') {
+            throw new MarvelException('Invalid URL host.');
+        }
+        $ips = [];
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            $ips[] = $host;
+        } else {
+            $recs = @dns_get_record($host, DNS_A + DNS_AAAA) ?: [];
+            foreach ($recs as $r) {
+                if (!empty($r['ip']))   $ips[] = $r['ip'];
+                if (!empty($r['ipv6'])) $ips[] = $r['ipv6'];
+            }
+            if (empty($ips)) {
+                $resolved = @gethostbyname($host);
+                if ($resolved && $resolved !== $host) {
+                    $ips[] = $resolved;
+                }
+            }
+        }
+        if (empty($ips)) {
+            throw new MarvelException('Could not resolve the URL host.');
+        }
+        foreach ($ips as $ip) {
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                throw new MarvelException('URLs pointing to internal addresses are not allowed.');
+            }
+        }
+    }
+
     /** Download an image URL to our public storage; returns an attachment-shaped array. */
     /**
      * Pull the real cover from a product page's og:image / twitter:image meta tag.
@@ -833,6 +876,11 @@ class AiExtractController extends CoreController
     private function fetchOgImage(?string $url): ?string
     {
         if (!$url || !preg_match('#^https?://#i', $url)) {
+            return null;
+        }
+        try {
+            $this->assertPublicHttpUrl($url);
+        } catch (\Throwable $e) {
             return null;
         }
         try {
@@ -956,7 +1004,12 @@ class AiExtractController extends CoreController
 
     private function storeImageFromUrl(string $url): array
     {
-        $resp = Http::timeout(45)->withHeaders([
+        $this->assertPublicHttpUrl($url);
+        $resp = Http::timeout(45)->withOptions([
+            // Don't follow redirects: a public URL that 30x-hops to 127.0.0.1 / 169.254 metadata
+            // would otherwise slip past the host check above. Real book covers are served directly.
+            'allow_redirects' => false,
+        ])->withHeaders([
             'User-Agent' => 'Mozilla/5.0 (compatible; IndoBanglaBot/1.0)',
         ])->get($url);
         if ($resp->failed()) {
@@ -971,7 +1024,10 @@ class AiExtractController extends CoreController
                 break;
             }
         }
-        if (!str_starts_with($ctype, 'image/') && strlen($body) < 500) {
+        // Must actually be an image. The old check only rejected a non-image when it was ALSO
+        // tiny (<500 bytes), so a large internal HTML/JSON response would get written to public
+        // storage and served back — the read-SSRF exfil sink. Require an image content-type.
+        if (!str_starts_with($ctype, 'image/')) {
             throw new MarvelException('The URL did not return an image.');
         }
         $name = 'ai-imports/' . bin2hex(random_bytes(8)) . '.' . $ext;

@@ -817,6 +817,12 @@ class UserController extends CoreController
 
         try {
             $user = Socialite::driver($provider)->userFromToken($token);
+            // Refuse a provider account with no email. firstOrCreate(['email' => null]) below would
+            // otherwise match the FIRST existing user whose email is null — and phone-only accounts
+            // now legitimately have a null email — logging the visitor into a stranger's account.
+            if (empty($user->getEmail())) {
+                throw new MarvelException(NOT_FOUND);
+            }
             $userExist = User::where('email',  $user->email)->exists();
 
             $userCreated = User::firstOrCreate(
@@ -1016,11 +1022,17 @@ class UserController extends CoreController
     public function updateContact(Request $request)
     {
         $phoneNumber = $request->phone_number;
-        $user_id = $request->user_id;
+        // The account whose contact changes is ALWAYS the caller — never a user_id from the body.
+        // The OTP only proves the caller controls the new phone; it says nothing about ownership
+        // of some other account, so honouring a request-supplied user_id was a takeover primitive.
+        $user = $request->user();
+        if (!$user) {
+            return ['message' => CONTACT_UPDATE_FAILED, 'success' => false];
+        }
+        $user_id = $user->id;
 
         try {
             if ($this->verifyOtp($request)) {
-                $user = User::find($user_id);
                 $user->profile()->updateOrCreate(
                     ['customer_id' => $user_id],
                     [

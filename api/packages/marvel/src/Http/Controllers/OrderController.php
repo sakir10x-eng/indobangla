@@ -232,7 +232,10 @@ class OrderController extends CoreController
         }
 
         if (!$order->customer_id) {
-            return $order;
+            // Guest orders are readable without a token (the buyer views them right after
+            // checkout), so never expose ops_meta here — it carries the pay token, bKash
+            // payment id and internal event log, which a sequential-id scrape would harvest.
+            return $order->makeHidden('ops_meta');
         }
         if ($user && $user->hasPermissionTo(Permission::SUPER_ADMIN)) {
             return $order;
@@ -273,7 +276,9 @@ class OrderController extends CoreController
                 ->findOneByFieldOrFail('tracking_number', $tracking_number);
 
             if ($order->customer_id === null) {
-                return $order;
+                // Same as fetchSingleOrder: don't leak ops_meta (pay token / payment id) on a
+                // token-less guest-order read.
+                return $order->makeHidden('ops_meta');
             }
             $ownsByPhone = false;
             if ($user) {

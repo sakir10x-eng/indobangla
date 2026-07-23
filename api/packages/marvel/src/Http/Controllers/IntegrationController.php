@@ -337,19 +337,22 @@ class IntegrationController extends CoreController
             'name'     => $name,
             'password' => Hash::make(Str::random(14)),
         ]);
-        if ($user->name !== $name) {
-            $user->name = $name;
-            $user->save();
-        }
         $user->givePermissionTo(Permission::CUSTOMER);
         \Spatie\Permission\Models\Role::findOrCreate(\Marvel\Enums\Role::CUSTOMER, 'api');
         $user->assignRole(\Marvel\Enums\Role::CUSTOMER);
-        $user->profile()->updateOrCreate(['customer_id' => $user->id], ['contact' => $contact]);
+        // Only stamp the name/contact when we actually created the account. Re-supplying an
+        // existing customer's email must NOT overwrite their stored name or phone — this is a
+        // quick-add for the order desk, not a profile editor, so it never mutates a live account.
+        if ($user->wasRecentlyCreated) {
+            $user->name = $name;
+            $user->save();
+            $user->profile()->updateOrCreate(['customer_id' => $user->id], ['contact' => $contact]);
+        }
         return [
             'id'      => $user->id,
             'name'    => $user->name,
             'email'   => $user->email,
-            'profile' => ['contact' => $contact],
+            'profile' => ['contact' => $user->wasRecentlyCreated ? $contact : (optional($user->profile)->contact ?? $contact)],
         ];
     }
 
