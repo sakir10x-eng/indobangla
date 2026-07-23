@@ -3,6 +3,8 @@
 
 > **Verdict:** The *previously-known* bad bugs are genuinely fixed (fake-payment, settings secret-wipe, "0 books" orders, SEO/OG). The money-*capture* path (bKash) is solid. **But order *creation* and several custom customer endpoints are under-protected**, producing one Critical account-takeover chain and one Critical price-tampering hole that need fixing before the next promote.
 
+> **REMEDIATION STATUS (2026-07-24, branch `security-fixes-0724`):** ✅ **All Critical + High fixed** (commit `cc66119`). ✅ **All Medium + Low fixed** in a follow-up commit **except three deferred**: **M3** delivery-fee server-side recompute (touches the live money-total path — needs its own tested change; the `≥0` clamp is in place), **6-digit OTP** (frontend expects 4 digits — throttling is the interim brute-force control), and the **guest-order enumeration second factor** (tracking_number == sequential id is load-bearing for the order board). Not yet deployed. L8 (demo `public/sql`) is gitignored/untracked — deleted locally; block `/sql/` at nginx on the live box to be safe.
+
 ---
 
 ## Severity index

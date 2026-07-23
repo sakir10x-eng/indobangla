@@ -1418,11 +1418,16 @@ class IntegrationController extends CoreController
     {
         $c = $this->options()['replygenie'] ?? [];
         $base = rtrim(config('app.url') ?: url('/'), '/');
+        // The connect_token lets its holder drive any order via /replygenie/agent, so only a FULL
+        // super-admin sees the real value; a section-restricted sub-admin gets a presence marker.
+        $token = $c['token'] ?? '';
+        $showToken = $this->isFullSuperAdmin($request->user());
         return [
             'status'     => 'success',
             'replygenie' => [
                 'enabled'       => (bool) ($c['enabled'] ?? false),
-                'connect_token' => $c['token'] ?? '',
+                'connect_token' => $showToken ? $token : ($token !== '' ? '••••••••' : ''),
+                'has_token'     => $token !== '',
                 'shop_slug'     => $c['shop_slug'] ?? 'indobangla-store',
                 'delivery_fee'  => (float) ($c['delivery_fee'] ?? 60),
                 'auth_header'   => 'X-Connect-Token',
@@ -1467,19 +1472,24 @@ class IntegrationController extends CoreController
         $n = $this->options()['notify'] ?? [];
         $tg = $n['telegram'] ?? [];
         $wa = $n['whatsapp'] ?? [];
+        // Bot / provider tokens are secrets — only a FULL super-admin sees the real values; a
+        // section-restricted sub-admin gets a masked placeholder that still round-trips on save
+        // (updateNotifySettings keeps the stored value when the masked marker comes back).
+        $showSecret = $this->isFullSuperAdmin($request->user());
+        $mask = fn ($v) => $showSecret ? (string) $v : ((string) $v !== '' ? '••••••••' : '');
         return [
             'status' => 'success',
             'notify' => [
                 'telegram' => [
                     'enabled'   => (bool) ($tg['enabled'] ?? false),
-                    'bot_token' => $tg['bot_token'] ?? '',
+                    'bot_token' => $mask($tg['bot_token'] ?? ''),
                     'chat_id'   => $tg['chat_id'] ?? '',
                 ],
                 'whatsapp' => [
                     'enabled'  => (bool) ($wa['enabled'] ?? false),
                     'provider' => $wa['provider'] ?? 'twilio',
-                    'sid'      => $wa['sid'] ?? '',
-                    'token'    => $wa['token'] ?? '',
+                    'sid'      => $mask($wa['sid'] ?? ''),
+                    'token'    => $mask($wa['token'] ?? ''),
                     'from'     => $wa['from'] ?? '',
                     'to'       => $wa['to'] ?? '',
                     'phone_id' => $wa['phone_id'] ?? '',
@@ -1500,17 +1510,23 @@ class IntegrationController extends CoreController
         ]);
         $settings = Settings::first();
         $options  = $settings->options ?? [];
+        $curTg = data_get($options, 'notify.telegram', []);
+        $curWa = data_get($options, 'notify.whatsapp', []);
+        // getNotifySettings masks secrets for restricted sub-admins, so a save must never overwrite
+        // a real secret with the masked placeholder (or a blank) — carry the stored value forward.
+        $keepSecret = fn ($incoming, $stored) => (($s = (string) $incoming) === '' || str_contains($s, '•'))
+            ? (string) $stored : $s;
         $options['notify'] = [
             'telegram' => [
                 'enabled'   => (bool) data_get($data, 'telegram.enabled', false),
-                'bot_token' => (string) data_get($data, 'telegram.bot_token', ''),
+                'bot_token' => $keepSecret(data_get($data, 'telegram.bot_token', ''), $curTg['bot_token'] ?? ''),
                 'chat_id'   => (string) data_get($data, 'telegram.chat_id', ''),
             ],
             'whatsapp' => [
                 'enabled'  => (bool) data_get($data, 'whatsapp.enabled', false),
                 'provider' => (string) data_get($data, 'whatsapp.provider', 'twilio'),
-                'sid'      => (string) data_get($data, 'whatsapp.sid', ''),
-                'token'    => (string) data_get($data, 'whatsapp.token', ''),
+                'sid'      => $keepSecret(data_get($data, 'whatsapp.sid', ''), $curWa['sid'] ?? ''),
+                'token'    => $keepSecret(data_get($data, 'whatsapp.token', ''), $curWa['token'] ?? ''),
                 'from'     => (string) data_get($data, 'whatsapp.from', ''),
                 'to'       => (string) data_get($data, 'whatsapp.to', ''),
                 'phone_id' => (string) data_get($data, 'whatsapp.phone_id', ''),

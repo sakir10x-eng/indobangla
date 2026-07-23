@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import {
   useLogout,
   useResendVerificationEmail,
@@ -21,9 +22,13 @@ const VerifyEmail = () => {
   const { mutate: logout, isLoading: isLogoutLoader } = useLogout();
   useUser();
 
-  if (emailVerified) {
-    router.push('/profile');
-  }
+  // Navigate as an effect, never during render (a router.push in the render body triggers React's
+  // "cannot update during render" warning and can double-navigate).
+  useEffect(() => {
+    if (emailVerified) {
+      router.push('/profile');
+    }
+  }, [emailVerified]);
   const handleLogout = () => {
     logout();
     router.push(Routes.home);
