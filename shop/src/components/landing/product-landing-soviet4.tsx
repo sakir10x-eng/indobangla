@@ -494,6 +494,12 @@ const BODY = `<div class="topbar">
   <img src="" alt="">
 </div>`;
 
+// Contact channels for this landing page (owner-provided).
+const WA_LINK =
+  'https://wa.me/8801990906688?text=' +
+  encodeURIComponent('আসসালামু আলাইকুম, আমি "সোভিয়েত দেশের শিশুসাহিত্য সমগ্র ৪" বইটি অর্ডার করতে চাই।');
+const MESSENGER_LINK = 'https://fb.com/indobanglabook';
+
 export type Soviet4Props = {
   name: string;
   author: string;
@@ -574,11 +580,14 @@ export default function ProductLandingSoviet4({
 
     root.querySelectorAll<HTMLAnchorElement>('.orderbtns a').forEach((a) => {
       const href = a.getAttribute('href') || '';
-      if (/wa\.me/i.test(href)) {
-        a.setAttribute('href', waLink);
+      if (/wa\.me|whatsapp/i.test(href)) {
+        a.setAttribute('href', WA_LINK);
         return;
       }
-      if (/m\.me|messenger/i.test(href)) return; // leave the Messenger link alone
+      if (/m\.me|messenger|fb\.com|facebook/i.test(href)) {
+        a.setAttribute('href', MESSENGER_LINK);
+        return;
+      }
       // the "order on the website" button — we ARE the website: order for real
       a.textContent = inStock ? 'এখনই অর্ডার করুন' : 'স্টকে নেই';
       a.setAttribute('href', '#order');
