@@ -50,10 +50,10 @@ export default function OrderPage() {
   }, [order?.payment_status]);
 
   useEffect(() => {
-    if (!isLoading && order?.payment_gateway.toLowerCase()) {
+    if (!isLoading && order?.payment_gateway?.toLowerCase()) {
       createOrderPayment({
         tracking_number: query?.tracking_number as string,
-        payment_gateway: order?.payment_gateway.toLowerCase() as string,
+        payment_gateway: order?.payment_gateway?.toLowerCase() as string,
       });
     }
   }, [order?.payment_status]);

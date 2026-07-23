@@ -1,5 +1,4 @@
-import Link from '@/components/ui/link';
-import { Routes } from '@/config/routes';
+import { useModalAction } from '@/components/ui/modal/modal.context';
 import { useUser } from '@/framework/user';
 import { useCommunityFeed } from '@/framework/community';
 import PostComposer from './post-composer';
@@ -7,6 +6,7 @@ import PostCard from './post-card';
 
 export default function CommunityFeed() {
   const { me } = useUser();
+  const { openModal } = useModalAction();
   const { posts, isLoading, loadMore, hasMore, isLoadingMore } =
     useCommunityFeed();
 
@@ -24,12 +24,13 @@ export default function CommunityFeed() {
       ) : (
         <div className="mb-6 rounded-xl border border-dashed border-border-200 bg-gray-50 px-4 py-5 text-center text-sm text-body">
           পোস্ট করতে{' '}
-          <Link
-            href={(Routes as any).login ?? '/'}
+          <button
+            type="button"
+            onClick={() => openModal('LOGIN_VIEW')}
             className="font-semibold text-accent"
           >
             লগইন
-          </Link>{' '}
+          </button>{' '}
           করুন।
         </div>
       )}

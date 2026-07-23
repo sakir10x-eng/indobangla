@@ -707,6 +707,18 @@ class UserController extends CoreController
                 return ['message' => 'Invalid or expired reset token', 'success' => false];
             }
 
+            // A reset link must not live forever. created_at is stamped when the token is minted;
+            // reject anything older than the configured window (default 60 min) so a leaked link
+            // (browser history, a forwarded email) can't be replayed days later.
+            $ageMinutes = $resetRecord->created_at
+                ? Carbon::parse($resetRecord->created_at)->diffInMinutes(Carbon::now())
+                : PHP_INT_MAX;
+            $expiry = (int) (config('auth.passwords.users.expire') ?: 60);
+            if ($ageMinutes > $expiry) {
+                DB::table('password_resets')->where('email', $request->email)->delete();
+                return ['message' => 'Invalid or expired reset token', 'success' => false];
+            }
+
             // One address can own several rows here (guest checkout and OTP re-registration
             // both mint users). `first()` took the lowest id — which may be a deactivated
             // leftover, and a password set on an account that cannot log in is a password
@@ -719,6 +731,9 @@ class UserController extends CoreController
             }
             $user->password = Hash::make($request->password);
             $user->save();
+            // Kill every existing session on a password reset — a token held by whoever knew the
+            // old password (or an attacker mid-session) must not survive the change.
+            $user->tokens()->delete();
 
             DB::table('password_resets')->where('email', $user->email)->delete();
 
@@ -755,6 +770,10 @@ class UserController extends CoreController
             if (Hash::check($request->oldPassword, $user->password)) {
                 $user->password = Hash::make($request->newPassword);
                 $user->save();
+                // Revoke every OTHER session so a password change also boots any stolen token,
+                // while keeping the current one alive (the user stays logged in on this device).
+                $current = optional($user->currentAccessToken())->id;
+                $user->tokens()->when($current, fn ($q) => $q->where('id', '!=', $current))->delete();
                 return ['message' => PASSWORD_RESET_SUCCESSFUL, 'success' => true];
             } else {
                 return ['message' => OLD_PASSWORD_INCORRECT, 'success' => false];
@@ -805,6 +824,34 @@ class UserController extends CoreController
         return $query->paginate($limit);
     }
 
+    /**
+     * Bind a Google access token to OUR OAuth client. Socialite verifies the token is genuine but
+     * not that it was issued for this app, so a token minted for a DIFFERENT client (with email
+     * scope) could otherwise be replayed. When GOOGLE_CLIENT_ID is configured we introspect the
+     * token and reject a mismatched audience; with nothing configured we skip (prior behaviour).
+     */
+    private function assertSocialTokenAudience(string $provider, ?string $token): void
+    {
+        if ($provider !== 'google') {
+            return;
+        }
+        $clientId = config('services.google.client_id') ?: env('GOOGLE_CLIENT_ID');
+        if (empty($clientId)) {
+            return;
+        }
+        try {
+            $info = \Illuminate\Support\Facades\Http::timeout(8)
+                ->get('https://oauth2.googleapis.com/tokeninfo', ['access_token' => (string) $token])
+                ->json();
+        } catch (\Throwable $e) {
+            throw new MarvelException(NOT_FOUND);
+        }
+        $aud = $info['aud'] ?? ($info['azp'] ?? null);
+        if (!$aud || $aud !== $clientId) {
+            throw new MarvelException(NOT_FOUND);
+        }
+    }
+
     public function socialLogin(Request $request)
     {
         $provider = $request->provider;
@@ -823,6 +870,9 @@ class UserController extends CoreController
             if (empty($user->getEmail())) {
                 throw new MarvelException(NOT_FOUND);
             }
+            // Bind the token to OUR OAuth client (Socialite proves the token is genuine, not that
+            // it was issued for this app) so a token minted for a different client can't be replayed.
+            $this->assertSocialTokenAudience($provider, $token);
             $userExist = User::where('email',  $user->email)->exists();
 
             $userCreated = User::firstOrCreate(
@@ -861,12 +911,10 @@ class UserController extends CoreController
             if (empty($userExist)) {
                 $this->giveSignupPointsToCustomer($userCreated->id);
             }
-            event(new ProcessUserData());
-            return [
-                "token" => $userCreated->createToken('auth_token')->plainTextToken,
-                "permissions" => $userCreated->getPermissionNames(),
-                "role" => $userCreated->getRoleNames()->first()
-            ];
+            // Route through issueLoginToken so an admin who signs in with Google still hits the
+            // SMS/email 2FA gate instead of skipping it (a token was minted directly here before).
+            // issueLoginToken fires ProcessUserData itself, so no separate event() is needed.
+            return $this->issueLoginToken($userCreated);
         } catch (\Exception $e) {
             // The real reason was thrown away here, so every social-login failure — a bad
             // token, a Socialite misconfiguration, a database constraint — reached the user as
@@ -1052,6 +1100,11 @@ class UserController extends CoreController
 
     public function addPoints(Request $request)
     {
+        // Wallet points are money. A section-restricted sub-admin still carries the super_admin
+        // permission, so the route's can:SUPER_ADMIN isn't enough — require a FULL super-admin.
+        if (!$this->isFullSuperAdmin($request->user())) {
+            throw new MarvelException(NOT_AUTHORIZED);
+        }
         $request->validate([
             'points' => 'required|numeric',
             'customer_id' => ['required', 'exists:Marvel\Database\Models\User,id']

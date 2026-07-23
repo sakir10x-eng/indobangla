@@ -471,7 +471,14 @@ class OrderRepository extends BaseRepository
         // a normal order equals the total and would misfire on a manual adjustment). Otherwise
         // fall back to the full total — Pickbazar's settled-COD convention, so an ordinary order
         // isn't flagged as owing money.
-        $advance = isset($request['advance_paid']) ? round((float) $request['advance_paid'], 2) : null;
+        // advance_paid (POS partial payment) may only be set by staff/admin — a normal customer
+        // must pay the full total, never signal a smaller "already paid" figure from the client.
+        $isStaffCaller = $user && (
+            $user->hasPermissionTo(Permission::SUPER_ADMIN)
+            || $user->hasPermissionTo(Permission::STORE_OWNER)
+            || $user->hasPermissionTo(Permission::STAFF)
+        );
+        $advance = ($isStaffCaller && isset($request['advance_paid'])) ? round((float) $request['advance_paid'], 2) : null;
         $request['paid_total'] = ($advance !== null && $advance > 0 && $advance < $computedTotal)
             ? $advance
             : $computedTotal;

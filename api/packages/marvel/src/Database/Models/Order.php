@@ -226,8 +226,11 @@ class Order extends Model
             foreach ($order->products as $p) {
                 $qty = (int) ($p->pivot->order_quantity ?? 0);
                 if ($qty > 0) {
-                    Product::where('id', $p->id)->decrement('quantity', $qty);
-                    Product::where('id', $p->id)->increment('sold_quantity', $qty);
+                    // Conditional atomic decrement: never drive stock negative, and stop two
+                    // concurrent orders for the last copy from both succeeding. sold_quantity only
+                    // rises by what we actually reserved so the two counters stay consistent.
+                    $reserved = Product::where('id', $p->id)->where('quantity', '>=', $qty)->decrement('quantity', $qty);
+                    Product::where('id', $p->id)->increment('sold_quantity', $reserved ? $qty : 0);
                 }
             }
             $ops['stock_committed'] = true;

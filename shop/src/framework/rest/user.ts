@@ -370,15 +370,21 @@ export function useRegister() {
 
   const { mutate, isLoading } = useMutation(client.users.register, {
     onSuccess: (data) => {
-      if (data?.token && data?.permissions?.length) {
+      // The API returns failures as HTTP 200 { errors:[{message}] }. Surface the real reason
+      // ("email already taken", etc.) instead of the generic "wrong credentials" it used to show.
+      if (data?.errors?.length) {
+        toast.error(data.errors[0]?.message ?? `${t('error-credential-wrong')}`);
+        return;
+      }
+      // A token alone means the account is usable — don't also require a non-empty permissions
+      // array, or the known empty-roles case would issue a token yet silently do nothing.
+      if (data?.token) {
         setToken(data?.token);
         setAuthorized(true);
         closeModal();
         return;
       }
-      if (!data.token) {
-        toast.error(`${t('error-credential-wrong')}`);
-      }
+      toast.error(`${t('error-credential-wrong')}`);
     },
     onError: (error) => {
       const {

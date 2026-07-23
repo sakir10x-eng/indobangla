@@ -31,7 +31,16 @@ export default function LibraryView() {
     );
   }
 
-  const stats = library.my_review_stats;
+  // Default the shape: a success response that omits (or partially fills) my_review_stats must
+  // not crash the whole page on stats.total_reviews / stats.reviews.length.
+  const stats = {
+    total_reviews: 0,
+    total_reads: 0,
+    total_likes: 0,
+    total_comments: 0,
+    reviews: [] as any[],
+    ...(library.my_review_stats ?? {}),
+  };
 
   return (
     <div className="w-full">
@@ -54,9 +63,9 @@ export default function LibraryView() {
           <StatTile label="মোট মন্তব্য" value={stats.total_comments} />
         </div>
 
-        {stats.reviews.length > 0 && (
+        {(stats.reviews?.length ?? 0) > 0 && (
           <div className="mt-4 space-y-3">
-            {stats.reviews.map((r) => (
+            {(stats.reviews ?? []).map((r) => (
               <ReviewCard key={r.id} review={r} />
             ))}
           </div>

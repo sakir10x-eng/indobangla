@@ -27,6 +27,7 @@ const ChallengeBar = dynamic(
   { ssr: false },
 );
 import Maintenance from '@/components/maintenance/layout';
+import AppErrorBoundary from '@/components/ui/app-error-boundary';
 import { NotificationProvider } from '@/context/notify-content';
 import { usePresencePing } from '@/lib/use-presence-ping';
 
@@ -66,13 +67,15 @@ function CustomApp({
                     <PageOg pageProps={pageProps} />
                     <Maintenance>
                       <NotificationProvider>
-                        {authenticationRequired ? (
-                          <PrivateRoute>
-                            {getLayout(<Component {...pageProps} />)}
-                          </PrivateRoute>
-                        ) : (
-                          getLayout(<Component {...pageProps} />)
-                        )}
+                        <AppErrorBoundary>
+                          {authenticationRequired ? (
+                            <PrivateRoute>
+                              {getLayout(<Component {...pageProps} />)}
+                            </PrivateRoute>
+                          ) : (
+                            getLayout(<Component {...pageProps} />)
+                          )}
+                        </AppErrorBoundary>
                       </NotificationProvider>
                     </Maintenance>
                     <ManagedModal />

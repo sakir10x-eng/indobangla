@@ -85,7 +85,12 @@ class NotifyLogsController extends CoreController
     {
         try {
             $id = $request['id'];
-            return $this->repository->where('id', '=', $id)->firstOrFail();
+            // Scope to the caller: a notification is only readable by its receiver, never by any
+            // logged-in user who guesses the id.
+            return $this->repository
+                ->where('id', '=', $id)
+                ->where('receiver', '=', $request->user()->id)
+                ->firstOrFail();
         } catch (Exception $th) {
             throw new HttpException(404, NOT_FOUND);
         }
@@ -129,11 +134,15 @@ class NotifyLogsController extends CoreController
     public function readNotifyLogs(Request $request)
     {
         try {
-            $notify_log = $this->repository->findOrFail($request->id);
+            // Only the receiver may mark their own notification read.
+            $notify_log = $this->repository
+                ->where('id', '=', $request->id)
+                ->where('receiver', '=', $request->user()->id)
+                ->firstOrFail();
             $notify_log->is_read = true;
             $notify_log->save();
             return $notify_log;
-        } catch (MarvelException $th) {
+        } catch (\Throwable $th) {
             throw new MarvelException(NOT_AUTHORIZED, $th->getMessage());
         }
     }
@@ -149,7 +158,8 @@ class NotifyLogsController extends CoreController
     {
         try {
             if (isset($request->set_all_read)) {
-                $notify_logs = $this->repository->where("notify_type", "=", $request->notify_type)->where('receiver', '=', $request->receiver)->get();
+                // Always the caller's own logs — never a receiver id taken from the request body.
+                $notify_logs = $this->repository->where("notify_type", "=", $request->notify_type)->where('receiver', '=', $request->user()->id)->get();
 
                 foreach ($notify_logs as $key => $notify_log) {
                     $notify_log->is_read = true;

@@ -239,11 +239,12 @@ export function useCreateOrder() {
         return;
       }
       const { tracking_number, payment_gateway, payment_intent } = order ?? {};
-      // A pre-order is held until its advance is paid, so send the customer straight to
-      // the payment link that was minted with the order instead of the order page.
+      // Any order that carries a pay link — a pre-order OR a regular online (bKash) order — goes
+      // straight to the hosted pay page. Previously only pre-orders did, so a normal bKash order
+      // detoured to /orders/{tracking}/payment (which has no payment modal here) and stranded the
+      // buyer. COD/cash/wallet orders have no pay_token and fall through to the order page below.
       const payToken = order?.ops_meta?.pay_token;
-      const isPreorder = Boolean(order?.ops_meta?.advance?.is_preorder);
-      if (isPreorder && payToken) {
+      if (payToken) {
         return router.push(`/pay/${payToken}`);
       }
       if (tracking_number) {
