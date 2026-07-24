@@ -664,6 +664,25 @@ const BookDetails: React.FC<Props> = ({ product, isModal = false }) => {
             )}
           </div>
 
+          {/* E-book: let anyone sample the opening pages before buying. The reader itself decides
+              how far a non-buyer may read — this is only the way in. */}
+          {(product as any)?.is_ebook && (
+            <div className="mt-3 rounded-xl border border-[#cfe3f7] bg-[#eff6fd] p-3 text-center">
+              <p className="text-[13px] font-semibold text-[#1f4a73]">
+                📘 এটি একটি ই-বুক — কেনার আগে কিছু পৃষ্ঠা ফ্রি পড়ে দেখুন
+              </p>
+              <a
+                href={`/ebooks/${id}`}
+                className="mt-2 inline-block rounded-md bg-[#1f4a73] px-5 py-2 text-xs font-bold text-white"
+              >
+                ডেমো পড়ুন
+              </a>
+              <p className="mt-1.5 text-[11px] text-[#4a6b8a]">
+                ই-বুক শুধু ওয়েবসাইটে পড়া যায় — ডাউনলোড করা যায় না। পেমেন্ট শুধু বিকাশে।
+              </p>
+            </div>
+          )}
+
           <p className="mt-4 text-sm text-body">
             🚚 Order within{' '}
             <span className="font-bold text-[#1f7a52]">{cutoff}</span> for next-day

@@ -20,6 +20,15 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // A plain flag on the product so the storefront can tell an e-book apart without a join
+        // on every listing (the cart, and the checkout's bKash-only rule, both need it cheaply).
+        // Kept in sync by EbookController when a file is attached or removed.
+        if (!Schema::hasColumn('products', 'is_ebook')) {
+            Schema::table('products', function (Blueprint $table) {
+                $table->boolean('is_ebook')->default(false)->index();
+            });
+        }
+
         if (Schema::hasTable('ebook_assets')) {
             return;
         }
@@ -34,6 +43,8 @@ return new class extends Migration
             $table->string('original_path', 512)->nullable();      // private disk, as uploaded
             $table->string('pdf_path', 512)->nullable();           // private disk, normalised PDF
             $table->unsignedInteger('page_count')->default(0);
+            // Free sample: how many opening pages anyone may read before buying. 0 = no preview.
+            $table->unsignedInteger('preview_pages')->default(10);
             // pending  — uploaded, not yet rasterised
             // ready    — page images available
             // failed   — conversion failed (see error)

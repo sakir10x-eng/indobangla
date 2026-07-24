@@ -22,14 +22,30 @@ const EbookReaderPage = () => {
   const [loadingPage, setLoadingPage] = useState(false);
   const currentUrl = useRef<string | null>(null);
 
-  const { data: info, isLoading, isError } = useQuery(
+  // Two sources: the public sample (works logged out — its whole job is to help someone decide)
+  // and the owner's full view. Whichever applies decides how many pages can be turned.
+  const { data: previewInfo } = useQuery(
+    ['ebook-preview', id],
+    () => HttpClient.get<any>(`ebooks/${id}/preview`),
+    { enabled: Boolean(id), retry: false },
+  );
+  const { data: info } = useQuery(
     ['ebook-open', id],
     () => HttpClient.get<any>(`ebooks/${id}/open`),
     { enabled: Boolean(id), retry: false },
   );
 
-  const pageCount = Number((info as any)?.page_count ?? 0);
-  const title = (info as any)?.name ?? '';
+  const owned = Boolean((info as any)?.owned);
+  const totalPages = Number(
+    (info as any)?.page_count ?? (previewInfo as any)?.page_count ?? 0,
+  );
+  const pageCount = owned
+    ? totalPages
+    : Number((previewInfo as any)?.preview_pages ?? (info as any)?.readable_pages ?? 0);
+  const title = (info as any)?.name ?? (previewInfo as any)?.name ?? '';
+  const slug = (previewInfo as any)?.slug;
+  const pageBase = owned ? `ebooks/${id}/page` : `ebooks/${id}/preview/page`;
+  const isLoading = previewInfo === undefined && info === undefined;
 
   // Release the previous page's blob as soon as it's replaced, so a long reading session doesn't
   // accumulate the whole book in memory (and nothing lingers to be dug out afterwards).
@@ -44,7 +60,7 @@ const EbookReaderPage = () => {
     let cancelled = false;
     setLoadingPage(true);
     setPageError(null);
-    HttpClient.getBlob(`ebooks/${id}/page/${page}`)
+    HttpClient.getBlob(`${pageBase}/${page}`)
       .then((blob) => {
         if (cancelled) return;
         swapUrl(URL.createObjectURL(blob));
@@ -58,7 +74,7 @@ const EbookReaderPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [id, page, pageCount]);
+  }, [id, page, pageCount, pageBase]);
 
   useEffect(
     () => () => {
@@ -82,7 +98,7 @@ const EbookReaderPage = () => {
   if (isLoading) {
     return <p className="py-24 text-center text-sm text-body">লোড হচ্ছে…</p>;
   }
-  if (isError || !pageCount) {
+  if (!pageCount) {
     return (
       <div className="py-24 text-center text-sm text-body">
         <p>এই ই-বুকটি আপনি পড়তে পারবেন না, অথবা এটি এখনো প্রস্তুত নয়।</p>
@@ -106,8 +122,20 @@ const EbookReaderPage = () => {
           </h1>
           <span className="shrink-0 text-xs text-body">
             {page} / {pageCount}
+            {!owned && totalPages > 0 ? ` (ডেমো · মোট ${totalPages})` : ''}
           </span>
         </header>
+
+        {!owned && (
+          <div className="border-b border-[#f0e2c4] bg-[#fdf7e8] px-4 py-2.5 text-center text-[12.5px] text-[#7a5c1f]">
+            📖 এটি <b>ফ্রি ডেমো</b> — প্রথম {pageCount} পৃষ্ঠা। পুরো বইটি পড়তে কিনুন।
+            {slug ? (
+              <Link href={`/products/${slug}`} className="ms-2 font-semibold text-accent underline">
+                বইটি দেখুন →
+              </Link>
+            ) : null}
+          </div>
+        )}
 
         <main
           className="flex flex-1 items-start justify-center p-3 sm:p-5"
@@ -170,6 +198,21 @@ const EbookReaderPage = () => {
               পরের →
             </button>
           </div>
+          {!owned && page >= pageCount && (
+            <div className="mt-3 rounded-lg bg-[#fdf7e8] p-3 text-center">
+              <p className="text-[12.5px] font-semibold text-[#7a5c1f]">
+                ডেমো এখানেই শেষ। পুরো বইটি পড়তে কিনে নিন।
+              </p>
+              {slug ? (
+                <Link
+                  href={`/products/${slug}`}
+                  className="mt-2 inline-block rounded-md bg-accent px-5 py-2 text-xs font-bold text-white"
+                >
+                  বইটি কিনুন
+                </Link>
+              ) : null}
+            </div>
+          )}
           <p className="mt-2 text-center text-[11px] text-body">
             এই ই-বুক শুধু পড়ার জন্য — ডাউনলোড বা শেয়ার করা যায় না। প্রতিটি পৃষ্ঠায় আপনার
             পরিচয় যুক্ত থাকে।
@@ -180,6 +223,6 @@ const EbookReaderPage = () => {
   );
 };
 
-EbookReaderPage.authenticationRequired = true;
-
+// Deliberately NOT auth-gated: the free sample has to be readable by someone who hasn't bought
+// (or even signed in) yet. Full access is decided server-side per page, not by this flag.
 export default EbookReaderPage;

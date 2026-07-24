@@ -233,7 +233,18 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
   //   }
   // }, [isLoading, cashOnDelivery, defaultGateway, availableGateway]);
 
+  // Cart contents drive two rules: a pre-order can't be cash-on-delivery, and an e-book must be
+  // paid by bKash (it unlocks for reading the moment payment succeeds, so it has to be prepaid).
+  // The server enforces the e-book rule too (guardEbookOrder) — hiding the other options here
+  // just stops the customer picking a choice that would be rejected.
+  const { items } = useCart();
+  const hasEbook = (items ?? []).some((i: any) => i?.is_ebook);
+
   useEffect(() => {
+    if (hasEbook) {
+      setGateway(PaymentGateway.BKASH as PaymentGateway);
+      return;
+    }
     // Honour the configured default gateway only when it is actually on offer. It used to be
     // selected blind, so if the default named a gateway that wasn't enabled the radio group
     // pointed at an option that never rendered and nothing looked selected. Falling back to
@@ -250,11 +261,10 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
     } else {
       setGateway(PaymentGateway.COD);
     }
-  }, [isLoading, cashOnDelivery, defaultGateway, availableGateway]);
+  }, [isLoading, cashOnDelivery, defaultGateway, availableGateway, hasEbook]);
 
   // A pre-order book in the cart means the order must be paid (at least partly) up front,
   // so cash-on-delivery is not offered at all.
-  const { items } = useCart();
   const hasPreorder = (items ?? []).some((i: any) => i?.is_preorder);
   const [preorderFull, setPreorderFull] = useAtom(preorderFullAtom);
   // Display-only estimate of the full-pay discount (backend is the source of truth).
@@ -320,6 +330,16 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
         </div>
       )}
 
+      {hasEbook && (
+        <div className="mb-5 rounded-xl border border-[#cfe3f7] bg-[#eff6fd] p-4 text-sm text-[#1f4a73]">
+          <b>📘 আপনার কার্টে ই-বুক আছে।</b>
+          <br />
+          ই-বুক সাথে সাথেই পড়া যায়, তাই এই অর্ডার <b>শুধু বিকাশে</b> পরিশোধ করা যাবে —
+          ক্যাশ-অন-ডেলিভারি বা অন্য মাধ্যম নেই। পেমেন্ট সম্পন্ন হলে
+          <b> “আমার ই-বুক”</b> থেকে পড়তে পারবেন (ডাউনলোড করা যাবে না)।
+        </div>
+      )}
+
       {hasPreorder && (
         <div className="mb-5 rounded-xl border border-[#f4c4c8] bg-[#fdf0f1] p-4 text-sm text-[#8a4048]">
           <b className="text-[#e63946]">📖 আপনার কার্টে প্রি-অর্ডারের বই আছে।</b>
@@ -378,7 +398,11 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
 
           {settings?.useEnableGateway &&
             availableGateway &&
-            availableGateway?.map((gateway: any, index: any) => {
+            availableGateway
+              ?.filter(
+                (g: any) => !hasEbook || g?.name?.toUpperCase() === 'BKASH',
+              )
+              ?.map((gateway: any, index: any) => {
               return (
                 <Fragment key={index}>
                   <PaymentGroupOption
@@ -393,7 +417,7 @@ const PaymentGrid: React.FC<{ className?: string; theme?: 'bw' }> = ({
               );
             })}
 
-          {cashOnDelivery && !hasPreorder && (
+          {cashOnDelivery && !hasPreorder && !hasEbook && (
             <PaymentGroupOption
               theme={theme}
               payment={AVAILABLE_PAYMENT_METHODS_MAP[PaymentGateway.COD]}

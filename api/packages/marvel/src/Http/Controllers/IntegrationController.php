@@ -8993,6 +8993,39 @@ class IntegrationController extends CoreController
         return ['status' => 'success', 'vendor_delivery_charge' => $this->vendorDeliveryCharge($request)];
     }
 
+    /**
+     * Admin: send a one-off SMS to an order's customer through the configured SMS gateway.
+     * The WhatsApp button only opens a compose window on the admin's own phone — this actually
+     * delivers, which matters for the many customers who don't use WhatsApp.
+     */
+    public function notifyCustomerSms(Request $request, $id)
+    {
+        $request->validate(['message' => 'required|string|max:600']);
+        $order = Order::findOrFail((int) $id);
+
+        $digits = preg_replace('/\D/', '', (string) $order->customer_contact);
+        if ($digits === '') {
+            throw new MarvelException('এই অর্ডারে কোনো মোবাইল নম্বর নেই।');
+        }
+        // sms.net.bd wants a 8801XXXXXXXXX msisdn.
+        $msisdn = str_starts_with($digits, '880')
+            ? $digits
+            : (str_starts_with($digits, '0') ? '880' . substr($digits, 1) : '880' . $digits);
+
+        $gateway = (string) config('auth.active_otp_gateway', 'smsnetbd');
+        $class   = 'Marvel\\Otp\\Gateways\\' . ucfirst($gateway) . 'Gateway';
+        if (!class_exists($class)) {
+            throw new MarvelException('SMS গেটওয়ে কনফিগার করা নেই।');
+        }
+
+        $result = (new $class())->sendSms($msisdn, (string) $request->input('message'));
+        if (!$result->isValid()) {
+            throw new MarvelException('SMS পাঠানো যায়নি — গেটওয়ে বার্তাটি গ্রহণ করেনি (ব্যালান্স/নম্বর যাচাই করুন)।');
+        }
+
+        return ['status' => 'success', 'message' => 'SMS পাঠানো হয়েছে', 'to' => $msisdn];
+    }
+
     /** Public: record a storefront event. Kept fire-and-forget — it must never break a page. */
     public function track(Request $request)
     {

@@ -42,6 +42,7 @@ export function generateCartItem(item: Item, variation: Variation) {
     preorder_advance_pct,
     preorder_full_pay_discount_pct,
     is_resell,
+    is_ebook,
   } = item;
   if (!isEmpty(variation)) {
     return {
@@ -68,6 +69,8 @@ export function generateCartItem(item: Item, variation: Variation) {
           ? 5
           : Number(preorder_full_pay_discount_pct),
       is_resell: Boolean(is_resell),
+      // E-books are prepaid, bKash-only — checkout reads this to drop the other gateways.
+      is_ebook: Boolean(is_ebook),
     };
   }
   return {
@@ -90,5 +93,6 @@ export function generateCartItem(item: Item, variation: Variation) {
         ? 5
         : Number(preorder_full_pay_discount_pct),
     is_resell: Boolean(is_resell),
+    is_ebook: Boolean(is_ebook),
   };
 }

@@ -20,14 +20,22 @@ class EbookAsset extends Model
         'original_path',
         'pdf_path',
         'page_count',
+        'preview_pages',
         'status',
         'error',
     ];
 
     protected $casts = [
-        'product_id' => 'integer',
-        'page_count' => 'integer',
+        'product_id'    => 'integer',
+        'page_count'    => 'integer',
+        'preview_pages' => 'integer',
     ];
+
+    /** Opening pages anyone may read for free, never more than the book actually has. */
+    public function previewLimit(): int
+    {
+        return max(0, min((int) $this->preview_pages, (int) $this->page_count));
+    }
 
     /**
      * Paths are internal plumbing — never let them reach an API response, or the private disk

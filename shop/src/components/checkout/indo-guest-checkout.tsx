@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useMutation, useQuery } from 'react-query';
 import { toast } from 'react-toastify';
@@ -85,6 +85,13 @@ export default function IndoGuestCheckout() {
   );
   const vendorDelivery = Number((vendorDeliveryData as any)?.vendor_delivery_charge ?? 0);
   const total = subtotal + delivery + vendorDelivery;
+
+  // An e-book unlocks the moment payment succeeds, so it must be prepaid — bKash only. The server
+  // enforces this as well (guardEbookOrder); this just keeps the customer out of a dead end.
+  const hasEbook = (items as any[]).some((i: any) => i?.is_ebook);
+  useEffect(() => {
+    if (hasEbook) setPay('BKASH');
+  }, [hasEbook]);
 
   const to880 = (p: string) => '880' + p.replace(/\D/g, '').replace(/^0/, '');
 
@@ -283,13 +290,20 @@ export default function IndoGuestCheckout() {
             <div className="p-title">
               <span className="n">২</span> পেমেন্ট পদ্ধতি
             </div>
-            <label className={`pay-opt ${pay === 'COD' ? 'on' : ''}`} onClick={() => setPay('COD')}>
-              <span className="dot" />
-              <div>
-                <div className="lbl">ক্যাশ অন ডেলিভারি</div>
-                <div className="desc">বই হাতে পেয়ে টাকা দিন</div>
-              </div>
-            </label>
+            {hasEbook ? (
+              <p style={{ margin: '0 0 10px', fontSize: 13, color: '#1f4a73' }}>
+                📘 কার্টে ই-বুক থাকায় এই অর্ডার <b>শুধু বিকাশে</b> পরিশোধ করা যাবে। পেমেন্টের
+                পরই “আমার ই-বুক” থেকে পড়তে পারবেন (ডাউনলোড করা যাবে না)।
+              </p>
+            ) : (
+              <label className={`pay-opt ${pay === 'COD' ? 'on' : ''}`} onClick={() => setPay('COD')}>
+                <span className="dot" />
+                <div>
+                  <div className="lbl">ক্যাশ অন ডেলিভারি</div>
+                  <div className="desc">বই হাতে পেয়ে টাকা দিন</div>
+                </div>
+              </label>
+            )}
             <label className={`pay-opt ${pay === 'BKASH' ? 'on' : ''}`} onClick={() => setPay('BKASH')}>
               <span className="dot" />
               <div>

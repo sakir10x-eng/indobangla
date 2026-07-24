@@ -346,6 +346,27 @@ export default function OrderDetailsPage() {
     const text = encodeURIComponent(notifyMessages[notifyTab] || '');
     window.open(`https://wa.me/${num}?text=${text}`, '_blank');
   };
+  // WhatsApp only opens a compose window on the admin's own phone. This actually delivers through
+  // the SMS gateway — which is what most customers here can receive.
+  const [smsBusy, setSmsBusy] = useState(false);
+  const sendSms = async () => {
+    const text = (notifyMessages[notifyTab] || '').trim();
+    if (!text) {
+      toast.error('বার্তা লিখুন');
+      return;
+    }
+    setSmsBusy(true);
+    try {
+      const res: any = await HttpClient.post(`orders/${order.id}/notify-sms`, {
+        message: text,
+      });
+      toast.success(res?.message ?? 'SMS পাঠানো হয়েছে');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message ?? 'SMS পাঠানো যায়নি');
+    } finally {
+      setSmsBusy(false);
+    }
+  };
 
   // Payment picture: an advance-paid pre-order owes only the remainder on delivery.
   const total = Number(order.total) || 0;
@@ -761,7 +782,15 @@ export default function OrderDetailsPage() {
                   onClick={sendWhatsApp}
                   className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-[#25d366] py-2.5 text-xs font-bold text-white hover:brightness-95"
                 >
-                  💬 Send on WhatsApp
+                  💬 WhatsApp
+                </button>
+                <button
+                  onClick={sendSms}
+                  disabled={smsBusy}
+                  title="মোবাইলে SMS পাঠান (sms.net.bd)"
+                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-accent py-2.5 text-xs font-bold text-white hover:brightness-95 disabled:opacity-60"
+                >
+                  📱 {smsBusy ? 'পাঠানো হচ্ছে…' : 'Send SMS'}
                 </button>
                 <button
                   onClick={() => {

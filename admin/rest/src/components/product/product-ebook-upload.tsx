@@ -14,6 +14,7 @@ import { toast } from 'react-toastify';
  */
 export default function ProductEbookUpload({ productId }: { productId?: number | string }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const previewRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
 
   const { data, refetch, isLoading } = useQuery(
@@ -33,6 +34,7 @@ export default function ProductEbookUpload({ productId }: { productId?: number |
     }
     const form = new FormData();
     form.append('file', file);
+    form.append('preview_pages', String(previewRef.current?.value ?? 10));
     setBusy(true);
     try {
       const res: any = await HttpClient.post(`ebooks/${productId}/upload`, form, {
@@ -47,6 +49,21 @@ export default function ProductEbookUpload({ productId }: { productId?: number |
       refetch();
     } catch (e: any) {
       toast.error(e?.response?.data?.message ?? 'আপলোড ব্যর্থ হয়েছে।');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePreview = async () => {
+    setBusy(true);
+    try {
+      await HttpClient.post(`ebooks/${productId}/preview-pages`, {
+        preview_pages: Number(previewRef.current?.value ?? 0),
+      });
+      toast.success('ডেমো পৃষ্ঠা সংখ্যা সংরক্ষিত।');
+      refetch();
+    } catch {
+      toast.error('সংরক্ষণ করা যায়নি।');
     } finally {
       setBusy(false);
     }
@@ -112,6 +129,32 @@ export default function ProductEbookUpload({ productId }: { productId?: number |
             ) : (
               <p className="mb-4 text-sm text-gray-500">এখনো কোনো ই-বুক যুক্ত করা হয়নি।</p>
             )}
+
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <label className="text-xs font-semibold text-gray-600">
+                ফ্রি ডেমো পৃষ্ঠা (কেনার আগে যত পৃষ্ঠা পড়া যাবে):
+              </label>
+              <input
+                ref={previewRef}
+                key={asset?.preview_pages ?? 'new'}
+                type="number"
+                min={0}
+                max={100}
+                defaultValue={asset?.preview_pages ?? 10}
+                className="w-20 rounded border border-border-base px-2 py-1 text-sm"
+              />
+              {asset && (
+                <button
+                  type="button"
+                  onClick={savePreview}
+                  disabled={busy}
+                  className="rounded bg-gray-700 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  সেভ
+                </button>
+              )}
+              <span className="text-xs text-gray-500">০ দিলে ডেমো বন্ধ।</span>
+            </div>
 
             <input
               ref={fileRef}

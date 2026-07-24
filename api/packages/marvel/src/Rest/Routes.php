@@ -206,6 +206,10 @@ Route::get('product-search-api', [IntegrationController::class, 'productSearch']
 Route::get('price-check', [IntegrationController::class, 'priceCheck']);
 // Per-vendor delivery charge for a cart (guest checkout shows it before the server adds it).
 Route::post('vendor-delivery-quote', [IntegrationController::class, 'vendorDeliveryQuote'])->middleware('throttle:60,1');
+// E-book free sample — public on purpose: its job is to help someone decide before buying. Only
+// the opening `preview_pages` are reachable, checked on the page number itself.
+Route::get('ebooks/{product_id}/preview', [EbookController::class, 'preview']);
+Route::get('ebooks/{product_id}/preview/page/{page}', [EbookController::class, 'previewPage'])->middleware('throttle:600,1');
 // Admin product list with derived metrics (sold / wishlist / velocity)
 Route::get('product-admin-list', [IntegrationController::class, 'productAdminList']);
 // Recycle bin: restore / permanently delete a soft-deleted product (super-admin).
@@ -478,6 +482,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('ebooks/{product_id}/upload', [EbookController::class, 'upload'])->middleware($ebookAdmin);
     Route::post('ebooks/{product_id}/rebuild', [EbookController::class, 'rebuild'])->middleware($ebookAdmin);
     Route::get('ebooks/{product_id}/status', [EbookController::class, 'status'])->middleware($ebookAdmin);
+    Route::post('ebooks/{product_id}/preview-pages', [EbookController::class, 'setPreview'])->middleware($ebookAdmin);
     Route::delete('ebooks/{product_id}', [EbookController::class, 'destroy'])->middleware($ebookAdmin);
     // Customer reading endpoints (auth already applied by the surrounding group).
     Route::get('my-ebooks', [EbookController::class, 'myEbooks']);
@@ -485,6 +490,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('ebooks/{product_id}/page/{page}', [EbookController::class, 'page'])->middleware('throttle:600,1');
     Route::post('order-customer-stats', [IntegrationController::class, 'orderCustomerStats'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::get('order-search', [IntegrationController::class, 'orderSearch'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+    // Notify the customer by real SMS (the WhatsApp button only opens a compose window).
+    Route::post('orders/{id}/notify-sms', [IntegrationController::class, 'notifyCustomerSms'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
 
     // IndoBangla order dashboard summary (counts per order status).
     Route::get('orders-summary', function () {

@@ -42,7 +42,8 @@ class EbookController extends CoreController
         $this->assertAdmin($request);
         $request->validate([
             // 200 MB ceiling; the file never leaves the server so size only costs us disk.
-            'file' => 'required|file|max:204800',
+            'file'          => 'required|file|max:204800',
+            'preview_pages' => 'nullable|integer|min:0|max:100',
         ]);
         $product = Product::findOrFail((int) $product_id);
 
@@ -51,6 +52,13 @@ class EbookController extends CoreController
         } catch (\Throwable $e) {
             throw new MarvelException($e->getMessage());
         }
+        if ($request->filled('preview_pages')) {
+            $asset->update(['preview_pages' => (int) $request->input('preview_pages')]);
+            $asset = $asset->fresh();
+        }
+        // Flag the product so the storefront can spot an e-book without joining ebook_assets on
+        // every listing — the cart and the bKash-only checkout rule both need it cheaply.
+        Product::where('id', $product->id)->update(['is_ebook' => $asset->status === 'ready']);
 
         return [
             'status'  => $asset->status === 'ready' ? 'success' : 'error',
@@ -67,8 +75,10 @@ class EbookController extends CoreController
         $this->assertAdmin($request);
         $asset = EbookAsset::where('product_id', (int) $product_id)->firstOrFail();
         $this->ebooks->build($asset);
+        $asset = $asset->fresh();
+        Product::where('id', (int) $product_id)->update(['is_ebook' => $asset->status === 'ready']);
 
-        return ['status' => 'success', 'ebook' => $this->assetPayload($asset->fresh())];
+        return ['status' => 'success', 'ebook' => $this->assetPayload($asset)];
     }
 
     /** Admin: current conversion state for the product form. */
@@ -96,20 +106,82 @@ class EbookController extends CoreController
             \Illuminate\Support\Facades\Storage::disk('local')->deleteDirectory('ebooks/' . $asset->product_id);
             $asset->delete();
         }
+        Product::where('id', (int) $product_id)->update(['is_ebook' => false]);
 
         return ['status' => 'success'];
+    }
+
+    /** Admin: change how many opening pages are free to sample. */
+    public function setPreview(Request $request, $product_id)
+    {
+        $this->assertAdmin($request);
+        $request->validate(['preview_pages' => 'required|integer|min:0|max:100']);
+        $asset = EbookAsset::where('product_id', (int) $product_id)->firstOrFail();
+        $asset->update(['preview_pages' => (int) $request->input('preview_pages')]);
+
+        return ['status' => 'success', 'ebook' => $this->assetPayload($asset->fresh())];
     }
 
     private function assetPayload(EbookAsset $a): array
     {
         return [
-            'product_id'  => $a->product_id,
-            'file_name'   => $a->original_name,
-            'format'      => $a->original_format,
-            'page_count'  => $a->page_count,
-            'state'       => $a->status,
-            'error'       => $a->error,
+            'product_id'    => $a->product_id,
+            'file_name'     => $a->original_name,
+            'format'        => $a->original_format,
+            'page_count'    => $a->page_count,
+            'preview_pages' => $a->preview_pages,
+            'state'         => $a->status,
+            'error'         => $a->error,
         ];
+    }
+
+    // ---------------------------------------------------------------- preview
+    // Free sample — deliberately PUBLIC (no login), because its whole job is to help someone
+    // decide before buying. Only the opening `preview_pages` are reachable; the check is on the
+    // page number itself, so there is no way to walk past the sample.
+
+    /** Public: is there a sample, and how many pages of it. */
+    public function preview(Request $request, $product_id)
+    {
+        $asset   = EbookAsset::where('product_id', (int) $product_id)->where('status', 'ready')->first();
+        $limit   = $asset ? $asset->previewLimit() : 0;
+        $product = Product::find((int) $product_id);
+
+        return [
+            'status'        => 'success',
+            'product_id'    => (int) $product_id,
+            'name'          => optional($product)->name,
+            'slug'          => optional($product)->slug,
+            'has_preview'   => $limit > 0,
+            'preview_pages' => $limit,
+            'page_count'    => $asset ? $asset->page_count : 0,
+        ];
+    }
+
+    /** Public: one sample page, watermarked like any other. */
+    public function previewPage(Request $request, $product_id, $page)
+    {
+        $asset = EbookAsset::where('product_id', (int) $product_id)->where('status', 'ready')->firstOrFail();
+        $n = (int) $page;
+        if ($n < 1 || $n > $asset->previewLimit()) {
+            throw new MarvelException(NOT_AUTHORIZED);
+        }
+
+        $user  = $request->user();
+        $label = $user
+            ? trim((string) (optional($user->profile)->contact ?: $user->email ?: ('user#' . $user->id)))
+            : 'IndoBangla sample';
+
+        $bytes = $this->ebooks->watermarkedPage($asset, $n, $label);
+        if ($bytes === null) {
+            throw new MarvelException(NOT_FOUND);
+        }
+
+        return response($bytes, 200)
+            ->header('Content-Type', 'image/jpeg')
+            ->header('Cache-Control', 'private, no-store, max-age=0')
+            ->header('Content-Disposition', 'inline')
+            ->header('X-Content-Type-Options', 'nosniff');
     }
 
     // --------------------------------------------------------------- customer
@@ -178,19 +250,24 @@ class EbookController extends CoreController
     /** Customer: open a book — page count only. There is no file URL by design. */
     public function open(Request $request, $product_id)
     {
-        $user = $request->user();
-        $pid  = (int) $product_id;
-        if (!$this->owns($user, $pid)) {
+        $user  = $request->user();
+        $pid   = (int) $product_id;
+        $asset = EbookAsset::where('product_id', $pid)->where('status', 'ready')->firstOrFail();
+        $owned = $this->owns($user, $pid);
+        // Not a buyer and no sample configured → nothing to show.
+        if (!$owned && $asset->previewLimit() < 1) {
             throw new MarvelException(NOT_AUTHORIZED);
         }
-        $asset = EbookAsset::where('product_id', $pid)->where('status', 'ready')->firstOrFail();
         $product = Product::find($pid);
 
         return [
             'status'     => 'success',
             'product_id' => $pid,
             'name'       => optional($product)->name,
+            'owned'      => $owned,
             'page_count' => $asset->page_count,
+            // How many pages this caller may actually turn.
+            'readable_pages' => $owned ? $asset->page_count : $asset->previewLimit(),
         ];
     }
 
