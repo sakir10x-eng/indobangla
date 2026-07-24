@@ -18,6 +18,7 @@ import {
 } from 'react-query';
 import { useTranslation } from 'next-i18next';
 import { toast } from 'react-toastify';
+import { trackJourneyError } from '@/lib/analytics';
 import { useModalAction } from '@/components/ui/modal/modal.context';
 import { API_ENDPOINTS } from './client/api-endpoints';
 import client from './client';
@@ -236,6 +237,7 @@ export function useCreateOrder() {
           order.errors[0]?.message ||
             'অর্ডার সম্পন্ন করা যায়নি। একটু পরে আবার চেষ্টা করুন।'
         );
+        trackJourneyError('checkout', 'create-order', order.errors[0]?.message ?? 'order create envelope error');
         return;
       }
       const { tracking_number, payment_gateway, payment_intent } = order ?? {};
@@ -271,7 +273,8 @@ export function useCreateOrder() {
       const {
         response: { data },
       }: any = error ?? {};
-      toast.error(data?.message);
+      toast.error(data?.message || 'অর্ডার সম্পন্ন করা যায়নি। একটু পরে আবার চেষ্টা করুন।');
+      trackJourneyError('checkout', 'create-order', data?.message ?? (error as any)?.message ?? 'order create failed');
     },
   });
 

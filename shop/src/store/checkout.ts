@@ -12,6 +12,9 @@ interface DeliveryTime {
 interface VerifiedResponse {
   total_tax: number;
   shipping_charge: number;
+  // Additive per-vendor delivery charge (other vendors' products). The server adds this on top of
+  // delivery_fee at order creation, so the displayed total must include it too.
+  vendor_delivery_charge?: number;
   unavailable_products: any[];
   wallet_amount: number;
   wallet_currency: number;

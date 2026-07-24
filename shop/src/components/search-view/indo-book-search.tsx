@@ -1,4 +1,5 @@
 import { HttpClient } from '@/framework/client/http-client';
+import { trackJourneyError } from '@/lib/analytics';
 import ProductCard from '@/components/products/cards/card';
 import ProductLoader from '@/components/ui/loaders/product-loader';
 import rangeMap from '@/lib/range-map';
@@ -30,7 +31,7 @@ export default function IndoBookSearch() {
     setPage(1);
   }, [text, category, author, publisher, minPrice, maxPrice, inStock]);
 
-  const { data, isLoading, isFetching } = useQuery(
+  const { data, isLoading, isFetching, isError, refetch } = useQuery(
     [
       'indo-book-search',
       text,
@@ -55,7 +56,16 @@ export default function IndoBookSearch() {
         ...(maxPrice && { max_price: maxPrice }),
         ...(inStock && { in_stock: 1 }),
       }),
-    { keepPreviousData: true, staleTime: 5 * 60 * 1000 },
+    {
+      keepPreviousData: true,
+      staleTime: 5 * 60 * 1000,
+      // A backend/network failure must NOT read as "no books found" — that misleads shoppers into
+      // thinking a book isn't stocked and drives them off. Log it and show a distinct error state.
+      onError: (err: any) =>
+        trackJourneyError('search', 'books-listing', err?.message ?? 'books search failed', {
+          q: text || null,
+        }),
+    },
   );
 
   // scroll to top of the grid on page change
@@ -116,7 +126,18 @@ export default function IndoBookSearch() {
         </label>
       </div>
 
-      {!isLoading && products.length === 0 ? (
+      {!isLoading && isError && products.length === 0 ? (
+        <div className="py-20 text-center text-body">
+          <p>বই লোড করতে সমস্যা হচ্ছে। একটু পরে আবার চেষ্টা করুন।</p>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            className="mt-4 rounded-md bg-accent px-5 py-2 text-sm font-semibold text-white"
+          >
+            আবার চেষ্টা করুন
+          </button>
+        </div>
+      ) : !isLoading && products.length === 0 ? (
         <div className="py-20 text-center text-body">
           কোনো বই পাওয়া যায়নি। অন্য নাম বা লেখক দিয়ে খুঁজে দেখুন।
         </div>

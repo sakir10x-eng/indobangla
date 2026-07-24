@@ -13,11 +13,12 @@ use Marvel\Database\Models\Settings;
 use Marvel\Database\Models\User;
 use Marvel\Database\Models\Variation;
 use Marvel\Traits\WalletsTrait;
+use Marvel\Traits\VendorDeliveryTrait;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class CheckoutRepository
 {
-    use WalletsTrait;
+    use WalletsTrait, VendorDeliveryTrait;
 
     public function verify($request)
     {
@@ -36,14 +37,18 @@ class CheckoutRepository
         $unavailable_products = $this->checkStock($request['products']);
         $amount = $this->getOrderAmount($request, $unavailable_products);
         $shipping_charge = !empty($settings['options']['freeShipping']) && $settings['options']['freeShippingAmount'] <= $amount ? 0 : $this->calculateShippingCharge($request, $amount);
+        // Additive per-vendor delivery, on top of the order-level zone fee. Same server-side
+        // function runs at order creation, so what's shown here equals what's charged.
+        $vendor_delivery_charge = $this->vendorDeliveryCharge($request);
         $tax = $this->calculateTax($request, $shipping_charge, $amount);
-        $total = $amount + $tax + $shipping_charge;
+        $total = $amount + $tax + $shipping_charge + $vendor_delivery_charge;
         if ($total < $minimumOrderAmount) {
             throw new HttpException(400, 'Minimum order amount is ' . $minimumOrderAmount);
         }
         return [
             'total_tax'            => $tax,
             'shipping_charge'      => $shipping_charge,
+            'vendor_delivery_charge' => $vendor_delivery_charge,
             'unavailable_products' => $unavailable_products,
             'wallet_amount' => isset($wallet->available_points) ? $wallet->available_points : 0,
             'wallet_currency' => isset($wallet->available_points) ? $this->walletPointsToCurrency($wallet->available_points) : 0
@@ -104,18 +109,9 @@ class CheckoutRepository
             ? (float) $opts['dhakaDeliveryCharge'] : 60;
         $outside = isset($opts['outsideDhakaDeliveryCharge']) && $opts['outsideDhakaDeliveryCharge'] !== null && $opts['outsideDhakaDeliveryCharge'] !== ''
             ? (float) $opts['outsideDhakaDeliveryCharge'] : 120;
-        $addr = $request['shipping_address'] ?? $request['billing_address'] ?? [];
-        if (!is_array($addr)) {
-            $addr = (array) $addr;
-        }
-        $hay = mb_strtolower(trim(implode(' ', [
-            $addr['city'] ?? '',
-            $addr['state'] ?? '',
-            $addr['street_address'] ?? '',
-            $addr['address'] ?? '',
-        ])));
-        $insideDhaka = $hay !== '' && (str_contains($hay, 'dhaka') || str_contains($hay, 'ঢাকা'));
-        return $insideDhaka ? $dhaka : $outside;
+        // Same inside-Dhaka detection the per-vendor charge uses (shared trait) so the two fees
+        // always agree on the zone.
+        return $this->isInsideDhaka($request) ? $dhaka : $outside;
     }
 
     protected function calculateShippingChargeByProduct($products)

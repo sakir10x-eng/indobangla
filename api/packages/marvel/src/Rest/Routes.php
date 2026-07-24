@@ -203,6 +203,8 @@ Route::post('generate-descriptions', [AiExtractController::class, 'generateDescr
 Route::get('product-search-api', [IntegrationController::class, 'productSearch']);
 // Cart price-change check (current prices for a set of ids)
 Route::get('price-check', [IntegrationController::class, 'priceCheck']);
+// Per-vendor delivery charge for a cart (guest checkout shows it before the server adds it).
+Route::post('vendor-delivery-quote', [IntegrationController::class, 'vendorDeliveryQuote'])->middleware('throttle:60,1');
 // Admin product list with derived metrics (sold / wishlist / velocity)
 Route::get('product-admin-list', [IntegrationController::class, 'productAdminList']);
 // Recycle bin: restore / permanently delete a soft-deleted product (super-admin).

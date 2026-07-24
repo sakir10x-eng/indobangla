@@ -29,6 +29,27 @@ export function track(event: string, extra: Record<string, any> = {}) {
   }
 }
 
+// Journey error: a problem the user hit in a key flow (login / checkout / payment / search).
+// Fire-and-forget on top of track() — it never blocks or surfaces to the user. Surfaced to the
+// admin in the analytics "journey errors" panel so recurring pain points are visible + fixable.
+export function trackJourneyError(
+  journey: 'login' | 'checkout' | 'payment' | 'search',
+  step: string,
+  message?: any,
+  extra: Record<string, any> = {},
+) {
+  if (typeof window === 'undefined') return;
+  track('journey_error', {
+    path: typeof location !== 'undefined' ? location.pathname : '',
+    meta: {
+      journey,
+      step,
+      message: String(message ?? '').slice(0, 300),
+      ...extra,
+    },
+  });
+}
+
 export function trackPageView(path: string) {
   if (typeof window === 'undefined') return;
   const now = Date.now();

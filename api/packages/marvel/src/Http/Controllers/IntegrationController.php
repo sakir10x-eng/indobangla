@@ -44,7 +44,7 @@ use Marvel\Enums\Role;
  */
 class IntegrationController extends CoreController
 {
-    use WalletsTrait, AdminRolesTrait;
+    use WalletsTrait, AdminRolesTrait, \Marvel\Traits\VendorDeliveryTrait;
 
     // ---------------------------------------------------------------- search
     /** Public product search for bots (name / ISBN / sku). */
@@ -8855,6 +8855,19 @@ class IntegrationController extends CoreController
                 'ip'     => $request instanceof \Illuminate\Http\Request ? $request->ip() : null,
                 'at'     => now()->toDateTimeString(),
             ]);
+            // Also record it as an analytics event so the admin's "login blocked" panel — which
+            // reads event='login_blocked' — actually populates. The Laravel log alone was invisible
+            // to admins, so the panel that shipped never showed a single row.
+            DB::table('analytics_events')->insert([
+                'session_id' => 'login',
+                'user_id'    => null,
+                'event'      => 'login_blocked',
+                'path'       => substr((string) $email, 0, 512) ?: null,
+                'meta'       => json_encode(['reason' => $reason]),
+                'ip'         => $request instanceof \Illuminate\Http\Request ? substr((string) $request->ip(), 0, 64) : null,
+                'user_agent' => $request instanceof \Illuminate\Http\Request ? substr((string) $request->userAgent(), 0, 512) : null,
+                'created_at' => now(),
+            ]);
         } catch (\Throwable $e) {
             // swallow — logging a blocked attempt must never affect the login response
         }
@@ -8914,6 +8927,25 @@ class IntegrationController extends CoreController
         $blocks = $ev()->where('event', 'login_blocked')
             ->orderByDesc('created_at')->limit(25)->get(['path', 'meta', 'ip', 'created_at']);
 
+        // Which products shoppers put in the cart — add_to_cart is the one event the storefront
+        // actually emits, so this list is meaningful even before page-view tracking fills in.
+        $cartRows = $ev()->where('event', 'add_to_cart')->whereNotNull('product_id')
+            ->select('product_id', DB::raw('count(*) as adds'), DB::raw('count(distinct session_id) as sessions'))
+            ->groupBy('product_id')->orderByDesc('adds')->limit(20)->get();
+        $cartProds = \Marvel\Database\Models\Product::whereIn('id', $cartRows->pluck('product_id')->all())
+            ->get(['id', 'name', 'slug'])->keyBy('id');
+        $topCartProducts = $cartRows->map(fn ($r) => [
+            'product_id' => (int) $r->product_id,
+            'adds'       => (int) $r->adds,
+            'sessions'   => (int) $r->sessions,
+            'name'       => optional($cartProds->get($r->product_id))->name,
+            'slug'       => optional($cartProds->get($r->product_id))->slug,
+        ]);
+
+        // Journey errors (login / checkout / payment / search) for the "🚑 জার্নি এরর" panel.
+        $journeyErrors = $ev()->where('event', 'journey_error')
+            ->orderByDesc('created_at')->limit(40)->get(['path', 'meta', 'created_at']);
+
         return [
             'status'  => 'success',
             'days'    => $days,
@@ -8933,9 +8965,21 @@ class IntegrationController extends CoreController
             ],
             'funnel'        => ['page_views' => $pageViews, 'product_views' => $productViews, 'cart_adds' => $cartAdds],
             'top_pages'     => $topPages,
+            'top_cart_products' => $topCartProducts,
             'sessions'      => $sessions,
             'login_blocked' => $blocks,
+            'journey_errors' => $journeyErrors,
         ];
+    }
+
+    /**
+     * Public: the additive per-vendor delivery charge for a cart. The guest checkout doesn't call
+     * the full /checkout/verify, so it uses this to show the same figure the server will add at
+     * order creation (no surprise at payment). Expects { products:[{product_id}], shipping_address }.
+     */
+    public function vendorDeliveryQuote(Request $request)
+    {
+        return ['status' => 'success', 'vendor_delivery_charge' => $this->vendorDeliveryCharge($request)];
     }
 
     /** Public: record a storefront event. Kept fire-and-forget — it must never break a page. */
@@ -8943,7 +8987,7 @@ class IntegrationController extends CoreController
     {
         $sid   = substr((string) $request->input('sid', ''), 0, 64);
         $event = substr((string) $request->input('event', ''), 0, 32);
-        $allowed = ['page_view', 'product_view', 'product_click', 'add_to_cart', 'checkout_start', 'order_placed'];
+        $allowed = ['page_view', 'product_view', 'product_click', 'add_to_cart', 'checkout_start', 'order_placed', 'journey_error'];
         if ($sid === '' || !in_array($event, $allowed, true)) {
             return ['status' => 'ok'];
         }

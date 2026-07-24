@@ -68,7 +68,23 @@ export default function IndoGuestCheckout() {
         ? Number(settings?.dhakaDeliveryCharge) || 60
         : Number(settings?.outsideDhakaDeliveryCharge) || 120
       : 0;
-  const total = subtotal + delivery;
+  // Per-vendor delivery (other vendors' products). The server ADDS this on top of delivery_fee at
+  // order creation, so fetch + show it here too — otherwise the guest is charged more than shown.
+  const cartIdsKey = useMemo(
+    () => (items as any[]).map((it) => (it as any).productId ?? (it as any).id).sort().join(','),
+    [items],
+  );
+  const { data: vendorDeliveryData } = useQuery(
+    ['vendor-delivery', cartIdsKey, insideDhaka],
+    () =>
+      HttpClient.post<any>('vendor-delivery-quote', {
+        products: (items as any[]).map((it) => formatOrderedProduct(it)),
+        shipping_address: { city: insideDhaka ? 'Dhaka' : 'Bangladesh' },
+      }),
+    { enabled: (items as any[]).length > 0, keepPreviousData: true, staleTime: 60 * 1000 },
+  );
+  const vendorDelivery = Number((vendorDeliveryData as any)?.vendor_delivery_charge ?? 0);
+  const total = subtotal + delivery + vendorDelivery;
 
   const to880 = (p: string) => '880' + p.replace(/\D/g, '').replace(/^0/, '');
 
@@ -324,6 +340,12 @@ export default function IndoGuestCheckout() {
                   <span>ডেলিভারি চার্জ {insideDhaka ? '(ঢাকা)' : '(ঢাকার বাইরে)'}</span>
                   <span>{bdt(delivery)}</span>
                 </div>
+                {vendorDelivery > 0 && (
+                  <div className="row muted">
+                    <span>অন্য বিক্রেতার ডেলিভারি</span>
+                    <span>{bdt(vendorDelivery)}</span>
+                  </div>
+                )}
                 <div className="grand">
                   <span>সর্বমোট</span>
                   <span>{bdt(total)}</span>

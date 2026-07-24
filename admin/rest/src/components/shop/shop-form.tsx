@@ -518,6 +518,29 @@ const ShopForm = ({ initialValues }: { initialValues?: Shop }) => {
 
         <div className="flex flex-wrap pb-8 my-5 border-b border-gray-300 border-dashed sm:my-8">
           <Description
+            title="ডেলিভারি চার্জ (এই বিক্রেতার)"
+            details="এই দোকানের পণ্য কোনো অর্ডারে থাকলে যে অতিরিক্ত ডেলিভারি চার্জ যোগ হবে — ঢাকার ভেতরে ও বাইরে আলাদা। খালি রাখলে ডিফল্ট ৬০ / ১২০ টাকা ধরা হবে। (মূল স্টোরের নিজস্ব দোকানে এটি ০ থাকে — অর্ডারে ইতিমধ্যেই সাধারণ ডেলিভারি চার্জ ধরা হয়।)"
+            className="w-full px-0 pb-5 sm:w-4/12 sm:py-8 sm:pe-4 md:w-1/3 md:pe-5"
+          />
+          <Card className="w-full sm:w-8/12 md:w-2/3">
+            <Input
+              label="ডেলিভারি চার্জ — ঢাকার ভেতরে (৳)"
+              type="number"
+              {...register('settings.deliveryCharge.dhaka')}
+              variant="outline"
+              className="mb-5"
+            />
+            <Input
+              label="ডেলিভারি চার্জ — ঢাকার বাইরে (৳)"
+              type="number"
+              {...register('settings.deliveryCharge.outside')}
+              variant="outline"
+            />
+          </Card>
+        </div>
+
+        <div className="flex flex-wrap pb-8 my-5 border-b border-gray-300 border-dashed sm:my-8">
+          <Description
             title={t('form:social-settings')}
             details={t('form:social-settings-helper-text')}
             className="w-full px-0 pb-5 sm:w-4/12 sm:py-8 sm:pe-4 md:w-1/3 md:pe-5"

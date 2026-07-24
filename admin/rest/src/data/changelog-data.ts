@@ -17,6 +17,9 @@ export const RELEASES: Release[] = [
     date: '24 Jul 2026',
     title: 'Security hardening across sign-in, checkout and admin, plus checkout & page fixes',
     items: [
+      { type: 'added', text: 'Multi-vendor delivery charge: when a cart includes another vendor’s book, that vendor’s own delivery charge (Dhaka ৳60 / outside ৳120 by default, editable per shop by the vendor or a super-admin) is added on top of the order’s delivery fee. The main store’s own shops add nothing extra' },
+      { type: 'improved', text: 'Store analytics now captures real page views, visitor journeys and a “most added to cart” book list — most of those numbers used to read zero because page-view tracking was never switched on. The failed-login panel now populates too' },
+      { type: 'improved', text: 'Login, OTP, checkout, payment and book-search failures now show a clear message instead of a silent dead button, and a book-search error no longer reads as “no books found”. Every such failure is logged to a new analytics “journey errors” panel so recurring pain points are visible and fixable' },
       { type: 'fixed', text: 'Order board delivery timeline: every status (Ready, Shipped, In transit, Delivered) now records the date & time it was reached — before, only Pending showed a time because courier-synced status changes weren’t being timestamped' },
       { type: 'fixed', text: 'Placing an order that could not go through — a coupon that had just expired, or a book that had just sold out — left the button spinning with no message. It now tells the customer why instead of quietly failing' },
       { type: 'fixed', text: '“Pay now” now sends the customer straight to the payment page for every online (bKash) order, not just pre-orders — a normal online order no longer got stranded on an empty payment screen' },

@@ -37,6 +37,7 @@ use Marvel\Traits\CalculatePaymentTrait;
 use Marvel\Traits\OrderManagementTrait;
 use Marvel\Traits\OrderStatusManagerWithPaymentTrait;
 use Marvel\Traits\PaymentTrait;
+use Marvel\Traits\VendorDeliveryTrait;
 use Marvel\Traits\WalletsTrait;
 use Prettus\Repository\Criteria\RequestCriteria;
 use Prettus\Repository\Exceptions\RepositoryException;
@@ -47,6 +48,7 @@ class OrderRepository extends BaseRepository
         CalculatePaymentTrait,
         OrderManagementTrait,
         OrderStatusManagerWithPaymentTrait,
+        VendorDeliveryTrait,
         PaymentTrait;
     /**
      * @var array
@@ -452,6 +454,12 @@ class OrderRepository extends BaseRepository
             // SECURITY: never let a client-sent negative delivery fee credit the total.
             $request['delivery_fee'] = max(0, (float) ($request['delivery_fee'] ?? 0));
         }
+        // Per-vendor delivery — recomputed server-side, NEVER trusted from the client, and ADDED
+        // on top of the order-level zone fee (after the free-shipping branch, so free shipping
+        // waives only the main store's own fee). Main-store (super-admin-owned) shops add nothing.
+        // INVARIANT: the frontends post delivery_fee = the ORDER-LEVEL fee only; the vendor portion
+        // is added here, so it must never already be folded into the posted delivery_fee.
+        $request['delivery_fee'] = round($request['delivery_fee'] + $this->vendorDeliveryCharge($request), 2);
 
         // Hand the gift back, unrounded, so it cancels the gift line in `amount` exactly.
         $request['discount'] += $giftValue;

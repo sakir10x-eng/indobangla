@@ -50,6 +50,13 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
       amount: verifiedResponse.shipping_charge ?? 0,
     }
   );
+  // Additive per-vendor delivery (other vendors' products) — the server adds this on top.
+  const vendorDelivery = Number(verifiedResponse?.vendor_delivery_charge ?? 0);
+  const { price: vendorDeliveryPrice } = usePrice(
+    verifiedResponse && {
+      amount: vendorDelivery,
+    }
+  );
   const base_amount = calculateTotal(available_items);
   // MRP (main price) subtotal — percentage coupons discount the main price, not sale price.
   const mrp_base = (available_items ?? []).reduce(
@@ -90,7 +97,7 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
         shipping_charge: freeShippings ? 0 : verifiedResponse?.shipping_charge,
       },
       Number(calculateDiscount)
-    )
+    ) + vendorDelivery
     : 0;
   const { price: total } = usePrice(
     verifiedResponse && {
@@ -142,6 +149,12 @@ const VerifiedItemList: React.FC<Props> = ({ className }) => {
             )}
           </span>
         </div>
+        {vendorDelivery > 0 && (
+          <div className="flex justify-between">
+            <p className="text-sm text-body">অন্য বিক্রেতার ডেলিভারি</p>
+            <span className="text-sm text-body">{vendorDeliveryPrice}</span>
+          </div>
+        )}
         {discount && coupon ? (
           <div className="flex justify-between">
             <p className="flex items-center gap-1 text-sm text-body ltr:mr-2 rtl:ml-2">

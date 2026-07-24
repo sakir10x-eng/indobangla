@@ -54,7 +54,15 @@ export const CartProvider: React.FC<{ children?: React.ReactNode }> = (
   const addItemsToCart = (items: Item[]) =>
     dispatch({ type: 'ADD_ITEMS_WITH_QUANTITY', items });
   const addItemToCart = (item: Item, quantity: number) => {
-    track('add_to_cart', { product_id: (item as any)?.productId ?? (item as any)?.id });
+    track('add_to_cart', {
+      product_id: (item as any)?.productId ?? (item as any)?.id,
+      meta: {
+        variation_id: (item as any)?.variationId ?? null,
+        qty: quantity,
+        name: (item as any)?.name,
+        price: (item as any)?.price,
+      },
+    });
     dispatch({ type: 'ADD_ITEM_WITH_QUANTITY', item, quantity });
   };
   const removeItemFromCart = (id: Item['id']) =>

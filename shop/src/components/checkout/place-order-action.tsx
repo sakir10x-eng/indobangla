@@ -64,14 +64,18 @@ export const PlaceOrderAction: React.FC<{
   const freeShippingAmount = settings?.freeShippingAmount;
   const freeShipping = settings?.freeShipping;
   let freeShippings = freeShipping && Number(freeShippingAmount) <= subtotal;
-  const total = calculatePaidTotal(
-    {
-      totalAmount: subtotal,
-      tax: verified_response?.total_tax!,
-      shipping_charge: verified_response?.shipping_charge!,
-    },
-    Number(discount),
-  );
+  // Per-vendor delivery is added by the SERVER on top of delivery_fee; delivery_fee we post stays
+  // the order-level fee only. Add the vendor portion to the DISPLAYED/paid total so it matches
+  // exactly what the server will store (no surprise at payment).
+  const total =
+    calculatePaidTotal(
+      {
+        totalAmount: subtotal,
+        tax: verified_response?.total_tax!,
+        shipping_charge: verified_response?.shipping_charge!,
+      },
+      Number(discount),
+    ) + Number(verified_response?.vendor_delivery_charge ?? 0);
   const handlePlaceOrder = () => {
     if (!customer_contact) {
       setErrorMessage('Contact Number Is Required');

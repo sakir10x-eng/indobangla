@@ -2,6 +2,7 @@ import { HttpClient } from '@/framework/client/http-client';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
+import { trackJourneyError } from '@/lib/analytics';
 
 const bdt = (n: number) => '৳' + Math.round(Number(n) || 0).toLocaleString('en-IN');
 
@@ -46,6 +47,7 @@ export default function PayPage() {
       if (r?.order?.paid) setDone(true);
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || 'লিংকটি সঠিক নয় বা মেয়াদ শেষ।');
+      trackJourneyError('payment', 'pay-info', e?.response?.data?.message ?? e?.message ?? 'pay link load failed');
     }
   };
   useEffect(() => {
@@ -84,6 +86,7 @@ export default function PayPage() {
       throw new Error('পেমেন্ট সম্পন্ন করা যায়নি।');
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || 'পেমেন্ট সম্পন্ন করা যায়নি।');
+      trackJourneyError('payment', 'pay-confirm', e?.response?.data?.message ?? e?.message ?? 'payment failed');
     } finally {
       setPaying(false);
     }

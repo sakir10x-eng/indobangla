@@ -36,6 +36,7 @@ import {
   useQueryClient,
 } from 'react-query';
 import { toast } from 'react-toastify';
+import { trackJourneyError } from '@/lib/analytics';
 
 export function useUser() {
   const [isAuthorized] = useAtom(authorizationAtom);
@@ -192,8 +193,11 @@ export function useLogin() {
       setAuthorized(true);
       closeModal();
     },
-    onError: (error: Error) => {
-      console.log(error.message);
+    onError: (error: any) => {
+      // A network/500 must not leave the button silently spinning with no feedback — the user
+      // assumes the site is broken and leaves. Show a message and log it for the admin panel.
+      toast.error('লগইনে সমস্যা হচ্ছে — একটু পরে আবার চেষ্টা করুন।');
+      trackJourneyError('login', 'email-login', error?.message ?? 'login request failed');
     },
     onSettled: () => {
       queryClient.invalidateQueries(API_ENDPOINTS.NOTIFY_LOGS);
@@ -237,18 +241,29 @@ export function useSocialLogin() {
   const [_, setAuthorized] = useAtom(authorizationAtom);
 
   return useMutation(client.users.socialLogin, {
-    onSuccess: (data) => {
-      if (data?.token && data?.permissions?.length) {
-        setToken(data?.token);
-        setAuthorized(true);
+    onSuccess: (data: any) => {
+      // Surface the HTTP-200 {errors} envelope instead of a generic message.
+      if (data?.errors?.length) {
+        toast.error(data.errors[0]?.message ?? `${t('error-credential-wrong')}`);
+        trackJourneyError('login', 'social-login', data.errors[0]?.message ?? 'social login error');
         return;
       }
-      if (!data.token) {
-        toast.error(`${t('error-credential-wrong')}`);
+      // A token alone means the account is usable — don't also require non-empty permissions, or
+      // the known empty-roles case leaves "Login with Google" doing nothing (no token, no toast).
+      if (data?.token) {
+        setToken(data?.token);
+        setAuthorized(true);
+        if (!data?.permissions?.length) {
+          trackJourneyError('login', 'social-login-empty-roles', 'token issued with empty permissions');
+        }
+        return;
       }
+      toast.error(`${t('error-credential-wrong')}`);
+      trackJourneyError('login', 'social-login', 'no token returned');
     },
-    onError: (error: Error) => {
-      console.log(error.message);
+    onError: (error: any) => {
+      toast.error('গুগল/ফেসবুক লগইনে সমস্যা হচ্ছে — একটু পরে আবার চেষ্টা করুন।');
+      trackJourneyError('login', 'social-login', error?.message ?? 'social login request failed');
     },
     onSettled: () => {
       queryClient.invalidateQueries(API_ENDPOINTS.NOTIFY_LOGS);
@@ -278,8 +293,9 @@ export function useSendOtpCode({
         ...(verifyOnly && { step: 'OtpForm' }),
       });
     },
-    onError: (error: Error) => {
-      console.log(error.message);
+    onError: (error: any) => {
+      toast.error('OTP পাঠাতে সমস্যা হচ্ছে — একটু পরে আবার চেষ্টা করুন।');
+      trackJourneyError('login', 'send-otp', error?.message ?? 'send otp failed');
     },
   });
 
@@ -338,8 +354,9 @@ export function useOtpLogin() {
       });
       closeModal();
     },
-    onError: (error: Error) => {
-      console.log(error.message);
+    onError: (error: any) => {
+      setServerError('text-otp-verify-failed');
+      trackJourneyError('login', 'otp-login', error?.message ?? 'otp login failed');
     },
     onSettled: () => {
       queryClient.invalidateQueries(API_ENDPOINTS.NOTIFY_LOGS);

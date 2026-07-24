@@ -49,7 +49,9 @@ export default function AnalyticsPage() {
   const f = data?.funnel ?? {};
   const sessions: any[] = data?.sessions ?? [];
   const topPages: any[] = data?.top_pages ?? [];
+  const topCart: any[] = data?.top_cart_products ?? [];
   const blocks: any[] = data?.login_blocked ?? [];
+  const journeyErrors: any[] = data?.journey_errors ?? [];
 
   const pv = Number(f.page_views) || 0;
   const pct = (n: number) => (pv > 0 ? Math.round((n / pv) * 100) : 0);
@@ -157,6 +159,23 @@ export default function AnalyticsPage() {
                 ))}
               </div>
             </div>
+
+            {/* Top add-to-cart products */}
+            <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
+              <div className="mb-3 text-sm font-bold text-slate-700">🛒 কার্টে সবচেয়ে বেশি যোগ হওয়া বই</div>
+              <div className="space-y-1.5">
+                {topCart.length === 0 && <div className="text-[13px] text-slate-400">এখনো ডেটা নেই</div>}
+                {topCart.map((p, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2 text-[12.5px]">
+                    <a href={p.slug ? `/products/${p.slug}` : '#'} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate font-semibold text-slate-700 hover:text-accent">
+                      {p.name || `#${p.product_id}`}
+                    </a>
+                    <span className="shrink-0 font-bold text-slate-800">{num(p.adds)}</span>
+                    <span className="shrink-0 text-[11px] text-slate-400">{num(p.sessions)} জন</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* Sessions with journey */}
@@ -210,6 +229,31 @@ export default function AnalyticsPage() {
                       <span className="shrink-0 rounded bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">{reason}</span>
                       <span className="shrink-0 text-[11px] text-slate-400">{b.ip}</span>
                       <span className="shrink-0 text-[11px] text-slate-400">{ago(b.created_at)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Journey errors — login / checkout / payment / search */}
+          {journeyErrors.length > 0 && (
+            <div className="mt-5 rounded-xl bg-white p-4 ring-1 ring-slate-200">
+              <div className="mb-3 text-sm font-bold text-amber-700">🚑 জার্নি এরর (লগইন / চেকআউট / পেমেন্ট / সার্চ)</div>
+              <div className="space-y-1.5">
+                {journeyErrors.map((e, i) => {
+                  let m: any = {};
+                  try {
+                    m = JSON.parse(e.meta || '{}');
+                  } catch {}
+                  return (
+                    <div key={i} className="flex items-center justify-between gap-2 text-[12.5px]">
+                      <span className="shrink-0 rounded bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                        {m.journey || '—'}{m.step ? ` · ${m.step}` : ''}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-slate-600" title={m.message}>{m.message || '—'}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-slate-400">{shortPath(e.path)}</span>
+                      <span className="shrink-0 text-[11px] text-slate-400">{ago(e.created_at)}</span>
                     </div>
                   );
                 })}

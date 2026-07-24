@@ -72,6 +72,14 @@ class ShopRepository extends BaseRepository
             $data = $request->only($this->dataArray);
             $data['slug'] = $this->makeSlug($request);
             $data['owner_id'] = $request->user()->id;
+            // Main-store shops (created by a super-admin) carry NO per-vendor delivery charge —
+            // the order already includes the order-level zone fee, so default them to 0. Real
+            // vendors fall back to 60/120 at checkout when they haven't set their own.
+            if ($request->user()->hasPermissionTo(Permission::SUPER_ADMIN)) {
+                $settings = (array) ($data['settings'] ?? []);
+                $settings['deliveryCharge'] = ['dhaka' => 0, 'outside' => 0];
+                $data['settings'] = $settings;
+            }
             $shop = $this->create($data);
             if (isset($request['categories'])) {
                 $shop->categories()->attach($request['categories']);

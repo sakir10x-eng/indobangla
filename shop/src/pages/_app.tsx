@@ -16,6 +16,8 @@ import { NextPageWithLayout } from '@/types';
 import QueryProvider from '@/framework/client/query-provider';
 import { getDirection } from '@/lib/constants';
 import { useRouter } from 'next/router';
+import { useEffect } from 'react';
+import { trackPageView } from '@/lib/analytics';
 import dynamic from 'next/dynamic';
 const ToastContainer = dynamic(
   () => import('react-toastify').then((module) => module.ToastContainer),
@@ -46,11 +48,21 @@ function CustomApp({
   // Use the layout defined at the page level, if available
   const getLayout = Component.getLayout ?? ((page) => page);
   const authenticationRequired = Component.authenticationRequired ?? false;
-  const { locale } = useRouter();
+  const router = useRouter();
+  const { locale } = router;
   const dir = getDirection(locale);
   // Heartbeat for the admin's live-visitor counter. Here in _app so it covers every page; it
   // swallows its own errors and never renders anything.
   usePresencePing();
+  // Storefront page-view tracking → admin analytics (visitors, funnel, top pages, journeys).
+  // trackPageView existed but was never wired, so every page-view KPI read 0. Fire-and-forget.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    trackPageView(window.location.pathname + window.location.search);
+    const handler = (url: string) => trackPageView(url);
+    router.events.on('routeChangeComplete', handler);
+    return () => router.events.off('routeChangeComplete', handler);
+  }, [router.events]);
   return (
     <>
       <div dir={dir}>
