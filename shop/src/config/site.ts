@@ -93,6 +93,11 @@ export const siteSettings = {
       label: 'Messages',
     },
     {
+      // Bought e-books are read in the browser — there is no download, by design.
+      href: Routes.ebooks,
+      label: 'আমার ই-বুক',
+    },
+    {
       href: Routes.downloads,
       label: 'profile-sidebar-downloads',
     },

@@ -34,6 +34,7 @@ const AUTH_ONLY_PREFIXES = [
   '/checkout',
   '/cards',
   '/downloads',
+  '/ebooks',
   '/messages',
   '/refunds',
   '/reports',
@@ -89,6 +90,16 @@ export class HttpClient {
   static async post<T>(url: string, data: unknown, options?: any) {
     const response = await Axios.post<T>(url, data, options);
     return response.data;
+  }
+
+  /**
+   * Fetch binary through the authenticated client. Used by the e-book reader: page images are
+   * entitlement-checked, so they can't be loaded with a plain <img src> (no Authorization header
+   * there) — and going through axios also means no page URL that could simply be copied out.
+   */
+  static async getBlob(url: string, params?: unknown): Promise<Blob> {
+    const response = await Axios.get(url, { params, responseType: 'blob' });
+    return response.data as Blob;
   }
 
   static async put<T>(url: string, data: unknown) {

@@ -61,6 +61,7 @@ import RichTextEditor from '@/components/ui/wysiwyg-editor/editor';
 import TooltipLabel from '@/components/ui/tooltip-label';
 import AiAutofill from '@/components/product/ai-autofill';
 import ProductBookFields from '@/components/product/product-book-fields';
+import ProductEbookUpload from '@/components/product/product-ebook-upload';
 
 type ProductFormProps = {
   initialValues?: Product | null;
@@ -322,6 +323,8 @@ export default function CreateOrUpdateProductForm({
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
           <AiAutofill />
           <ProductBookFields />
+
+          <ProductEbookUpload productId={initialValues?.id} />
           <div className="flex flex-wrap pb-8 my-5 border-b border-dashed border-border-base sm:my-8">
             <Description
               title={t('form:featured-image-title')}
