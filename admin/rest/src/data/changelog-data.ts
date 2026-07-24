@@ -17,6 +17,7 @@ export const RELEASES: Release[] = [
     date: '24 Jul 2026',
     title: 'Security hardening across sign-in, checkout and admin, plus checkout & page fixes',
     items: [
+      { type: 'improved', text: 'Product list now sorts by “Recently updated” by default, so the book you just edited is at the top when you come back to the list (the other sorts are still in the dropdown)' },
       { type: 'fixed', text: 'Books carried over from the old site showed no ISBN, print type, page count, printed country, language, condition or edition — those details sit in the old per-book columns and the new product screen only read the newer “book spec” store, which only ~29 of ~9,000 books had. All of them now show again (≈7,900 print types, ≈7,900 printed countries, ≈7,000 page counts, ≈4,500 ISBNs), and old wordings like “hardcover”, “Old (unused)” or “Abroad” are matched to the new dropdown options instead of being blanked' },
       { type: 'added', text: 'Product entry: a “search keywords” field under Group & Categories, auto-suggested from the book’s own details (name, Bangla name, author, publisher, categories, tags, edition, ISBN) and freely editable. The storefront search now matches these words too, so a book is findable by synonyms, alternate spellings or a series name its title doesn’t contain' },
       { type: 'improved', text: 'Product entry: Print Type and Condition are now dropdowns instead of free text — Hardcover / Paperback / Flexibound / Leatherbound, and New / Used / Old Stock (unused) / Little Damaged / Damaged (new books default to New)' },

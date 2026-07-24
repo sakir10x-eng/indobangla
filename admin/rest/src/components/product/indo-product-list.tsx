@@ -65,7 +65,8 @@ function Kpi({ icon: Icon, label, value, fg, bg }: any) {
 export default function IndoProductList() {
   const [q, setQ] = useState('');
   const [chip, setChip] = useState('all');
-  const [sort, setSort] = useState('newest');
+  // Last-edited first by default — after saving a book you land back on the list and it's on top.
+  const [sort, setSort] = useState('updated');
   const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<any>(null);
   const [shopModal, setShopModal] = useState<{ product: any; mode: 'copy' | 'move' } | null>(null);
@@ -137,6 +138,7 @@ export default function IndoProductList() {
             </div>
             <div style={{ position: 'relative' }}>
               <select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }} style={{ appearance: 'none', padding: '10px 34px', border: `1px solid ${C.line}`, borderRadius: 10, fontSize: 13, fontWeight: 600, background: C.paper, color: C.ink }}>
+                <option value="updated">Recently updated</option>
                 <option value="sold">Top selling</option>
                 <option value="wishlist">Most wishlisted</option>
                 <option value="stock">Lowest stock</option>

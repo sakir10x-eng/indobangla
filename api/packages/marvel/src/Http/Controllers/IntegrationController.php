@@ -88,7 +88,7 @@ class IntegrationController extends CoreController
     {
         $search = trim((string) $request->input('search', ''));
         $chip   = (string) $request->input('chip', 'all');
-        $sort   = (string) $request->input('sort', 'sold');
+        $sort   = (string) $request->input('sort', 'updated');
         $page   = max(1, (int) $request->input('page', 1));
         $limit  = min(60, max(1, (int) $request->input('limit', 20)));
 
@@ -124,7 +124,10 @@ class IntegrationController extends CoreController
             case 'price':    $q->orderByDesc('price'); break;
             case 'stock':    $q->orderBy('quantity'); break;
             case 'newest':   $q->orderByDesc('created_at'); break;
-            default:         $q->orderByDesc('total_sold');
+            case 'sold':     $q->orderByDesc('total_sold'); break;
+            // Default: whatever was edited last sits on top, so a book you just changed is the
+            // first thing you see when you come back to the list.
+            default:         $q->orderByDesc('updated_at');
         }
 
         if ($chip === 'bestseller') {
