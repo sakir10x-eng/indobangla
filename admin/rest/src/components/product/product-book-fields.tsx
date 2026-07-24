@@ -8,8 +8,17 @@ import { useFormContext } from 'react-hook-form';
  * IndoBangla book specification fields. Stored as a single "book_meta"
  * product meta entry (see form-utils getProductInputValues / Product model).
  */
+const PRINT_TYPES = ['Hardcover', 'Paperback', 'Flexibound', 'Leatherbound'];
+const CONDITIONS = ['New', 'Used', 'Old Stock (unused)', 'Little Damaged', 'Damaged'];
+const COUNTRIES = ['Bangladesh', 'India', 'China', 'UK', 'USA', 'Others'];
+
 export default function ProductBookFields() {
-  const { register } = useFormContext();
+  const { register, watch } = useFormContext();
+  // Books imported from the old site can carry a wording we don't list (e.g. "Old like new").
+  // Render it as an extra option so opening the form never silently blanks a saved value.
+  const printType = watch('book.print_type');
+  const condition = watch('book.condition');
+  const country = watch('book.printed_country');
 
   return (
     <div className="flex flex-wrap pb-8 border-b border-dashed border-border-base my-5 sm:my-8">
@@ -28,12 +37,12 @@ export default function ProductBookFields() {
               className="mt-1 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
             >
               <option value="">— select —</option>
-              <option value="Bangladesh">Bangladesh</option>
-              <option value="India">India</option>
-              <option value="China">China</option>
-              <option value="UK">UK</option>
-              <option value="USA">USA</option>
-              <option value="Others">Others</option>
+              {COUNTRIES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+              {country && !COUNTRIES.includes(country) && (
+                <option value={country}>{country}</option>
+              )}
             </select>
           </div>
           <Input label="Language" {...register('book.language')} />
@@ -44,10 +53,12 @@ export default function ProductBookFields() {
               className="mt-1 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
             >
               <option value="">— select —</option>
-              <option value="Hardcover">Hardcover</option>
-              <option value="Paperback">Paperback</option>
-              <option value="Flexibound">Flexibound</option>
-              <option value="Leatherbound">Leatherbound</option>
+              {PRINT_TYPES.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+              {printType && !PRINT_TYPES.includes(printType) && (
+                <option value={printType}>{printType}</option>
+              )}
             </select>
           </div>
 
@@ -57,11 +68,12 @@ export default function ProductBookFields() {
               {...register('book.condition')}
               className="mt-1 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
             >
-              <option value="New">New</option>
-              <option value="Used">Used</option>
-              <option value="Old Stock (unused)">Old Stock (unused)</option>
-              <option value="Little Damaged">Little Damaged</option>
-              <option value="Damaged">Damaged</option>
+              {CONDITIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+              {condition && !CONDITIONS.includes(condition) && (
+                <option value={condition}>{condition}</option>
+              )}
             </select>
           </div>
           <Input label="Reading level" {...register('book.reading_level')} />

@@ -113,7 +113,53 @@ class Product extends Model
     {
         try {
             $val = $this->getMeta('book_meta');
-            return !empty($val) ? $val : null;
+            if (!empty($val)) {
+                return $val;
+            }
+            // LEGACY FALLBACK — books carried over from the old site keep these details in their
+            // own columns (ISBN_10/13, paper_hard_cover, page_number, book_printed_origin …), not
+            // in book_meta: only ~29 of ~9,000 products ever got a book_meta row, so without this
+            // the ISBN / print type / page count / printed country read blank everywhere. Nothing
+            // is rewritten here — the values are simply surfaced, and the first admin save
+            // persists them into book_meta going forward.
+            $a = $this->attributes;
+            // Old values differ in case and wording from the current dropdowns
+            // ("hardcover", "Old (unused)", "Abroad", "india"), so map them onto the canonical
+            // options. Anything unrecognised passes through untouched rather than being dropped.
+            $norm = function ($v, array $map) {
+                $v = trim((string) ($v ?? ''));
+                if ($v === '') {
+                    return null;
+                }
+                return $map[mb_strtolower($v)] ?? $v;
+            };
+            $legacy = [
+                'printed_country' => $norm($a['book_printed_origin'] ?? ($a['country_origin'] ?? null), [
+                    'bangladesh' => 'Bangladesh', 'india' => 'India', 'china' => 'China',
+                    'uk' => 'UK', 'usa' => 'USA', 'abroad' => 'Others', 'others' => 'Others',
+                ]),
+                'language'      => $norm($a['book_wriiten_language'] ?? null, []),
+                'print_type'    => $norm($a['paper_hard_cover'] ?? null, [
+                    'hardcover' => 'Hardcover', 'hard cover' => 'Hardcover',
+                    'paperback' => 'Paperback', 'paper back' => 'Paperback',
+                    'flexibound' => 'Flexibound', 'leatherbound' => 'Leatherbound',
+                ]),
+                'condition'     => $norm($a['item_condition'] ?? null, [
+                    'new' => 'New', 'used' => 'Used',
+                    'old (unused)' => 'Old Stock (unused)', 'old stock (unused)' => 'Old Stock (unused)',
+                    'old like new' => 'Old Stock (unused)',
+                    'little damage' => 'Little Damaged', 'little damaged' => 'Little Damaged',
+                    'damage' => 'Damaged', 'damaged' => 'Damaged',
+                ]),
+                'reading_level' => $norm($a['readling_level'] ?? null, []),
+                'edition'       => $norm($a['book_edition'] ?? null, []),
+                'isbn10'        => $norm($a['ISBN_10'] ?? null, []),
+                'isbn13'        => $norm($a['ISBN_13'] ?? null, []),
+                'item_weight'   => $norm($a['item_weight'] ?? null, []),
+                'page_number'   => $norm($a['page_number'] ?? null, []),
+            ];
+            $legacy = array_filter($legacy, fn ($v) => $v !== null && $v !== '');
+            return !empty($legacy) ? $legacy : null;
         } catch (\Throwable $e) {
             return null;
         }
