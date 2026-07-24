@@ -37,9 +37,33 @@ export default function ProductBookFields() {
             </select>
           </div>
           <Input label="Language" {...register('book.language')} />
-          <Input label="Print Type" {...register('book.print_type')} placeholder="hardcover / paperback" />
+          <div>
+            <Label>Print Type</Label>
+            <select
+              {...register('book.print_type')}
+              className="mt-1 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
+            >
+              <option value="">— select —</option>
+              <option value="Hardcover">Hardcover</option>
+              <option value="Paperback">Paperback</option>
+              <option value="Flexibound">Flexibound</option>
+              <option value="Leatherbound">Leatherbound</option>
+            </select>
+          </div>
 
-          <Input label="Condition" {...register('book.condition')} placeholder="New / Used" />
+          <div>
+            <Label>Condition</Label>
+            <select
+              {...register('book.condition')}
+              className="mt-1 h-12 w-full rounded border border-border-base px-4 text-sm focus:border-accent focus:outline-none"
+            >
+              <option value="New">New</option>
+              <option value="Used">Used</option>
+              <option value="Old Stock (unused)">Old Stock (unused)</option>
+              <option value="Little Damaged">Little Damaged</option>
+              <option value="Damaged">Damaged</option>
+            </select>
+          </div>
           <Input label="Reading level" {...register('book.reading_level')} />
           <Input label="Edition" {...register('book.edition')} />
 

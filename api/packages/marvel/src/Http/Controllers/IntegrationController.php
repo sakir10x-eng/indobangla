@@ -3038,18 +3038,26 @@ class IntegrationController extends CoreController
             $like    = '%' . $text . '%';
             $tokens  = array_slice(preg_split('/\s+/u', $text, -1, PREG_SPLIT_NO_EMPTY) ?: [], 0, 6);
             $query->where(function ($q) use ($like, $tokens) {
+                // Admin-curated search keywords ("search_keywords" meta) — lets a book surface for
+                // synonyms, alternate spellings and series names its own title doesn't contain.
+                $kw = fn ($needle) => fn ($s) => $s->selectRaw('1')->from('products_meta')
+                    ->whereColumn('products_meta.product_id', 'products.id')
+                    ->where('products_meta.key', 'search_keywords')
+                    ->where('products_meta.value', 'like', $needle);
                 $q->where('name', 'like', $like)
                     ->orWhere('bangla_name', 'like', $like)
                     ->orWhere('slug', 'like', $like)
                     ->orWhereHas('author', fn ($a) => $a->where('name', 'like', $like))
                     ->orWhereHas('categories', fn ($c) =>
-                        $c->where('categories.name', 'like', $like)->orWhere('categories.slug', 'like', $like));
+                        $c->where('categories.name', 'like', $like)->orWhere('categories.slug', 'like', $like))
+                    ->orWhereExists($kw($like));
                 foreach ($tokens as $tok) {
                     $tl = '%' . $tok . '%';
                     $q->orWhere('name', 'like', $tl)
                         ->orWhere('bangla_name', 'like', $tl)
                         ->orWhere('slug', 'like', $tl)
-                        ->orWhereHas('author', fn ($a) => $a->where('name', 'like', $tl));
+                        ->orWhereHas('author', fn ($a) => $a->where('name', 'like', $tl))
+                        ->orWhereExists($kw($tl));
 
                     // SOUNDEX only understands Latin letters. On Bangla it collapses almost
                     // every word to the same code, so searching "পাতালজাতক" dragged in every

@@ -17,6 +17,8 @@ export const RELEASES: Release[] = [
     date: '24 Jul 2026',
     title: 'Security hardening across sign-in, checkout and admin, plus checkout & page fixes',
     items: [
+      { type: 'added', text: 'Product entry: a “search keywords” field under Group & Categories, auto-suggested from the book’s own details (name, Bangla name, author, publisher, categories, tags, edition, ISBN) and freely editable. The storefront search now matches these words too, so a book is findable by synonyms, alternate spellings or a series name its title doesn’t contain' },
+      { type: 'improved', text: 'Product entry: Print Type and Condition are now dropdowns instead of free text — Hardcover / Paperback / Flexibound / Leatherbound, and New / Used / Old Stock (unused) / Little Damaged / Damaged (new books default to New)' },
       { type: 'added', text: 'Multi-vendor delivery charge: when a cart includes another vendor’s book, that vendor’s own delivery charge (Dhaka ৳60 / outside ৳120 by default, editable per shop by the vendor or a super-admin) is added on top of the order’s delivery fee. The main store’s own shops add nothing extra' },
       { type: 'improved', text: 'Store analytics now captures real page views, visitor journeys and a “most added to cart” book list — most of those numbers used to read zero because page-view tracking was never switched on. The failed-login panel now populates too' },
       { type: 'improved', text: 'Login, OTP, checkout, payment and book-search failures now show a clear message instead of a silent dead button, and a book-search error no longer reads as “no books found”. Every such failure is logged to a new analytics “journey errors” panel so recurring pain points are visible and fixable' },

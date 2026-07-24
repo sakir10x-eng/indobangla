@@ -90,6 +90,7 @@ class Product extends Model
         'blocked_dates',
         'translated_languages',
         'book',
+        'search_keywords',
     ];
 
     /**
@@ -113,6 +114,21 @@ class Product extends Model
         try {
             $val = $this->getMeta('book_meta');
             return !empty($val) ? $val : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Admin-editable search keywords ("search_keywords" meta). Auto-suggested from the product's
+     * own details in the admin form, then matched by the storefront search so a book also surfaces
+     * for the words shoppers actually type (synonyms, alternate spellings, series names).
+     */
+    public function getSearchKeywordsAttribute()
+    {
+        try {
+            $val = $this->getMeta('search_keywords');
+            return is_string($val) && $val !== '' ? $val : null;
         } catch (\Throwable $e) {
             return null;
         }

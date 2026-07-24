@@ -25,6 +25,7 @@ import { useTranslation } from 'next-i18next';
 import { useShopQuery } from '@/data/shop';
 import cn from 'classnames';
 import ProductTagInput from '@/components/product/product-tag-input';
+import ProductSearchKeywords from '@/components/product/product-search-keywords';
 import { Config } from '@/config';
 import Alert from '@/components/ui/alert';
 import { useEffect, useMemo, useRef, useState, lazy } from 'react';
@@ -421,6 +422,7 @@ export default function CreateOrUpdateProductForm({
               <ProductAuthorInput control={control} />
               <ProductManufacturerInput control={control} setValue={setValue} />
               <ProductTagInput control={control} setValue={setValue} />
+              <ProductSearchKeywords />
             </Card>
           </div>
 

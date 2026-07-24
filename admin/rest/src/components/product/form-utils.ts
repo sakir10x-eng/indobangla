@@ -124,7 +124,9 @@ export function getProductDefaultValues(
       // isVariation: false,
       variations: [],
       variation_options: [],
-      book: {},
+      // New books default to Condition = New (the overwhelmingly common case).
+      book: { condition: 'New' },
+      search_keywords: '',
       status: 'publish',
       preorder_show_count: true,
       gift_per_copy: true,
@@ -256,12 +258,20 @@ export function getProductInputValues(
     variations,
     in_flash_sale,
     book,
+    search_keywords,
     ...simpleValues
   } = values;
   const bookMeta =
     book && Object.values(book).some((v) => v !== '' && v !== null && v !== undefined)
       ? [{ key: 'book_meta', value: book }]
       : [];
+  // Admin-editable search keywords, stored as their own meta so the storefront search can match
+  // them directly (matching inside the book_meta blob would drag in every book that merely shares
+  // a printed country or language).
+  // Always sent (even when blank) — setMeta only writes the keys it's given, so omitting it would
+  // leave a previously saved keyword list behind when the admin clears the field.
+  const kw = typeof search_keywords === 'string' ? search_keywords.trim() : '';
+  const keywordMeta = [{ key: 'search_keywords', value: kw }];
   // const { locale } = useRouter();
   // const router = useRouter();
   const processedFile = processFileWithName(digital_file_input);
@@ -269,7 +279,7 @@ export function getProductInputValues(
     ...simpleValues,
     is_digital,
     in_flash_sale,
-    metas: bookMeta,
+    metas: [...bookMeta, ...keywordMeta],
     // language: router.locale,
     author_id: author?.id,
     manufacturer_id: manufacturer?.id,
