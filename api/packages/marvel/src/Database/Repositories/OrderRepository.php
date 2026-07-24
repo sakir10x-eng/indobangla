@@ -272,6 +272,7 @@ class OrderRepository extends BaseRepository
     public function storeOrder($request, $settings): mixed
     {
         $this->guardChallengeOrder($request);
+        $this->guardEbookOrder($request);
         $request['tracking_number'] = $this->generateTrackingNumber();
         // $request->merge([
         //     'payable'         => $request['paid_total'], // amount to be paid through paymentGateway
@@ -608,6 +609,29 @@ class OrderRepository extends BaseRepository
      * verifyCoupon already checks this at checkout, but the cart can be edited after the
      * coupon is verified — this is the point of no return, so it is checked again here.
      */
+    /**
+     * E-books unlock for reading the moment the order is paid, so they have to be PREPAID — a
+     * cash-on-delivery order would hand over reading rights before any money is collected, and
+     * there is nothing to take back. bKash only, enforced server-side (the storefront hides the
+     * other options, but the check has to live here to actually be a rule).
+     */
+    protected function guardEbookOrder($request): void
+    {
+        $ids = array_values(array_filter(array_map(
+            fn ($p) => $p['product_id'] ?? null,
+            (array) ($request['products'] ?? [])
+        )));
+        if (empty($ids)) {
+            return;
+        }
+        if (!\Marvel\Database\Models\EbookAsset::whereIn('product_id', $ids)->exists()) {
+            return;
+        }
+        if (strtoupper((string) ($request['payment_gateway'] ?? '')) !== PaymentGatewayType::BKASH) {
+            throw new MarvelException('ই-বুক শুধু বিকাশ (bKash) দিয়ে কেনা যায়। পেমেন্ট মাধ্যম হিসেবে বিকাশ বেছে নিন।');
+        }
+    }
+
     protected function guardChallengeOrder($request): void
     {
         if (empty($request['coupon_id'])) {

@@ -25,6 +25,7 @@ use Marvel\Http\Controllers\ConversationController;
 use Marvel\Http\Controllers\CouponController;
 use Marvel\Http\Controllers\DeliveryTimeController;
 use Marvel\Http\Controllers\DownloadController;
+use Marvel\Http\Controllers\EbookController;
 use Marvel\Http\Controllers\FaqsController;
 use Marvel\Http\Controllers\FeedbackController;
 use Marvel\Http\Controllers\FlashSaleController;
@@ -468,6 +469,20 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('product-reports', [IntegrationController::class, 'productReports'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::put('product-reports/{id}', [IntegrationController::class, 'productReportUpdate'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::post('admin-create-customer', [IntegrationController::class, 'adminCreateCustomer'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
+
+    // ------------------------------------------------------------------- e-books
+    // A sold e-book is READ, never downloaded: the file stays on the private disk and only
+    // watermarked page images are streamed, after an entitlement check. There is deliberately
+    // no route that returns the book file itself.
+    $ebookAdmin = 'permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF;
+    Route::post('ebooks/{product_id}/upload', [EbookController::class, 'upload'])->middleware($ebookAdmin);
+    Route::post('ebooks/{product_id}/rebuild', [EbookController::class, 'rebuild'])->middleware($ebookAdmin);
+    Route::get('ebooks/{product_id}/status', [EbookController::class, 'status'])->middleware($ebookAdmin);
+    Route::delete('ebooks/{product_id}', [EbookController::class, 'destroy'])->middleware($ebookAdmin);
+    // Customer reading endpoints (auth already applied by the surrounding group).
+    Route::get('my-ebooks', [EbookController::class, 'myEbooks']);
+    Route::get('ebooks/{product_id}/open', [EbookController::class, 'open']);
+    Route::get('ebooks/{product_id}/page/{page}', [EbookController::class, 'page'])->middleware('throttle:600,1');
     Route::post('order-customer-stats', [IntegrationController::class, 'orderCustomerStats'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
     Route::get('order-search', [IntegrationController::class, 'orderSearch'])->middleware('permission:' . Permission::SUPER_ADMIN . '|' . Permission::STORE_OWNER . '|' . Permission::STAFF);
 

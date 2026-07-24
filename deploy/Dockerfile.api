@@ -8,6 +8,16 @@ RUN apt-get update && apt-get install -y \
  && docker-php-ext-install pdo pdo_mysql gd intl zip exif bcmath pcntl \
  && rm -rf /var/lib/apt/lists/*
 
+# E-book rendering. Sold e-books are never handed to the browser as a file — each page is
+# rasterised on the server and streamed as a watermarked image, so there is nothing to download
+# or forward. poppler-utils gives us pdftoppm/pdfinfo (small); calibre gives us ebook-convert so
+# an uploaded EPUB is normalised to PDF first and both formats share one pipeline.
+# NOTE: calibre is the heavy part (~300-400MB). Drop the `calibre` word below if you only ever
+# sell PDF e-books — the code detects it at runtime and simply rejects EPUB uploads without it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils calibre \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /app
