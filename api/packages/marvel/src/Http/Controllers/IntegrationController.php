@@ -8726,6 +8726,13 @@ class IntegrationController extends CoreController
                 && $mapped !== OrderStatus::CANCELLED) { // never auto-cancel (stock release)
                 $order->order_status = $mapped;
                 $updated++;
+                // saveQuietly (below) skips the model updating hook, so stamp the status timeline
+                // inline here — otherwise a courier-synced status never gets a "reached at" time.
+                $hist = (array) ($ops['status_history'] ?? []);
+                if (empty($hist[$mapped])) {
+                    $hist[$mapped] = now()->toIso8601String();
+                    $ops['status_history'] = $hist;
+                }
                 $details[] = ['id' => $order->tracking_number, 'from' => $from, 'to' => $mapped];
             }
             $order->ops_meta = $ops;

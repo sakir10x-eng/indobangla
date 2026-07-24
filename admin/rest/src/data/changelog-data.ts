@@ -17,6 +17,7 @@ export const RELEASES: Release[] = [
     date: '24 Jul 2026',
     title: 'Security hardening across sign-in, checkout and admin, plus checkout & page fixes',
     items: [
+      { type: 'fixed', text: 'Order board delivery timeline: every status (Ready, Shipped, In transit, Delivered) now records the date & time it was reached — before, only Pending showed a time because courier-synced status changes weren’t being timestamped' },
       { type: 'fixed', text: 'Placing an order that could not go through — a coupon that had just expired, or a book that had just sold out — left the button spinning with no message. It now tells the customer why instead of quietly failing' },
       { type: 'fixed', text: '“Pay now” now sends the customer straight to the payment page for every online (bKash) order, not just pre-orders — a normal online order no longer got stranded on an empty payment screen' },
       { type: 'fixed', text: 'The order thank-you page and the Library page could show a blank screen on certain orders/accounts. Both are guarded now, and any unexpected page error shows a “try again” panel instead of a white screen' },

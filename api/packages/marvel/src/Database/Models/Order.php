@@ -88,6 +88,27 @@ class Order extends Model
             }
         });
 
+        // Timeline: record the moment EACH order_status is first reached, in the same write as
+        // the change itself. This fires on every save() — the board dropdown, the single courier
+        // sync, the lifecycle/refund flows — so the order board's Pending → Delivered progression
+        // shows a real time at every stage, not just Pending. (The batch courier sync uses
+        // saveQuietly, which skips model events, so it stamps status_history inline itself.)
+        // Doing it here, before the write, avoids the extra saveQuietly the older `updated` hook
+        // needed and guarantees the timestamp is never lost.
+        static::updating(function ($order) {
+            if (!$order->isDirty('order_status')) {
+                return;
+            }
+            $new  = $order->order_status;
+            $ops  = (array) ($order->ops_meta ?? []);
+            $hist = (array) ($ops['status_history'] ?? []);
+            if (empty($hist[$new])) {
+                $hist[$new] = now()->toIso8601String();
+                $ops['status_history'] = $hist;
+                $order->ops_meta = $ops;
+            }
+        });
+
         // IndoBangla: give every NEW order a sequential order code starting at 25000.
         // Derived from the current max numeric code (4–7 digits) so it is self-correcting
         // and never collides with the 14-digit timestamp codes from the default checkout.

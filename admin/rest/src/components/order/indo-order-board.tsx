@@ -172,6 +172,7 @@ function mapOrder(o: any, stats: any) {
     paymentGateway: o.payment_gateway || 'CASH_ON_DELIVERY',
     createdAt: o.created_at,
     statusHistory: ops.status_history || {},
+    deliveredAt: ops.delivered_at || null,
     note: o.note || '',
     ageDays,
     name: o.customer_name || o.customer?.name || 'Customer',
@@ -309,7 +310,11 @@ function StatusTimeline({ o }: any) {
   const curIdx = STAGE_ORDER.indexOf(curKey);
   const timeOf = (st: any): string | null => {
     for (const s of st.statuses) if (hist[s]) return hist[s];
-    return st.key === 'pending' ? o.createdAt : null;
+    // Fallbacks so orders that predate status_history still show what we do know:
+    // Pending from the order's creation time, Delivered from the stamped delivered_at.
+    if (st.key === 'pending') return o.createdAt;
+    if (st.key === 'delivered' && o.deliveredAt) return o.deliveredAt;
+    return null;
   };
   const last = TIMELINE_STAGES.length - 1;
   return (
